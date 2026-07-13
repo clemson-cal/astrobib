@@ -197,15 +197,17 @@ class LitbotApp(App):
         yield Footer()
 
     def on_mount(self):
+        self._uat = get_uat(UAT_CACHE, auto_fetch=False)
+
         try:
             config = get_config()
         except RuntimeError as e:
-            self._set_status(f"[red]{e}[/red]")
+            self._set_status(f"[red]{e}[/red]  [dim]· u: UAT browser · ?: help[/dim]")
+            self._setup_table()
             return
 
         libs = [Library(root=p) for p in config.databases.values() if p.exists()]
         self._library = MergedLibrary(libs)
-        self._uat = get_uat(UAT_CACHE, auto_fetch=False)
 
         self._setup_table()
         self._build_keyword_tree()
