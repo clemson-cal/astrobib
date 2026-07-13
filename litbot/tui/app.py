@@ -18,6 +18,7 @@ from textual.widgets import (
     Static,
     TabbedContent,
     TabPane,
+    Tabs,
 )
 
 from ..library import Entry, Library
@@ -441,8 +442,6 @@ class LitbotApp(App):
 
     BINDINGS = [
         Binding("q", "quit", "Quit"),
-        Binding("a", "add_paper", "Add"),
-        Binding("d", "remove_paper", "Remove", show=False),
         Binding("o", "open_pdf", "Open PDF"),
         Binding("/", "filter", "Filter"),
         Binding("S", "ads_search", "ADS search"),
@@ -476,8 +475,8 @@ class LitbotApp(App):
         yield Footer()
 
     async def on_mount(self) -> None:
-        from textual.widgets import Tabs
-        self.query_one(Tabs).can_focus = False
+        self.bind("a", "add_paper", description="Add", show=True)
+        self.bind("d", "remove_paper", description="Remove", show=False)
 
         self._uat = get_uat(UAT_CACHE, auto_fetch=False)
 
@@ -555,9 +554,13 @@ class LitbotApp(App):
             shown = f" · {n} shown" if n != total else ""
             self._set_status(f"{total} papers{shown}  [dim]/ filter · Space select · e export[/dim]")
         elif pane_id:
-            self._update_ads_footer(in_library=False)
             tab_id = pane_id.removeprefix("pane-")
             ads_view = self._ads_views.get(tab_id)
+            if ads_view and ads_view._selected_article and self._library:
+                entry = self._library.get_by_bibcode(ads_view._selected_article.bibcode)
+                self._update_ads_footer(in_library=entry is not None)
+            else:
+                self._update_ads_footer(in_library=False)
             if ads_view:
                 if not ads_view._articles:
                     self._set_status(
@@ -567,7 +570,7 @@ class LitbotApp(App):
                     n = len(ads_view._articles)
                     self._set_status(
                         f"[yellow]{n} result(s) for '{ads_view.query}'[/yellow]"
-                        f"  [dim]a: add · d: remove · r: refresh · Ctrl+W: close{_quota_str()}[/dim]"
+                        f"  [dim]r: refresh · Ctrl+W: close{_quota_str()}[/dim]"
                     )
 
     # ── Message handlers ──────────────────────────────────────────────────────
@@ -594,12 +597,28 @@ class LitbotApp(App):
         self._switch_tab(-1)
 
     def _switch_tab(self, direction: int) -> None:
-        tc = self.query_one(TabbedContent)
-        pane_ids = [p.id for p in tc.query(TabPane)]
-        if not pane_ids or tc.active not in pane_ids:
-            return
-        idx = pane_ids.index(tc.active)
-        tc.active = pane_ids[(idx + direction) % len(pane_ids)]
+        tabs = self.query_one(Tabs)
+        if direction > 0:
+            tabs.action_next_tab()
+        else:
+            tabs.action_previous_tab()
+        self.call_after_refresh(self._focus_active_table)
+
+    def _focus_active_table(self) -> None:
+        pane_id = self._active_pane_id()
+        if pane_id == "pane-library":
+            try:
+                self.query_one(LibraryView).query_one(DataTable).focus()
+            except Exception:
+                pass
+        elif pane_id:
+            tab_id = pane_id.removeprefix("pane-")
+            ads_view = self._ads_views.get(tab_id)
+            if ads_view:
+                try:
+                    ads_view.query_one(DataTable).focus()
+                except Exception:
+                    pass
 
     def action_filter(self) -> None:
         if self._active_pane_id() == "pane-library":
@@ -789,6 +808,7 @@ class LitbotApp(App):
     def _update_ads_footer(self, in_library: bool) -> None:
         self.bind("a", "add_paper", description="Add", show=not in_library)
         self.bind("d", "remove_paper", description="Remove", show=in_library)
+        self.refresh_bindings()
 
     def _set_status(self, msg: str) -> None:
         self.query_one("#status-bar", Static).update(msg)
