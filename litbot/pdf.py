@@ -7,11 +7,11 @@ from pathlib import Path
 
 import httpx
 
-from .config import get_config
+from .state import PDF_CACHE_DIR
 
 
 def cache_path(citekey: str) -> Path:
-    return get_config().pdf_cache_dir / f"{citekey}.pdf"
+    return PDF_CACHE_DIR / f"{citekey}.pdf"
 
 
 def is_cached(citekey: str) -> bool:
@@ -27,7 +27,6 @@ def fetch(citekey: str, eprint: str | None = None) -> Path | None:
     if not eprint:
         return None
 
-    # Normalise old-style arXiv IDs like astro-ph/0612345
     arxiv_id = eprint.strip()
     url = f"https://arxiv.org/pdf/{arxiv_id}"
 
@@ -48,7 +47,6 @@ def fetch(citekey: str, eprint: str | None = None) -> Path | None:
 
 
 def open_pdf(citekey: str, eprint: str | None = None) -> bool:
-    """Fetch (if needed) and open a PDF in the system viewer. Returns success."""
     path = fetch(citekey, eprint=eprint)
     if path is None:
         return False

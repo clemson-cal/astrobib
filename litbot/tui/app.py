@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import time
+from pathlib import Path
+
 from textual import on
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
+from textual.message import Message
 from textual.screen import ModalScreen
 from textual.widgets import (
     DataTable,
@@ -12,11 +16,14 @@ from textual.widgets import (
     Input,
     Label,
     Static,
-    Tree,
+    TabbedContent,
+    TabPane,
 )
-from ..config import get_config, UAT_CACHE
-from ..library import Entry, Library, MergedLibrary
+
+from ..library import Entry, Library
+from ..state import UAT_CACHE, get_library_path, get_token
 from ..uat import UAT, Concept, get_uat
+from . import tabs_state
 
 
 # ── Detail panel ──────────────────────────────────────────────────────────────
@@ -56,7 +63,7 @@ class DetailPanel(Static):
             )
         self.update("\n".join(lines))
 
-    def show_ads_article(self, article) -> None:
+    def show_ads_article(self, article, entry: Entry | None = None) -> None:
         if article is None:
             self.update("")
             return
@@ -72,11 +79,20 @@ class DetailPanel(Static):
             f"[dim]{author_str}[/dim]\n",
             f"[green]{article.year}[/green]",
         ]
+        if entry:
+            if entry.eprint:
+                lines.append(f"  arXiv:[cyan]{entry.eprint}[/cyan]")
+            if entry.doi:
+                lines.append(f"  DOI: {entry.doi}")
+            if entry.keywords:
+                lines.append("\n[yellow]Keywords:[/yellow]")
+                for kw in entry.keywords:
+                    lines.append(f"  • {kw}")
+            lines.append("\n[dim]✓ in library[/dim]")
         if abstract:
             lines.append(
                 f"\n[dim]{abstract[:600]}{'…' if len(abstract) > 600 else ''}[/dim]"
             )
-        lines.append("\n[dim]Press [bold]a[/bold] to add to library[/dim]")
         self.update("\n".join(lines))
 
     def show_concept(self, concept: Concept | None, uat: UAT) -> None:
@@ -84,7 +100,11 @@ class DetailPanel(Static):
             self.update("[dim]Select a concept.[/dim]")
             return
         parents = uat.parents(concept.uid)
-        breadcrumb = " › ".join(p.label for p in parents) + (" › " if parents else "") + concept.label
+        breadcrumb = (
+            " › ".join(p.label for p in parents)
+            + (" › " if parents else "")
+            + concept.label
+        )
         lines = [
             f"[dim]{breadcrumb}[/dim]\n",
             f"[bold cyan]{concept.label}[/bold cyan]  [dim]UID {concept.uid}[/dim]",
@@ -105,54 +125,237 @@ class DetailPanel(Static):
         self.update("\n".join(lines))
 
 
-# ── Modals ────────────────────────────────────────────────────────────────────
+# ── Library view ──────────────────────────────────────────────────────────────
 
-class SearchModal(ModalScreen[str]):
+class LibraryView(Static):
+    """Sortable, filterable paper list with multi-select."""
+
     DEFAULT_CSS = """
-    SearchModal { align: center middle; }
-    SearchModal Vertical {
-        width: 60; height: auto;
-        border: round $primary; padding: 1 2; background: $surface;
+    LibraryView {
+        height: 100%;
+        layout: vertical;
+    }
+    LibraryView Input {
+        height: 3;
+        dock: top;
+    }
+    LibraryView DataTable {
+        height: 1fr;
     }
     """
 
+    class EntryHighlighted(Message):
+        def __init__(self, entry: Entry | None) -> None:
+            super().__init__()
+            self.entry = entry
+
+    def __init__(self) -> None:
+        super().__init__(id="library-view")
+        self._all_entries: list[Entry] = []
+        self._filtered: list[Entry] = []
+        self._sort_col: str = "year"
+        self._sort_reverse: bool = True
+        self._selected_keys: set[str] = set()
+        self._highlighted_entry: Entry | None = None
+
     def compose(self) -> ComposeResult:
-        with Vertical():
-            yield Label("Search library  [dim](Enter / Escape)[/dim]")
-            yield Input(placeholder="author, title, or cite key…", id="search-input")
+        yield Input(placeholder="Filter by author, title, key, or keyword…", id="lib-filter")
+        yield DataTable(id="lib-table", cursor_type="row")
 
-    def on_mount(self):
-        self.query_one(Input).focus()
+    def on_mount(self) -> None:
+        t = self.query_one("#lib-table", DataTable)
+        t.add_column(" ", key="sel", width=2)
+        t.add_column("Year", key="year", width=6)
+        t.add_column("Author", key="author", width=20)
+        t.add_column("Title", key="title")
+        t.add_column("Keywords", key="keywords", width=28)
 
-    def on_input_submitted(self, event: Input.Submitted):
-        self.dismiss(event.value)
+    def load(self, library: Library | None) -> None:
+        self._all_entries = library.entries() if library else []
+        self._selected_keys.clear()
+        filter_val = self.query_one("#lib-filter", Input).value
+        self._apply_filter(filter_val)
 
-    def on_key(self, event):
-        if event.key == "escape":
-            self.dismiss("")
+    def focus_filter(self) -> None:
+        self.query_one("#lib-filter", Input).focus()
 
+    def clear_filter(self) -> None:
+        inp = self.query_one("#lib-filter", Input)
+        inp.value = ""
+
+    def toggle_selection(self) -> None:
+        if self._highlighted_entry is None:
+            return
+        key = self._highlighted_entry.key
+        if key in self._selected_keys:
+            self._selected_keys.discard(key)
+            new_val = ""
+        else:
+            self._selected_keys.add(key)
+            new_val = "✓"
+        try:
+            self.query_one("#lib-table", DataTable).update_cell(key, "sel", new_val)
+        except Exception:
+            self._refresh_table()
+
+    def get_selected_keys(self) -> list[str]:
+        return list(self._selected_keys)
+
+    def _apply_filter(self, text: str) -> None:
+        q = text.lower().strip()
+        if q:
+            self._filtered = [
+                e for e in self._all_entries
+                if q in e.title.lower()
+                or q in e.author.lower()
+                or q in e.key.lower()
+                or any(q in kw.lower() for kw in e.keywords)
+            ]
+        else:
+            self._filtered = list(self._all_entries)
+        self._refresh_table()
+
+    def _sort_key(self, e: Entry) -> str:
+        if self._sort_col == "year":
+            return e.year
+        if self._sort_col == "author":
+            return e.first_author_last.lower()
+        if self._sort_col == "title":
+            return e.title.lower()
+        return e.year
+
+    def _refresh_table(self) -> None:
+        t = self.query_one("#lib-table", DataTable)
+        t.clear()
+        entries = sorted(self._filtered, key=self._sort_key, reverse=self._sort_reverse)
+        for e in entries:
+            sel = "✓" if e.key in self._selected_keys else ""
+            kws = ", ".join(e.keywords[:3])
+            if len(e.keywords) > 3:
+                kws += "…"
+            title = e.title[:52] + "…" if len(e.title) > 52 else e.title
+            t.add_row(sel, e.year, e.first_author_last, title, kws, key=e.key)
+
+    @on(Input.Changed, "#lib-filter")
+    def _on_filter_changed(self, event: Input.Changed) -> None:
+        self._apply_filter(event.value)
+
+    @on(DataTable.RowHighlighted, "#lib-table")
+    @on(DataTable.RowSelected, "#lib-table")
+    def _on_row_event(self, event) -> None:
+        key = event.row_key.value if event.row_key else None
+        if not key:
+            return
+        entry = next((e for e in self._all_entries if e.key == key), None)
+        self._highlighted_entry = entry
+        self.post_message(self.EntryHighlighted(entry))
+
+    @on(DataTable.HeaderSelected, "#lib-table")
+    def _on_header_selected(self, event: DataTable.HeaderSelected) -> None:
+        try:
+            col = event.column_key.value
+        except AttributeError:
+            return
+        if col not in ("year", "author", "title"):
+            return
+        if self._sort_col == col:
+            self._sort_reverse = not self._sort_reverse
+        else:
+            self._sort_col = col
+            self._sort_reverse = (col == "year")
+        self._refresh_table()
+
+
+# ── ADS results view ──────────────────────────────────────────────────────────
+
+class AdsView(Static):
+    """ADS search results for one query tab."""
+
+    DEFAULT_CSS = """
+    AdsView {
+        height: 100%;
+    }
+    AdsView DataTable {
+        height: 100%;
+    }
+    """
+
+    class ArticleHighlighted(Message):
+        def __init__(self, article) -> None:
+            super().__init__()
+            self.article = article
+
+    def __init__(self, query: str, tab_id: str) -> None:
+        super().__init__(id=f"ads-view-{tab_id}")
+        self.query = query
+        self.tab_id = tab_id
+        self._articles: list = []
+        self._selected_article = None
+
+    def compose(self) -> ComposeResult:
+        yield DataTable(cursor_type="row")
+
+    def on_mount(self) -> None:
+        t = self.query_one(DataTable)
+        t.add_column("✓", key="indb", width=3)
+        t.add_column("Year", key="year", width=6)
+        t.add_column("Author", key="author", width=20)
+        t.add_column("Title", key="title")
+
+    def load_articles(self, articles: list, library: Library | None) -> None:
+        self._articles = articles
+        t = self.query_one(DataTable)
+        t.clear()
+        for a in articles:
+            in_db = "✓" if library and library.has_bibcode(a.bibcode) else ""
+            first_author = a.author[0].split(",")[0] if a.author else ""
+            title = a.title[0] if a.title else ""
+            short_title = title[:55] + "…" if len(title) > 55 else title
+            t.add_row(in_db, str(a.year or ""), first_author, short_title, key=a.bibcode)
+
+    def update_in_db(self, library: Library | None) -> None:
+        t = self.query_one(DataTable)
+        for a in self._articles:
+            in_db = "✓" if library and library.has_bibcode(a.bibcode) else ""
+            try:
+                t.update_cell(a.bibcode, "indb", in_db)
+            except Exception:
+                pass
+
+    @on(DataTable.RowHighlighted)
+    @on(DataTable.RowSelected)
+    def _on_row_event(self, event) -> None:
+        key = event.row_key.value if event.row_key else None
+        if not key:
+            return
+        article = next((a for a in self._articles if a.bibcode == key), None)
+        self._selected_article = article
+        self.post_message(self.ArticleHighlighted(article))
+
+
+# ── Modals ────────────────────────────────────────────────────────────────────
 
 class AdsSearchModal(ModalScreen[str]):
     DEFAULT_CSS = """
     AdsSearchModal { align: center middle; }
     AdsSearchModal Vertical {
-        width: 60; height: auto;
+        width: 64; height: auto;
         border: round $accent; padding: 1 2; background: $surface;
     }
     """
 
     def compose(self) -> ComposeResult:
         with Vertical():
-            yield Label("Search ADS  [dim](Enter / Escape)[/dim]")
+            yield Label("New ADS search  [dim](Enter / Escape)[/dim]")
             yield Input(placeholder="author, title, or topic…", id="ads-input")
 
-    def on_mount(self):
+    def on_mount(self) -> None:
         self.query_one(Input).focus()
 
-    def on_input_submitted(self, event: Input.Submitted):
-        self.dismiss(event.value)
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        self.dismiss(event.value.strip())
 
-    def on_key(self, event):
+    def on_key(self, event) -> None:
         if event.key == "escape":
             self.dismiss("")
 
@@ -174,10 +377,10 @@ class AddModal(ModalScreen[tuple[str, str] | None]):
             yield Label("Extra keywords  [dim](optional, comma-separated UAT labels)[/dim]:")
             yield Input(placeholder="e.g. Magnetohydrodynamical simulations", id="kw-input")
 
-    def on_mount(self):
+    def on_mount(self) -> None:
         self.query_one("#bibcode-input", Input).focus()
 
-    def on_key(self, event):
+    def on_key(self, event) -> None:
         if event.key == "escape":
             self.dismiss(None)
         elif event.key == "enter":
@@ -187,6 +390,36 @@ class AddModal(ModalScreen[tuple[str, str] | None]):
                 self.dismiss((bibcode, extra_kw))
 
 
+class TokenModal(ModalScreen[str]):
+    DEFAULT_CSS = """
+    TokenModal { align: center middle; }
+    TokenModal Vertical {
+        width: 70; height: auto;
+        border: round $warning; padding: 1 2; background: $surface;
+    }
+    """
+
+    def compose(self) -> ComposeResult:
+        with Vertical():
+            yield Label("ADS API token required  [dim](Escape to cancel)[/dim]")
+            yield Label("[dim]Get one at: https://ui.adsabs.harvard.edu/user/settings/token[/dim]")
+            yield Input(placeholder="Paste your ADS token here…", id="token-input", password=True)
+
+    def on_mount(self) -> None:
+        self.query_one(Input).focus()
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        token = event.value.strip()
+        if token:
+            from ..state import set_token
+            set_token(token)
+            self.dismiss(token)
+
+    def on_key(self, event) -> None:
+        if event.key == "escape":
+            self.dismiss("")
+
+
 # ── Main app ──────────────────────────────────────────────────────────────────
 
 class LitbotApp(App):
@@ -194,15 +427,10 @@ class LitbotApp(App):
     CSS = """
     Screen { layout: vertical; }
     #body { layout: horizontal; height: 1fr; }
-    #left-panel {
-        width: 28;
-        min-width: 22;
-        border-right: solid $panel-lighten-1;
-    }
-    #keyword-tree { width: 100%; height: 100%; }
-    #uat-tree     { width: 100%; height: 100%; display: none; }
-    #paper-table  { width: 1fr; }
-    #detail       { width: 40; min-width: 30; }
+    TabbedContent { width: 1fr; height: 100%; }
+    TabbedContent ContentSwitcher { height: 1fr; }
+    TabPane { padding: 0; height: 100%; }
+    #detail { width: 42; min-width: 30; }
     #status-bar {
         height: 1;
         background: $panel;
@@ -214,380 +442,361 @@ class LitbotApp(App):
     BINDINGS = [
         Binding("q", "quit", "Quit"),
         Binding("a", "add_paper", "Add"),
+        Binding("d", "remove_paper", "Remove", show=False),
         Binding("o", "open_pdf", "Open PDF"),
-        Binding("/", "search", "Search"),
+        Binding("/", "filter", "Filter"),
         Binding("S", "ads_search", "ADS search"),
-        Binding("u", "toggle_uat", "UAT"),
+        Binding("r", "refresh_tab", "Refresh"),
+        Binding("ctrl+w", "close_tab", "Close tab", show=False),
+        Binding("[", "prev_tab", "Prev tab", show=False),
+        Binding("]", "next_tab", "Next tab", show=False),
+        Binding("space", "toggle_select", "Select", show=False),
+        Binding("e", "export_selected", "Export"),
+        Binding("T", "set_token", "Token", show=False),
+        Binding("u", "uat_browser", "UAT"),
         Binding("question_mark", "help", "Help"),
-        Binding("escape", "show_all", "All", show=False),
-        Binding("t", "focus_left", "Left panel", show=False),
+        Binding("escape", "clear_filter", "Clear", show=False),
     ]
 
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__()
-        self._library: MergedLibrary | None = None
+        self._library: Library | None = None
         self._uat: UAT | None = None
-        self._current_entries: list[Entry] = []
-        self._selected_entry: Entry | None = None
-        self._left_mode: str = "library"   # "library" | "uat"
-        self._uat_tree_built: bool = False
-        self._ads_results: dict = {}       # bibcode -> ADS Article
-        self._selected_ads = None
-        self._view_mode: str = "library"   # "library" | "ads"
+        self._tab_states: list[dict] = []
+        self._ads_views: dict[str, AdsView] = {}
 
     def compose(self) -> ComposeResult:
         yield Header()
         with Horizontal(id="body"):
-            with Vertical(id="left-panel"):
-                yield Tree("Keywords", id="keyword-tree")
-                yield Tree("UAT", id="uat-tree")
-            yield DataTable(id="paper-table", cursor_type="row")
+            with TabbedContent(id="tabs"):
+                with TabPane("Library", id="pane-library"):
+                    yield LibraryView()
             yield DetailPanel(id="detail")
         yield Static("", id="status-bar")
         yield Footer()
 
-    def on_mount(self):
+    async def on_mount(self) -> None:
+        from textual.widgets import Tabs
+        self.query_one(Tabs).can_focus = False
+
         self._uat = get_uat(UAT_CACHE, auto_fetch=False)
 
-        try:
-            config = get_config()
-        except RuntimeError as e:
-            self._set_status(f"[red]{e}[/red]  [dim]· u: UAT browser · ?: help[/dim]")
-            self._setup_table()
-            return
+        self._library = Library(root=get_library_path())
+        self.query_one(LibraryView).load(self._library)
 
-        libs = [Library(root=p) for p in config.databases.values() if p.exists()]
-        self._library = MergedLibrary(libs)
+        self._tab_states = tabs_state.load()
+        has_token = bool(get_token())
+        for tab_data in self._tab_states:
+            await self._create_ads_tab(tab_data, fetch=has_token)
 
-        self._setup_table()
-        self._build_keyword_tree()
-        self._load_entries(self._library.entries())
         n = len(self._library.entries())
-        db_note = f"{len(libs)} db"
-        uat_note = f" · UAT ({len(self._uat)})" if self._uat else " · [dim]litbot uat update[/dim]"
-        self._set_status(f"{n} papers · {db_note}{uat_note}  [dim]u: toggle UAT browser[/dim]")
+        uat_note = f" · UAT ({len(self._uat)})" if self._uat else ""
+        token_note = "" if get_token() else "  [yellow]T: set ADS token[/yellow]"
+        self._set_status(f"{n} papers{uat_note}{token_note}")
 
-    # ── Left panel: keyword tree ───────────────────────────────────────────────
+    # ── Tab helpers ───────────────────────────────────────────────────────────
 
-    def _build_keyword_tree(self):
-        tree = self.query_one("#keyword-tree", Tree)
-        tree.root.expand()
-        tree.root.add("All papers", data=("all", set()))
+    def _active_pane_id(self) -> str:
+        return self.query_one(TabbedContent).active or ""
 
-        if self._library is None:
-            return
+    def _active_ads_view(self) -> AdsView | None:
+        pane_id = self._active_pane_id()
+        if not pane_id or pane_id == "pane-library":
+            return None
+        tab_id = pane_id.removeprefix("pane-")
+        return self._ads_views.get(tab_id)
 
-        all_kws = self._library.all_keywords()
-        if not all_kws:
-            return
+    async def _create_ads_tab(self, tab_data: dict, fetch: bool = True) -> AdsView:
+        tab_id = tab_data["id"]
+        ads_view = AdsView(query=tab_data["query"], tab_id=tab_id)
+        self._ads_views[tab_id] = ads_view
+        pane = TabPane(tab_data["label"], ads_view, id=f"pane-{tab_id}")
+        await self.query_one(TabbedContent).add_pane(pane)
+        if fetch:
+            await self._do_refresh(ads_view, tab_data)
+        return ads_view
 
-        # Group keywords by their top-level UAT ancestor
-        groups: dict[str, list[str]] = {}
-        unclassified: list[str] = []
-
-        for kw in all_kws:
-            if self._uat:
-                concept = self._uat.by_label(kw)
-                if concept:
-                    top = _top_ancestor(self._uat, concept.uid)
-                    groups.setdefault(top, []).append(kw)
-                    continue
-            unclassified.append(kw)
-
-        for group_label in sorted(groups):
-            kws = groups[group_label]
-            group_desc = self._uat.descendant_labels(group_label) if self._uat else {group_label}
-            if len(kws) == 1 and kws[0].lower() == group_label.lower():
-                tree.root.add(group_label, data=("uat", group_desc))
-            else:
-                group_node = tree.root.add(group_label, data=("uat", group_desc))
-                for kw in sorted(kws):
-                    kw_desc = self._uat.descendant_labels(kw) if self._uat else {kw}
-                    group_node.add(kw, data=("uat", kw_desc))
-
-        if unclassified:
-            other_node = tree.root.add("[dim]other[/dim]", data=None)
-            for kw in unclassified:
-                other_node.add(kw, data=("kw", {kw}))
-
-    @on(Tree.NodeSelected, "#keyword-tree")
-    def on_keyword_selected(self, event: Tree.NodeSelected):
-        if self._library is None or event.node.data is None:
-            return
-        self._view_mode = "library"
-        kind, labels = event.node.data
-        if kind == "all":
-            entries = self._library.entries()
-            self._load_entries(entries)
-            self._set_status(f"{len(entries)} papers in library")
-        else:
-            entries = self._library.by_keyword("", descendant_labels=labels)
-            label_str = next(iter(labels)) if len(labels) == 1 else event.node.label.plain
-            self._load_entries(entries)
-            self._set_status(f"{len(entries)} paper(s) tagged [{label_str}]")
-        self.query_one("#detail", DetailPanel).show_entry(None)
-
-    # ── Left panel: UAT tree ───────────────────────────────────────────────────
-
-    def _build_uat_tree(self):
-        if self._uat_tree_built or self._uat is None:
-            return
-        tree = self.query_one("#uat-tree", Tree)
-        tree.root.expand()
-        for concept in sorted(self._uat.top_level(), key=lambda c: c.label):
-            tree.root.add(concept.label, data=concept, allow_expand=bool(concept.narrower))
-        self._uat_tree_built = True
-
-    @on(Tree.NodeExpanded, "#uat-tree")
-    def on_uat_node_expanded(self, event: Tree.NodeExpanded):
-        node = event.node
-        concept: Concept | None = node.data
-        if concept is None or node.children:
-            return
-        for child in sorted(self._uat.children(concept.uid), key=lambda c: c.label):
-            node.add(child.label, data=child, allow_expand=bool(child.narrower))
-
-    @on(Tree.NodeSelected, "#uat-tree")
-    def on_uat_node_selected(self, event: Tree.NodeSelected):
-        concept: Concept | None = event.node.data
-        detail = self.query_one("#detail", DetailPanel)
-        if concept is None or self._uat is None:
-            detail.show_entry(None)
-            return
-        detail.show_concept(concept, self._uat)
-        if self._library is not None:
-            desc = self._uat.descendant_labels(concept.label)
-            entries = self._library.by_keyword("", descendant_labels=desc)
-            self._load_entries(entries)
-            self._view_mode = "library"
+    async def _do_refresh(self, ads_view: AdsView, tab_data: dict) -> None:
+        self._set_status(f"Searching ADS for '{ads_view.query}'…")
+        try:
+            from .. import ads_client
+            articles = ads_client.search(ads_view.query, limit=20)
+            ads_view.load_articles(articles, self._library)
+            tab_data["bibcodes"] = [a.bibcode for a in articles]
+            tab_data["refreshed"] = int(time.time())
+            tabs_state.save(self._tab_states)
+            ads_client.refresh_quota()
+            n = len(articles)
             self._set_status(
-                f"{len(entries)} paper(s) tagged [{concept.label}]  "
-                f"[dim]· {len(desc)} UAT concepts in subtree[/dim]"
+                f"[yellow]{n} result(s) for '{ads_view.query}'[/yellow]"
+                f"  [dim]a: add · d: remove · r: refresh · Ctrl+W: close{_quota_str()}[/dim]"
             )
+        except RuntimeError as e:
+            self._set_status(f"[red]{e}[/red]")
 
-    # ── Paper table ───────────────────────────────────────────────────────────
+    def _reload_library(self) -> None:
+        self._library = Library(root=get_library_path())
+        self.query_one(LibraryView).load(self._library)
+        for av in self._ads_views.values():
+            av.update_in_db(self._library)
 
-    def _setup_table(self):
-        table = self.query_one("#paper-table", DataTable)
-        table.add_columns("Cite key", "Year", "First author", "Title")
+    # ── Tab events ────────────────────────────────────────────────────────────
 
-    def _load_entries(self, entries: list[Entry]):
-        table = self.query_one("#paper-table", DataTable)
-        table.clear()
-        self._current_entries = sorted(entries, key=lambda e: e.year, reverse=True)
-        for e in self._current_entries:
-            title = e.title[:55] + "…" if len(e.title) > 55 else e.title
-            table.add_row(e.key, e.year, e.first_author_last, title, key=e.key)
-        self._selected_entry = None
+    @on(TabbedContent.TabActivated)
+    def _on_tab_activated(self, event: TabbedContent.TabActivated) -> None:
+        self.query_one(DetailPanel).show_entry(None)
+        pane_id = self._active_pane_id()
+        if pane_id == "pane-library":
+            self.bind("a", "add_paper", description="Add", show=True)
+            self.bind("d", "remove_paper", description="Remove", show=False)
+            lib_view = self.query_one(LibraryView)
+            n = len(lib_view._filtered)
+            total = len(lib_view._all_entries)
+            shown = f" · {n} shown" if n != total else ""
+            self._set_status(f"{total} papers{shown}  [dim]/ filter · Space select · e export[/dim]")
+        elif pane_id:
+            self._update_ads_footer(in_library=False)
+            tab_id = pane_id.removeprefix("pane-")
+            ads_view = self._ads_views.get(tab_id)
+            if ads_view:
+                if not ads_view._articles:
+                    self._set_status(
+                        f"[dim]'{ads_view.query}' — press [bold]r[/bold] to load results[/dim]"
+                    )
+                else:
+                    n = len(ads_view._articles)
+                    self._set_status(
+                        f"[yellow]{n} result(s) for '{ads_view.query}'[/yellow]"
+                        f"  [dim]a: add · d: remove · r: refresh · Ctrl+W: close{_quota_str()}[/dim]"
+                    )
 
-    def _load_ads_articles(self, articles: list):
-        table = self.query_one("#paper-table", DataTable)
-        table.clear()
-        self._current_entries = []
-        self._selected_entry = None
-        self._selected_ads = None
-        for a in articles:
-            first_author = a.author[0].split(",")[0] if a.author else ""
-            title = a.title[0] if a.title else ""
-            short_title = title[:55] + "…" if len(title) > 55 else title
-            table.add_row(a.bibcode, str(a.year or ""), first_author, short_title, key=a.bibcode)
+    # ── Message handlers ──────────────────────────────────────────────────────
 
-    @on(DataTable.RowHighlighted, "#paper-table")
-    @on(DataTable.RowSelected, "#paper-table")
-    def on_row_selected(self, event):
-        row_key = event.row_key.value if event.row_key else None
-        if not row_key:
+    @on(LibraryView.EntryHighlighted)
+    def _on_entry_highlighted(self, event: LibraryView.EntryHighlighted) -> None:
+        if self._active_pane_id() == "pane-library":
+            self.query_one(DetailPanel).show_entry(event.entry)
+
+    @on(AdsView.ArticleHighlighted)
+    def _on_article_highlighted(self, event: AdsView.ArticleHighlighted) -> None:
+        if event.article is None:
             return
-        detail = self.query_one("#detail", DetailPanel)
-        if self._view_mode == "ads":
-            self._selected_ads = self._ads_results.get(row_key)
-            detail.show_ads_article(self._selected_ads)
-        elif self._library:
-            entry = self._library.get(row_key)
-            self._selected_entry = entry
-            detail.show_entry(entry)
+        entry = self._library.get_by_bibcode(event.article.bibcode) if self._library else None
+        self.query_one(DetailPanel).show_ads_article(event.article, entry=entry)
+        self._update_ads_footer(in_library=entry is not None)
 
     # ── Actions ───────────────────────────────────────────────────────────────
 
-    def action_toggle_uat(self):
-        if self._uat is None:
-            self._set_status("[yellow]UAT not cached — run: litbot uat update[/yellow]")
+    def action_next_tab(self) -> None:
+        self._switch_tab(+1)
+
+    def action_prev_tab(self) -> None:
+        self._switch_tab(-1)
+
+    def _switch_tab(self, direction: int) -> None:
+        tc = self.query_one(TabbedContent)
+        pane_ids = [p.id for p in tc.query(TabPane)]
+        if not pane_ids or tc.active not in pane_ids:
             return
-        self._left_mode = "uat" if self._left_mode == "library" else "library"
-        in_uat = self._left_mode == "uat"
-        self.query_one("#keyword-tree", Tree).display = not in_uat
-        self.query_one("#uat-tree", Tree).display = in_uat
-        if in_uat:
-            self._build_uat_tree()
-            self.query_one("#uat-tree", Tree).focus()
-            self._set_status(f"UAT browser  [dim]· {len(self._uat)} concepts · u: back to library[/dim]")
-        else:
-            self.query_one("#keyword-tree", Tree).focus()
-            n = len(self._library.entries()) if self._library else 0
-            self._set_status(f"{n} papers  [dim]· u: UAT browser[/dim]")
+        idx = pane_ids.index(tc.active)
+        tc.active = pane_ids[(idx + direction) % len(pane_ids)]
 
-    def action_search(self):
-        async def handle(query: str):
-            if not query or self._library is None:
-                return
-            q = query.lower()
-            results = [
-                e for e in self._library.entries()
-                if q in e.title.lower()
-                or q in e.author.lower()
-                or q in e.key.lower()
-                or any(q in kw.lower() for kw in e.keywords)
-            ]
-            self._view_mode = "library"
-            self._load_entries(results)
-            self._set_status(f'{len(results)} result(s) for "{query}"  [dim]· Escape: show all[/dim]')
-        self.push_screen(SearchModal(), handle)
+    def action_filter(self) -> None:
+        if self._active_pane_id() == "pane-library":
+            self.query_one(LibraryView).focus_filter()
 
-    def action_ads_search(self):
-        async def handle(query: str):
+    def action_clear_filter(self) -> None:
+        if self._active_pane_id() == "pane-library":
+            self.query_one(LibraryView).clear_filter()
+
+    def action_toggle_select(self) -> None:
+        if self._active_pane_id() != "pane-library":
+            return
+        focused = self.focused
+        if isinstance(focused, Input):
+            return
+        self.query_one(LibraryView).toggle_selection()
+
+    def action_export_selected(self) -> None:
+        if self._active_pane_id() != "pane-library":
+            return
+        lib_view = self.query_one(LibraryView)
+        keys = lib_view.get_selected_keys()
+        if not keys:
+            self._set_status("[yellow]No papers selected — use Space to select rows.[/yellow]")
+            return
+        output = Path.cwd() / "litbot-export.bib"
+        blocks = []
+        for key in keys:
+            entry = self._library.get(key) if self._library else None
+            if entry:
+                blocks.append(entry.path.read_text())
+        output.write_text("\n".join(blocks))
+        self._set_status(f"[green]Exported {len(blocks)} paper(s) → {output}[/green]")
+
+    def action_ads_search(self) -> None:
+        if not get_token():
+            self.push_screen(TokenModal(), self._after_token_set)
+            return
+
+        async def handle(query: str) -> None:
             if not query:
                 return
-            self._set_status(f"Searching ADS for '{query}'…")
-            try:
-                from .. import ads_client
-                articles = ads_client.search(query, limit=20)
-            except RuntimeError as e:
-                self._set_status(f"[red]{e}[/red]")
-                return
-            self._ads_results = {a.bibcode: a for a in articles}
-            self._view_mode = "ads"
-            self._load_ads_articles(articles)
-            from .. import ads_client as _ac
-            if _ac.get_quota() is None:
-                _ac.refresh_quota()
-            quota_str = _quota_str()
-            self._set_status(
-                f"[yellow]{len(articles)} ADS result(s) for '{query}'[/yellow]"
-                f"  [dim]· a: add · Escape: back{quota_str}[/dim]"
-            )
+            tab_data = tabs_state.make_tab(query)
+            self._tab_states.append(tab_data)
+            await self._create_ads_tab(tab_data, fetch=True)
+
         self.push_screen(AdsSearchModal(), handle)
 
-    def action_show_all(self):
-        self._view_mode = "library"
-        self._ads_results = {}
-        self._selected_ads = None
-        if self._library:
-            entries = self._library.entries()
-            self._load_entries(entries)
-            self._set_status(f"{len(entries)} papers in library")
+    def _after_token_set(self, token: str) -> None:
+        if token:
+            self._set_status("[green]ADS token saved. Press S to search.[/green]")
 
-    def action_add_paper(self):
-        if self._view_mode == "ads":
-            if self._selected_ads is None:
-                self._set_status("[yellow]Select an ADS result first.[/yellow]")
-                return
-            bibcode = self._selected_ads.bibcode
-            self._set_status(f"Fetching {bibcode}…")
-            self.run_worker(self._fetch_and_add(bibcode), exclusive=True)
+    def action_set_token(self) -> None:
+        self.push_screen(TokenModal(), self._after_token_set)
+
+    async def action_close_tab(self) -> None:
+        pane_id = self._active_pane_id()
+        if not pane_id or pane_id == "pane-library":
             return
+        tab_id = pane_id.removeprefix("pane-")
+        self._ads_views.pop(tab_id, None)
+        self._tab_states = [t for t in self._tab_states if t["id"] != tab_id]
+        tabs_state.save(self._tab_states)
+        await self.query_one(TabbedContent).remove_pane(pane_id)
 
-        async def handle(result: tuple[str, str] | None):
-            if result is None:
+    async def action_refresh_tab(self) -> None:
+        ads_view = self._active_ads_view()
+        if ads_view is None:
+            return
+        tab_data = next((t for t in self._tab_states if t["id"] == ads_view.tab_id), None)
+        if tab_data:
+            await self._do_refresh(ads_view, tab_data)
+
+    def action_add_paper(self) -> None:
+        ads_view = self._active_ads_view()
+        if ads_view is not None:
+            article = ads_view._selected_article
+            if article is None:
+                self._set_status("[yellow]Select an article first.[/yellow]")
                 return
-            bibcode, extra_kw = result
-            self._set_status(f"Fetching {bibcode} from ADS…")
-            try:
-                from .. import ads_client
-                data = ads_client.fetch_bibtex(bibcode)
-                if data is None:
-                    self._set_status(f"[red]Could not fetch {bibcode}[/red]")
+            if self._library and self._library.has_bibcode(article.bibcode):
+                self._set_status("[yellow]Already in library.[/yellow]")
+                return
+            self._set_status(f"Fetching {article.bibcode}…")
+            self.run_worker(self._fetch_and_add(article.bibcode, ads_view), exclusive=True)
+        else:
+            async def handle(result: tuple[str, str] | None) -> None:
+                if result is None:
                     return
-                if extra_kw:
-                    existing_kw = data.get("keywords", "")
-                    data["keywords"] = ", ".join(filter(None, [existing_kw, extra_kw]))
-                config = get_config()
-                target_lib = Library(root=config.default_db_path)
-                entry = target_lib.save_entry(data)
-                from .. import db as dbmod
+                bibcode, extra_kw = result
+                self._set_status(f"Fetching {bibcode}…")
                 try:
-                    dbmod.commit_entry(config.default_db_path, entry.key)
-                except Exception:
-                    pass
-                libs = [Library(root=p) for p in config.databases.values() if p.exists()]
-                self._library = MergedLibrary(libs)
-                self._load_entries(self._library.entries())
-                self._set_status(f"[green]Added {entry.key} → '{config.default_database}'[/green]")
-            except Exception as exc:
-                self._set_status(f"[red]{exc}[/red]")
-        self.push_screen(AddModal(), handle)
+                    from .. import ads_client
+                    data = ads_client.fetch_bibtex(bibcode)
+                    if data is None:
+                        self._set_status(f"[red]Could not fetch {bibcode}[/red]")
+                        return
+                    if extra_kw:
+                        existing_kw = data.get("keywords", "")
+                        data["keywords"] = ", ".join(filter(None, [existing_kw, extra_kw]))
+                    entry = self._library.save_entry(data)
+                    self._reload_library()
+                    self._set_status(f"[green]Added {entry.key}[/green]")
+                except Exception as exc:
+                    self._set_status(f"[red]{exc}[/red]")
+            self.push_screen(AddModal(), handle)
 
-    async def _fetch_and_add(self, bibcode: str) -> None:
+    async def _fetch_and_add(self, bibcode: str, ads_view: AdsView) -> None:
         try:
             from .. import ads_client
             data = ads_client.fetch_bibtex(bibcode)
             if data is None:
                 self._set_status(f"[red]Could not fetch {bibcode}[/red]")
                 return
-            config = get_config()
-            target_lib = Library(root=config.default_db_path)
-            entry = target_lib.save_entry(data)
-            from .. import db as dbmod
-            try:
-                dbmod.commit_entry(config.default_db_path, entry.key)
-            except Exception:
-                pass
-            libs = [Library(root=p) for p in config.databases.values() if p.exists()]
-            self._library = MergedLibrary(libs)
-            from .. import ads_client as _ac
-            if _ac.get_quota() is None:
-                _ac.refresh_quota()
-            quota_str = _quota_str()
-            self._set_status(
-                f"[green]Added {entry.key} → '{config.default_database}'[/green]"
-                f"  [dim]· Escape: back to library{quota_str}[/dim]"
-            )
+            entry = self._library.save_entry(data)
+            self._reload_library()
+            ads_view.update_in_db(self._library)
+            self.query_one(DetailPanel).show_entry(self._library.get(entry.key))
+            self._update_ads_footer(in_library=True)
+            ads_client.refresh_quota()
+            self._set_status(f"[green]Added {entry.key}[/green]{_quota_str()}")
         except Exception as exc:
             self._set_status(f"[red]{exc}[/red]")
 
-    def action_open_pdf(self):
-        entry = self._selected_entry
+    def action_remove_paper(self) -> None:
+        ads_view = self._active_ads_view()
+        if ads_view is None:
+            return
+        article = ads_view._selected_article
+        if article is None:
+            self._set_status("[yellow]Select an article first.[/yellow]")
+            return
+        if self._library is None:
+            return
+        entry = self._library.get_by_bibcode(article.bibcode)
         if entry is None:
-            self._set_status("Select a paper first.")
+            self._set_status("[yellow]Not in library.[/yellow]")
             return
-        if not entry.eprint:
-            self._set_status(f"[yellow]No arXiv ID for {entry.key}[/yellow]")
-            return
-        from .. import pdf
-        cached = pdf.is_cached(entry.key)
-        self._set_status(
-            f"Opening {entry.key}…" if cached
-            else f"Fetching {entry.key} from arXiv:{entry.eprint}…"
-        )
-        if not pdf.open_pdf(entry.key, eprint=entry.eprint):
-            self._set_status(f"[red]Failed to fetch PDF for {entry.key}[/red]")
+        self._library.remove_entry(entry.key)
+        self._reload_library()
+        ads_view.update_in_db(self._library)
+        self._update_ads_footer(in_library=False)
+        self._set_status(f"[green]Removed {entry.key}[/green]")
 
-    def action_help(self):
+    def action_open_pdf(self) -> None:
+        from .. import pdf, ads_client as _ac
+        ads_view = self._active_ads_view()
+        if ads_view is not None:
+            article = ads_view._selected_article
+            if article is None:
+                self._set_status("[yellow]Select an article first.[/yellow]")
+                return
+            eprint = _ac.arxiv_id_from_article(article)
+            if not eprint:
+                self._set_status(f"[yellow]No arXiv ID for {article.bibcode}[/yellow]")
+                return
+            key = article.bibcode
+        else:
+            lib_view = self.query_one(LibraryView)
+            entry = lib_view._highlighted_entry
+            if entry is None:
+                self._set_status("[yellow]Select a paper first.[/yellow]")
+                return
+            if not entry.eprint:
+                self._set_status(f"[yellow]No arXiv ID for {entry.key}[/yellow]")
+                return
+            eprint = entry.eprint
+            key = entry.key
+        cached = pdf.is_cached(key)
+        self._set_status(
+            f"Opening {key}…" if cached else f"Fetching {key} from arXiv:{eprint}…"
+        )
+        if not pdf.open_pdf(key, eprint=eprint):
+            self._set_status(f"[red]Failed to fetch PDF for {key}[/red]")
+
+    def action_uat_browser(self) -> None:
+        if self._uat is None:
+            self._set_status("[yellow]UAT not cached — run: litbot uat update[/yellow]")
+            return
+        from .uat_browser import UATBrowserScreen
+        self.push_screen(UATBrowserScreen(self._uat))
+
+    def action_help(self) -> None:
         from .help_screen import HelpScreen
         self.push_screen(HelpScreen())
 
-    def action_focus_left(self):
-        tree_id = "#uat-tree" if self._left_mode == "uat" else "#keyword-tree"
-        self.query_one(tree_id, Tree).focus()
+    def _update_ads_footer(self, in_library: bool) -> None:
+        self.bind("a", "add_paper", description="Add", show=not in_library)
+        self.bind("d", "remove_paper", description="Remove", show=in_library)
 
-    def _set_status(self, msg: str):
+    def _set_status(self, msg: str) -> None:
         self.query_one("#status-bar", Static).update(msg)
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
-def _top_ancestor(uat: UAT, uid: str) -> str:
-    """Walk up the UAT hierarchy and return the top-level concept's label."""
-    concept = uat.by_uid(uid)
-    while concept and concept.broader:
-        parent = uat.by_uid(concept.broader[0])
-        if parent is None:
-            break
-        concept = parent
-    return concept.label if concept else ""
-
-
 def _quota_str() -> str:
-    """Return a short ADS quota string for the status bar, or empty string."""
     from .. import ads_client
     quota = ads_client.get_quota()
     if not quota or not quota.get("limit"):

@@ -8,7 +8,7 @@ from bibtexparser.customization import convert_to_unicode
 
 import ads as _ads
 
-from .config import get_config
+from .state import get_token
 
 
 ADS_SEARCH_URL = "https://api.adsabs.harvard.edu/v1/search/query"
@@ -25,25 +25,23 @@ SEARCH_FIELDS = [
     "arxiv_class",
 ]
 
-_quota: dict | None = None  # {"limit": int, "remaining": int, "reset": int}
+_quota: dict | None = None
 
 
 def get_quota() -> dict | None:
-    """Return cached ADS rate-limit info."""
     return _quota
 
 
 def refresh_quota() -> dict | None:
-    """Make a minimal ADS call via httpx to update the rate-limit cache."""
     global _quota
     try:
-        config = get_config()
-        if not config.ads_token:
+        token = get_token()
+        if not token:
             return None
         resp = httpx.get(
             ADS_SEARCH_URL,
             params={"q": "*:*", "rows": "1", "fl": "bibcode"},
-            headers={"Authorization": f"Bearer {config.ads_token}"},
+            headers={"Authorization": f"Bearer {token}"},
             timeout=5,
         )
         h = resp.headers
@@ -58,21 +56,20 @@ def refresh_quota() -> dict | None:
 
 
 def _set_token():
-    config = get_config()
-    if not config.ads_token:
+    token = get_token()
+    if not token:
         raise RuntimeError(
-            "No ADS API token found.\n"
-            "Set ADS_API_TOKEN env var or add ads_token to ~/.config/litbot/config.toml.\n"
-            "Get a token at https://ui.adsabs.harvard.edu/user/settings/token"
+            "No ADS API token.\n"
+            "Run: litbot token\n"
+            "Get one at: https://ui.adsabs.harvard.edu/user/settings/token"
         )
-    _ads.config.token = config.ads_token
+    _ads.config.token = token
 
 
 def search(query: str, limit: int = 20) -> list[_ads.search.Article]:
     _set_token()
     q = _ads.SearchQuery(q=query, fl=SEARCH_FIELDS, rows=limit, sort="date desc")
     results = list(q)
-    # Try to pick up quota from ads package internals; fall through on failure
     global _quota
     try:
         rl = q._rate_limits
@@ -84,7 +81,6 @@ def search(query: str, limit: int = 20) -> list[_ads.search.Article]:
 
 
 def fetch_bibtex(bibcode: str) -> dict | None:
-    """Fetch a paper from ADS and return parsed BibTeX data dict, or None."""
     _set_token()
     exporter = _ads.ExportQuery(bibcodes=[bibcode], format="bibtex")
     raw = exporter.execute()

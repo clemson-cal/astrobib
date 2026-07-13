@@ -2,13 +2,17 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import bibtexparser
 import click
+from bibtexparser.bparser import BibTexParser
+from bibtexparser.customization import convert_to_unicode
 from rich.console import Console
 from rich.table import Table
 from rich.text import Text
 
-from .config import get_config, save_database, DEFAULT_DB_DIR, UAT_CACHE
-from .library import Library, MergedLibrary
+from .state import get_token, set_token, get_library_path, UAT_CACHE
+from .library import Library
+from .keys import generate_key
 from . import ads_client
 from .export import export_refs
 
@@ -24,177 +28,114 @@ def main(ctx: click.Context):
         LitbotApp().run()
 
 
-# ── db ────────────────────────────────────────────────────────────────────────
+# ── token ─────────────────────────────────────────────────────────────────────
 
-@main.group("db")
-def db_group():
-    """Manage the bib database."""
+@main.command("token")
+@click.argument("token", required=False)
+def token_cmd(token: str | None):
+    """Set or show the ADS API token.
 
-
-@db_group.command("clone")
-@click.argument("url")
-@click.option("--name", "-n", default="", help="Name for this database (default: repo name).")
-@click.option("--dest", "-d", type=click.Path(path_type=Path),
-              help="Where to clone. Defaults to ~/.local/share/litbot/databases/<name>.")
-def db_clone(url: str, name: str, dest: Path | None):
-    """Clone a remote bib database and register it."""
-    from . import db as dbmod
-
-    repo_name = url.rstrip("/").rsplit("/", 1)[-1].removesuffix(".git")
-    db_name = name or repo_name
-    target = dest or DEFAULT_DB_DIR / db_name
-    if target.exists():
-        console.print(f"[red]{target} already exists. Use --dest or remove it first.[/red]")
-        raise SystemExit(1)
-
-    console.print(f"Cloning {url} → {target}…")
-    try:
-        dbmod.clone(url, target)
-    except dbmod.DatabaseError as e:
-        console.print(f"[red]Clone failed: {e}[/red]")
-        raise SystemExit(1)
-
-    save_database(db_name, target)
-    console.print(f"[green]Cloned and registered '{db_name}'[/green]")
-
-
-@db_group.command("init")
-@click.argument("path", default="", required=False)
-@click.option("--name", "-n", default="", help="Name for this database (default: directory name).")
-def db_init(path: str, name: str):
-    """Create a new empty bib database and register it.
-
-    PATH defaults to ~/.local/share/litbot/databases/<name>.
-    If PATH already exists and contains a bib/ directory, it is registered as-is.
+    With no argument, shows current token (masked) or prompts to enter one.
     """
-    from . import db as dbmod
-
-    if not path and not name:
-        console.print("[red]Provide a path or --name.[/red]")
-        raise SystemExit(1)
-
-    target = Path(path).expanduser().resolve() if path else DEFAULT_DB_DIR / name
-    db_name = name or target.name
-
-    if target.exists() and (target / "bib").is_dir():
-        save_database(db_name, target)
-        console.print(f"[green]Registered '{db_name}' → {target}[/green]")
+    if token:
+        set_token(token)
+        console.print("[green]ADS token saved.[/green]")
         return
 
-    if target.exists() and any(target.iterdir()):
-        console.print(f"[red]{target} already exists and is not empty.[/red]")
+    current = get_token()
+    if current:
+        masked = current[:4] + "…" + current[-4:] if len(current) > 8 else "****"
+        console.print(f"ADS token: [dim]{masked}[/dim]")
+        if click.confirm("Replace?", default=False):
+            new_token = click.prompt("New ADS token", hide_input=True)
+            set_token(new_token)
+            console.print("[green]ADS token saved.[/green]")
+    else:
+        console.print("[yellow]No ADS token set.[/yellow]")
+        console.print("Get one at: https://ui.adsabs.harvard.edu/user/settings/token")
+        new_token = click.prompt("ADS token", hide_input=True)
+        set_token(new_token)
+        console.print("[green]ADS token saved.[/green]")
+
+
+# ── add ───────────────────────────────────────────────────────────────────────
+
+@main.command("add")
+@click.argument("bibcode")
+@click.option("--keywords", "-k", default="", metavar="KW[,KW]",
+              help="Extra UAT keyword labels to append.")
+@click.option("--force", "-f", is_flag=True, help="Overwrite existing entry without prompting.")
+def add_cmd(bibcode: str, keywords: str, force: bool):
+    """Add a paper to the library by ADS bibcode."""
+    lib = Library(root=get_library_path())
+
+    data = ads_client.fetch_bibtex(bibcode)
+    if data is None:
+        console.print(f"[red]Could not fetch BibTeX for {bibcode}[/red]")
         raise SystemExit(1)
 
-    console.print(f"Creating new database '{db_name}' at {target}…")
-    dbmod.init_empty(target)
-    save_database(db_name, target)
-    console.print(f"[green]Created and registered '{db_name}'[/green]")
+    key = generate_key(data)
+
+    if lib.has(key) and not force:
+        existing = lib.get(key)
+        if existing.data.get("adsurl") != data.get("adsurl"):
+            console.print(f"\n[yellow]{key}[/yellow] already in library (different version).")
+            console.print(f"  Current: {existing.title[:70]}")
+            console.print(f"  New:     {data.get('title', '')[:70]}")
+            if not click.confirm("  Replace with new version?", default=True):
+                raise SystemExit(0)
+        else:
+            console.print(f"[yellow]{key} already in library. Use --force to overwrite.[/yellow]")
+            raise SystemExit(1)
+
+    if keywords:
+        existing_kw = data.get("keywords", "")
+        data["keywords"] = ", ".join(filter(None, [existing_kw, keywords]))
+
+    entry = lib.save_entry(data)
+    console.print(f"[green]Added[/green] {entry.key}")
+    if entry.keywords:
+        for kw in entry.keywords:
+            console.print(f"  • {kw}")
+    if entry.eprint:
+        console.print(f"  arXiv: {entry.eprint}")
 
 
-@db_group.command("list")
-def db_list():
-    """List all configured databases."""
-    config = _get_config()
-    for name, path in config.databases.items():
-        default_marker = " [green](default)[/green]" if name == config.default_database else ""
-        exists = " [red](missing)[/red]" if not path.exists() else ""
-        console.print(f"  [cyan]{name}[/cyan]{default_marker}  {path}{exists}")
+# ── import ────────────────────────────────────────────────────────────────────
 
+@main.command("import")
+@click.argument("file", type=click.Path(exists=True, path_type=Path))
+def import_cmd(file: Path):
+    """Import papers from a .bib file into the local library."""
+    parser = BibTexParser(common_strings=True)
+    parser.customization = convert_to_unicode
+    with open(file) as f:
+        bib = bibtexparser.load(f, parser=parser)
 
-@db_group.command("pull")
-@click.option("--db", "db_name", default="", help="Database to pull (default: default database).")
-def db_pull(db_name: str):
-    """Pull latest changes from the remote (default database unless --db given)."""
-    from . import db as dbmod
-    config = _get_config()
-    try:
-        db_path = config.db_path(db_name or None)
-    except RuntimeError as e:
-        console.print(f"[red]{e}[/red]")
-        raise SystemExit(1)
-    console.print(f"Pulling '{db_name or config.default_database}' ({db_path})…")
-    try:
-        out = dbmod.pull(db_path)
-        console.print(out or "Already up to date.")
-    except dbmod.DatabaseError as e:
-        console.print(f"[red]{e}[/red]")
-        raise SystemExit(1)
+    if not bib.entries:
+        console.print("[yellow]No entries found in file.[/yellow]")
+        return
 
+    lib = Library(root=get_library_path())
+    added = skipped = 0
 
-@db_group.command("push")
-@click.option("--db", "db_name", default="", help="Database to push (default: default database).")
-def db_push(db_name: str):
-    """Push committed changes to the remote."""
-    from . import db as dbmod
-    config = _get_config()
-    try:
-        db_path = config.db_path(db_name or None)
-    except RuntimeError as e:
-        console.print(f"[red]{e}[/red]")
-        raise SystemExit(1)
-    try:
-        out = dbmod.push(db_path)
-        console.print(f"[green]{out}[/green]")
-    except dbmod.DatabaseError as e:
-        console.print(f"[red]{e}[/red]")
-        raise SystemExit(1)
+    for data in bib.entries:
+        key = generate_key(data)
+        if lib.has(key):
+            existing = lib.get(key)
+            console.print(f"\n[yellow]{key}[/yellow] already in library:")
+            console.print(f"  Have:   {existing.title[:65]}")
+            console.print(f"  Import: {data.get('title', '')[:65]}")
+            if click.confirm("  Replace?", default=False):
+                lib.save_entry(data)
+                added += 1
+            else:
+                skipped += 1
+        else:
+            lib.save_entry(data)
+            added += 1
 
-
-@db_group.command("publish")
-@click.option("--message", "-m", default="Update library", show_default=True)
-@click.option("--db", "db_name", default="", help="Database to publish (default: default database).")
-def db_publish(message: str, db_name: str):
-    """Stage all changes, commit, and push (default database unless --db given)."""
-    from . import db as dbmod
-    config = _get_config()
-    try:
-        db_path = config.db_path(db_name or None)
-    except RuntimeError as e:
-        console.print(f"[red]{e}[/red]")
-        raise SystemExit(1)
-    try:
-        out = dbmod.publish(db_path, message=message)
-        console.print(f"[green]{out}[/green]")
-    except dbmod.DatabaseError as e:
-        console.print(f"[red]{e}[/red]")
-        raise SystemExit(1)
-
-
-@db_group.command("status")
-@click.option("--db", "db_name", default="", help="Database to check (default: all).")
-def db_status(db_name: str):
-    """Show pending changes. Checks all databases unless --db given."""
-    from . import db as dbmod
-    config = _get_config()
-    targets = (
-        {db_name: config.databases[db_name]}
-        if db_name
-        else config.databases
-    )
-    for name, path in targets.items():
-        default_marker = " (default)" if name == config.default_database else ""
-        try:
-            url = dbmod.remote_url(path)
-            console.print(f"[bold]{name}[/bold]{default_marker}  [dim]{url}[/dim]")
-        except Exception:
-            console.print(f"[bold]{name}[/bold]{default_marker}  [dim]{path}[/dim]")
-        pending = dbmod.status(path)
-        console.print(pending if pending else "[dim]  Clean.[/dim]")
-
-
-@db_group.command("log")
-@click.option("--n", "-n", default=10, show_default=True)
-@click.option("--db", "db_name", default="", help="Database (default: default database).")
-def db_log(n: int, db_name: str):
-    """Show recent commits."""
-    from . import db as dbmod
-    config = _get_config()
-    try:
-        db_path = config.db_path(db_name or None)
-    except RuntimeError as e:
-        console.print(f"[red]{e}[/red]")
-        raise SystemExit(1)
-    console.print(dbmod.log(db_path, n=n))
+    console.print(f"\n[green]{added}[/green] imported, [dim]{skipped}[/dim] skipped.")
 
 
 # ── export ────────────────────────────────────────────────────────────────────
@@ -206,7 +147,7 @@ def db_log(n: int, db_name: str):
 @click.option("--list-missing", is_flag=True)
 def export_cmd(tex_files: tuple[Path, ...], output: Path, list_missing: bool):
     """Generate refs.bib by scanning TeX source for cite keys."""
-    library = _load_merged()
+    library = Library(root=get_library_path())
     paths = list(tex_files) or sorted(Path.cwd().glob("*.tex"))
     if not paths:
         console.print("[red]No .tex files found.[/red]")
@@ -237,65 +178,13 @@ def search_cmd(query: str, limit: int, use_ads: bool):
         _search_local(query, limit)
 
 
-# ── add ───────────────────────────────────────────────────────────────────────
-
-@main.command("add")
-@click.argument("bibcode")
-@click.option("--keywords", "-k", default="", metavar="KW[,KW]",
-              help="Extra UAT keyword labels to append.")
-@click.option("--db", "db_name", default="", help="Database to write to (default: default database).")
-@click.option("--force", "-f", is_flag=True, help="Overwrite existing entry.")
-def add_cmd(bibcode: str, keywords: str, db_name: str, force: bool):
-    """Add a paper to the library by ADS bibcode."""
-    config = _get_config()
-    try:
-        db_path = config.db_path(db_name or None)
-    except RuntimeError as e:
-        console.print(f"[red]{e}[/red]")
-        raise SystemExit(1)
-
-    library = Library(root=db_path)
-    merged = _load_merged()
-    data = ads_client.fetch_bibtex(bibcode)
-    if data is None:
-        console.print(f"[red]Could not fetch BibTeX for {bibcode}[/red]")
-        raise SystemExit(1)
-
-    key = data["ID"]
-    if merged.has(key) and not force:
-        existing = merged.get(key)
-        console.print(f"[yellow]{key} already in library ({existing.path}). Use --force to overwrite.[/yellow]")
-        raise SystemExit(1)
-
-    if keywords:
-        existing_kw = data.get("keywords", "")
-        data["keywords"] = ", ".join(filter(None, [existing_kw, keywords]))
-
-    entry = library.save_entry(data)
-    target_name = db_name or config.default_database
-
-    from . import db as dbmod
-    try:
-        dbmod.commit_entry(db_path, entry.key)
-    except Exception:
-        pass
-
-    console.print(f"[green]Added[/green] {entry.key} → '{target_name}'")
-    if entry.keywords:
-        for kw in entry.keywords:
-            console.print(f"  • {kw}")
-    if entry.eprint:
-        console.print(f"  arXiv: {entry.eprint}")
-    console.print(f"[dim]Run 'litbot db push' to share with your group.[/dim]")
-
-
 # ── show ──────────────────────────────────────────────────────────────────────
 
 @main.command("show")
 @click.argument("key")
 def show_cmd(key: str):
     """Print the BibTeX entry for a cite key."""
-    library = _load_merged()
+    library = Library(root=get_library_path())
     entry = library.get(key)
     if entry is None:
         console.print(f"[red]{key} not found.[/red]")
@@ -310,7 +199,7 @@ def show_cmd(key: str):
 def open_cmd(key: str):
     """Open the PDF for a cite key (fetching from arXiv if needed)."""
     from . import pdf
-    library = _load_merged()
+    library = Library(root=get_library_path())
     entry = library.get(key)
     if entry is None:
         console.print(f"[red]{key} not found.[/red]")
@@ -331,9 +220,8 @@ def open_cmd(key: str):
 @click.option("--keyword", "-k", default="", help="Filter by UAT keyword label.")
 def list_cmd(keyword: str):
     """List papers in the library."""
-    library = _load_merged()
+    library = Library(root=get_library_path())
     if keyword:
-        config = get_config()
         from .uat import get_uat
         uat = get_uat(UAT_CACHE, auto_fetch=False)
         desc = uat.descendant_labels(keyword) if uat else {keyword}
@@ -350,9 +238,7 @@ def list_cmd(keyword: str):
 @main.command("quota")
 def quota_cmd():
     """Show ADS API rate-limit usage."""
-    from . import ads_client
     import datetime
-
     console.print("Checking ADS quota…")
     quota = ads_client.refresh_quota()
     if quota is None:
@@ -363,16 +249,14 @@ def quota_cmd():
     limit = quota["limit"]
     used = limit - remaining
     reset_ts = quota["reset"]
-    if reset_ts:
-        reset_dt = datetime.datetime.fromtimestamp(reset_ts)
-        reset_str = reset_dt.strftime("%Y-%m-%d %H:%M")
-    else:
-        reset_str = "unknown"
+    reset_str = (
+        __import__("datetime").datetime.fromtimestamp(reset_ts).strftime("%Y-%m-%d %H:%M")
+        if reset_ts else "unknown"
+    )
 
     bar_width = 30
     filled = int(bar_width * remaining / limit) if limit else 0
     bar = "█" * filled + "░" * (bar_width - filled)
-
     color = "green" if remaining > limit * 0.2 else "yellow" if remaining > 0 else "red"
     console.print(f"  [{color}]{bar}[/{color}]  {remaining}/{limit} remaining")
     console.print(f"  {used} calls used today · resets {reset_str}")
@@ -383,7 +267,7 @@ def quota_cmd():
 @main.command("keywords")
 def keywords_cmd():
     """List all unique keywords across the library."""
-    library = _load_merged()
+    library = Library(root=get_library_path())
     for kw in library.all_keywords():
         count = len(library.by_keyword(kw))
         console.print(f"  [cyan]{kw}[/cyan] [dim]({count})[/dim]")
@@ -470,22 +354,8 @@ def uat_show(label: str):
 
 # ── helpers ───────────────────────────────────────────────────────────────────
 
-def _get_config():
-    try:
-        return get_config()
-    except RuntimeError as e:
-        console.print(f"[red]{e}[/red]")
-        raise SystemExit(1)
-
-
-def _load_merged() -> MergedLibrary:
-    config = _get_config()
-    libs = [Library(root=p) for p in config.databases.values() if p.exists()]
-    return MergedLibrary(libs)
-
-
 def _search_local(query: str, limit: int):
-    library = _load_merged()
+    library = Library(root=get_library_path())
     q = query.lower()
     results = [
         e for e in library.entries()
@@ -505,8 +375,8 @@ def _search_ads(query: str, limit: int):
     table = Table("Bibcode", "Year", "First Author", "Title", box=None,
                   show_header=True, header_style="bold")
     for a in articles:
-        first_author = (a.author[0].split(",")[0] if a.author else "")
-        title = (a.title[0] if a.title else "")
+        first_author = a.author[0].split(",")[0] if a.author else ""
+        title = a.title[0] if a.title else ""
         table.add_row(
             Text(a.bibcode, style="cyan"),
             str(a.year),

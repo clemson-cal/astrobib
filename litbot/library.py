@@ -92,7 +92,7 @@ class Library:
     def _load(self):
         bib_dir = self.root / "bib"
         bib_dir.mkdir(exist_ok=True)
-        for bib_file in bib_dir.glob("*.bib"):
+        for bib_file in sorted(bib_dir.glob("*.bib")):
             try:
                 entry = _parse_bib_file(bib_file)
                 if entry:
@@ -109,61 +109,14 @@ class Library:
     def has(self, key: str) -> bool:
         return key in self._entries
 
-    def by_keyword(self, label: str, descendant_labels: set[str] | None = None) -> list[Entry]:
-        """Return entries whose keywords include label or any of its UAT descendants."""
-        match_labels: set[str] = descendant_labels or {label}
-        match_lower = {l.lower() for l in match_labels}
-        return [
-            e for e in self._entries.values()
-            if any(k.lower() in match_lower for k in e.keywords)
-        ]
+    def has_bibcode(self, bibcode: str) -> bool:
+        return any(bibcode in e.data.get("adsurl", "") for e in self._entries.values())
 
-    def save_entry(self, data: dict) -> Entry:
-        key = data["ID"]
-        path = self.root / "bib" / f"{key}.bib"
-        path.write_text(format_bib_entry(data))
-        entry = Entry(data=data, path=path)
-        self._entries[key] = entry
-        return entry
-
-    def git_root(self) -> Path:
-        return self.root
-
-    def all_keywords(self) -> list[str]:
-        """Collect all unique keyword strings from the library entries."""
-        seen: set[str] = set()
-        result: list[str] = []
-        for entry in self._entries.values():
-            for kw in entry.keywords:
-                if kw not in seen:
-                    seen.add(kw)
-                    result.append(kw)
-        return sorted(result)
-
-
-class MergedLibrary:
-    """Read-only union view across multiple Library instances.
-
-    For reads (browse, search, export) all databases are merged.
-    Cite key conflicts are resolved first-seen-wins; in practice the
-    same bibcode always produces the same key and identical content.
-    """
-
-    def __init__(self, libraries: list[Library]):
-        self._libs = libraries
-        self._entries: dict[str, Entry] = {}
-        for lib in libraries:
-            for entry in lib.entries():
-                self._entries.setdefault(entry.key, entry)
-
-    def entries(self) -> list[Entry]:
-        return list(self._entries.values())
-
-    def get(self, key: str) -> Entry | None:
-        return self._entries.get(key)
-
-    def has(self, key: str) -> bool:
-        return key in self._entries
+    def get_by_bibcode(self, bibcode: str) -> Entry | None:
+        return next(
+            (e for e in self._entries.values() if bibcode in e.data.get("adsurl", "")),
+            None,
+        )
 
     def by_keyword(self, label: str, descendant_labels: set[str] | None = None) -> list[Entry]:
         match_labels: set[str] = descendant_labels or {label}
@@ -172,6 +125,23 @@ class MergedLibrary:
             e for e in self._entries.values()
             if any(k.lower() in match_lower for k in e.keywords)
         ]
+
+    def save_entry(self, data: dict) -> Entry:
+        from .keys import generate_key
+        data = dict(data)
+        key = generate_key(data)
+        data["ID"] = key
+        path = self.root / "bib" / f"{key}.bib"
+        path.write_text(format_bib_entry(data))
+        entry = Entry(data=data, path=path)
+        self._entries[key] = entry
+        return entry
+
+    def remove_entry(self, key: str) -> None:
+        path = self.root / "bib" / f"{key}.bib"
+        if path.exists():
+            path.unlink()
+        self._entries.pop(key, None)
 
     def all_keywords(self) -> list[str]:
         seen: set[str] = set()
