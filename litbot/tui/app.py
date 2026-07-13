@@ -444,6 +444,7 @@ class LitbotApp(App):
         Binding("q", "quit", "Quit"),
         Binding("a", "add_paper", "Add"),
         Binding("d", "remove_paper", "Remove"),
+        Binding("b", "open_ads", "ADS page"),
         Binding("o", "open_pdf", "Open PDF"),
         Binding("/", "filter", "Filter"),
         Binding("S", "ads_search", "ADS search"),
@@ -764,6 +765,19 @@ class LitbotApp(App):
         self.refresh_bindings()
         self._set_status(f"[green]Removed {entry.key}[/green]")
 
+    def action_open_ads(self) -> None:
+        import webbrowser
+        ads_view = self._active_ads_view()
+        if ads_view is not None:
+            article = ads_view._selected_article
+            if article:
+                webbrowser.open(f"https://ui.adsabs.harvard.edu/abs/{article.bibcode}")
+        elif self._active_pane_id() == "pane-library":
+            entry = self.query_one(LibraryView)._highlighted_entry
+            if entry:
+                url = entry.adsurl or f"https://ui.adsabs.harvard.edu/search/q={entry.key}"
+                webbrowser.open(url)
+
     def action_open_pdf(self) -> None:
         from .. import pdf, ads_client as _ac
         ads_view = self._active_ads_view()
@@ -808,6 +822,11 @@ class LitbotApp(App):
 
     def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
         pane_id = self._active_pane_id()
+        if action == "open_ads":
+            if pane_id == "pane-library":
+                return self.query_one(LibraryView)._highlighted_entry is not None
+            ads_view = self._active_ads_view()
+            return ads_view is not None and ads_view._selected_article is not None
         if action == "add_paper":
             if pane_id == "pane-library":
                 lib_view = self.query_one(LibraryView)
