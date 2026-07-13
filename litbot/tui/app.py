@@ -851,6 +851,10 @@ class LitbotApp(App):
             self.query_one(LibraryView).refresh_pdf_status()
             self.refresh_bindings()
 
+    def action_open_url(self, url: str) -> None:
+        import webbrowser
+        webbrowser.open(url)
+
     def action_uat_browser(self) -> None:
         if self._uat is None:
             self._set_status("[yellow]UAT not cached — run: litbot uat update[/yellow]")
@@ -904,13 +908,13 @@ class LitbotApp(App):
 def _link_line(adsurl: str, eprint: str, doi: str) -> str:
     parts = []
     if adsurl:
-        parts.append(f"[link={adsurl}][cyan]ADS[/cyan][/link]")
+        parts.append(f'[@click="open_url(\'{adsurl}\')"][cyan]ADS[/cyan][/@click]')
     if eprint:
-        parts.append(
-            f"[link=https://arxiv.org/abs/{eprint}][cyan]arXiv:{eprint}[/cyan][/link]"
-        )
+        url = f"https://arxiv.org/abs/{eprint}"
+        parts.append(f'[@click="open_url(\'{url}\')"][cyan]arXiv:{eprint}[/cyan][/@click]')
     if doi:
-        parts.append(f"[link=https://doi.org/{doi}][cyan]DOI[/cyan][/link]")
+        url = f"https://doi.org/{doi}"
+        parts.append(f'[@click="open_url(\'{url}\')"][cyan]DOI[/cyan][/@click]')
     return "  ".join(parts)
 
 
