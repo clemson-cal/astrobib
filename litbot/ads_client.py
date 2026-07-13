@@ -22,6 +22,26 @@ SEARCH_FIELDS = [
     "arxiv_class",
 ]
 
+_quota: dict | None = None  # {"limit": int, "remaining": int, "reset": int}
+
+
+def get_quota() -> dict | None:
+    """Return cached ADS rate-limit info from the most recent API call."""
+    return _quota
+
+
+def _capture_quota(response) -> None:
+    global _quota
+    try:
+        h = response.headers
+        _quota = {
+            "limit": int(h.get("X-RateLimit-Limit", 0)),
+            "remaining": int(h.get("X-RateLimit-Remaining", 0)),
+            "reset": int(h.get("X-RateLimit-Reset", 0)),
+        }
+    except Exception:
+        pass
+
 
 def _set_token():
     config = get_config()
@@ -36,14 +56,13 @@ def _set_token():
 
 def search(query: str, limit: int = 20) -> list[_ads.search.Article]:
     _set_token()
-    return list(
-        _ads.SearchQuery(
-            q=query,
-            fl=SEARCH_FIELDS,
-            rows=limit,
-            sort="date desc",
-        )
-    )
+    q = _ads.SearchQuery(q=query, fl=SEARCH_FIELDS, rows=limit, sort="date desc")
+    results = list(q)
+    try:
+        _capture_quota(q.response)
+    except Exception:
+        pass
+    return results
 
 
 def fetch_bibtex(bibcode: str) -> dict | None:
@@ -51,6 +70,10 @@ def fetch_bibtex(bibcode: str) -> dict | None:
     _set_token()
     exporter = _ads.ExportQuery(bibcodes=[bibcode], format="bibtex")
     raw = exporter.execute()
+    try:
+        _capture_quota(exporter.response)
+    except Exception:
+        pass
     if not raw:
         return None
     return _parse_bibtex_string(raw)
@@ -62,10 +85,13 @@ def fetch_bibtex_bulk(bibcodes: list[str]) -> list[dict]:
         return []
     exporter = _ads.ExportQuery(bibcodes=bibcodes, format="bibtex")
     raw = exporter.execute()
+    try:
+        _capture_quota(exporter.response)
+    except Exception:
+        pass
     if not raw:
         return []
-    bib = _parse_bibtex_string_multi(raw)
-    return bib
+    return _parse_bibtex_string_multi(raw)
 
 
 def arxiv_id_from_article(article: _ads.search.Article) -> str | None:

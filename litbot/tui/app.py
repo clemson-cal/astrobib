@@ -457,9 +457,10 @@ class LitbotApp(App):
             self._ads_results = {a.bibcode: a for a in articles}
             self._view_mode = "ads"
             self._load_ads_articles(articles)
+            quota_str = _quota_str()
             self._set_status(
                 f"[yellow]{len(articles)} ADS result(s) for '{query}'[/yellow]"
-                f"  [dim]· a: add to library · Escape: back to library[/dim]"
+                f"  [dim]· a: add · Escape: back{quota_str}[/dim]"
             )
         self.push_screen(AdsSearchModal(), handle)
 
@@ -529,9 +530,10 @@ class LitbotApp(App):
                 pass
             libs = [Library(root=p) for p in config.databases.values() if p.exists()]
             self._library = MergedLibrary(libs)
+            quota_str = _quota_str()
             self._set_status(
                 f"[green]Added {entry.key} → '{config.default_database}'[/green]"
-                f"  [dim]· Escape: back to library[/dim]"
+                f"  [dim]· Escape: back to library{quota_str}[/dim]"
             )
         except Exception as exc:
             self._set_status(f"[red]{exc}[/red]")
@@ -576,3 +578,15 @@ def _top_ancestor(uat: UAT, uid: str) -> str:
             break
         concept = parent
     return concept.label if concept else ""
+
+
+def _quota_str() -> str:
+    """Return a short ADS quota string for the status bar, or empty string."""
+    from .. import ads_client
+    quota = ads_client.get_quota()
+    if not quota or not quota.get("limit"):
+        return ""
+    remaining = quota["remaining"]
+    limit = quota["limit"]
+    color = "green" if remaining > limit * 0.2 else "yellow" if remaining > 0 else "red"
+    return f" · ADS [{color}]{remaining}/{limit}[/{color}]"

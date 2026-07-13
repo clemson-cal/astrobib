@@ -345,6 +345,49 @@ def list_cmd(keyword: str):
     console.print(f"\n{len(entries)} paper(s)")
 
 
+# ── quota ─────────────────────────────────────────────────────────────────────
+
+@main.command("quota")
+def quota_cmd():
+    """Show ADS API rate-limit usage (requires one prior ADS call this session)."""
+    from . import ads_client
+    import datetime
+
+    # Make a minimal search to get fresh headers
+    console.print("Checking ADS quota…")
+    try:
+        ads_client.search("*", limit=1)
+    except RuntimeError as e:
+        console.print(f"[red]{e}[/red]")
+        raise SystemExit(1)
+    except Exception as e:
+        console.print(f"[red]{e}[/red]")
+        raise SystemExit(1)
+
+    quota = ads_client.get_quota()
+    if quota is None:
+        console.print("[yellow]Rate-limit headers not available from ADS.[/yellow]")
+        return
+
+    remaining = quota["remaining"]
+    limit = quota["limit"]
+    used = limit - remaining
+    reset_ts = quota["reset"]
+    if reset_ts:
+        reset_dt = datetime.datetime.fromtimestamp(reset_ts)
+        reset_str = reset_dt.strftime("%Y-%m-%d %H:%M")
+    else:
+        reset_str = "unknown"
+
+    bar_width = 30
+    filled = int(bar_width * remaining / limit) if limit else 0
+    bar = "█" * filled + "░" * (bar_width - filled)
+
+    color = "green" if remaining > limit * 0.2 else "yellow" if remaining > 0 else "red"
+    console.print(f"  [{color}]{bar}[/{color}]  {remaining}/{limit} remaining")
+    console.print(f"  {used} calls used today · resets {reset_str}")
+
+
 # ── keywords ──────────────────────────────────────────────────────────────────
 
 @main.command("keywords")
