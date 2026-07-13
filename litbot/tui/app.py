@@ -39,50 +39,38 @@ class DetailPanel(Static):
     }
     """
 
-    def __init__(self, *args, **kwargs) -> None:
-        super().__init__(*args, **kwargs)
-        self._link_urls: list[str] = []
-
-    def action_open_link(self, idx: int) -> None:
-        import webbrowser
-        if 0 <= idx < len(self._link_urls):
-            webbrowser.open(self._link_urls[idx])
-
     def show_entry(self, entry: Entry | None) -> None:
-        self._link_urls = []
         if entry is None:
             self.update("")
             return
-        lines = [
-            f"[bold cyan]{entry.key}[/bold cyan]\n",
-            f"[bold]{entry.title}[/bold]\n",
-            f"[dim]{entry.author}[/dim]\n",
-            f"[green]{entry.year}[/green]",
-        ]
-        link_line = _link_line(
-            self._link_urls,
-            adsurl=entry.adsurl,
-            eprint=entry.eprint,
-            doi=entry.doi,
-        )
-        if link_line:
-            lines.append(link_line)
+        from rich.text import Text
+        content = Text()
+        content.append(entry.key, style="bold cyan")
+        content.append("\n\n")
+        content.append(entry.title, style="bold")
+        content.append("\n\n")
+        content.append(entry.author, style="dim")
+        content.append("\n\n")
+        content.append(entry.year, style="green")
+        link_line = _link_line(adsurl=entry.adsurl, eprint=entry.eprint, doi=entry.doi)
+        if len(link_line):
+            content.append("\n")
+            content.append_text(link_line)
         if entry.keywords:
-            lines.append("\n[yellow]Keywords:[/yellow]")
+            content.append("\n\n")
+            content.append("Keywords:", style="yellow")
             for kw in entry.keywords:
-                lines.append(f"  • {kw}")
+                content.append(f"\n  • {kw}")
         abstract = entry.data.get("abstract", "")
         if abstract:
-            lines.append(
-                f"\n[dim]{abstract[:600]}{'…' if len(abstract) > 600 else ''}[/dim]"
-            )
-        self.update("\n".join(lines))
+            content.append(f"\n\n{abstract[:600]}{'…' if len(abstract) > 600 else ''}", style="dim")
+        self.update(content)
 
     def show_ads_article(self, article, entry: Entry | None = None) -> None:
-        self._link_urls = []
         if article is None:
             self.update("")
             return
+        from rich.text import Text
         title = article.title[0] if article.title else ""
         authors = article.author or []
         author_str = ", ".join(a.split(",")[0] for a in authors[:3])
@@ -91,31 +79,32 @@ class DetailPanel(Static):
         abstract = article.abstract or ""
         eprint = _arxiv_id_from_identifiers(article.identifier or [])
         doi = (article.doi or [""])[0]
-        lines = [
-            f"[bold cyan]{article.bibcode}[/bold cyan]\n",
-            f"[bold]{title}[/bold]\n",
-            f"[dim]{author_str}[/dim]\n",
-            f"[green]{article.year}[/green]",
-        ]
+        content = Text()
+        content.append(article.bibcode, style="bold cyan")
+        content.append("\n\n")
+        content.append(title, style="bold")
+        content.append("\n\n")
+        content.append(author_str, style="dim")
+        content.append("\n\n")
+        content.append(str(article.year or ""), style="green")
         link_line = _link_line(
-            self._link_urls,
             adsurl=f"https://ui.adsabs.harvard.edu/abs/{article.bibcode}",
             eprint=entry.eprint if entry else eprint,
             doi=entry.doi if entry else doi,
         )
-        if link_line:
-            lines.append(link_line)
+        if len(link_line):
+            content.append("\n")
+            content.append_text(link_line)
         if entry:
             if entry.keywords:
-                lines.append("\n[yellow]Keywords:[/yellow]")
+                content.append("\n\n")
+                content.append("Keywords:", style="yellow")
                 for kw in entry.keywords:
-                    lines.append(f"  • {kw}")
-            lines.append("\n[dim]✓ in library[/dim]")
+                    content.append(f"\n  • {kw}")
+            content.append("\n\n✓ in library", style="dim")
         if abstract:
-            lines.append(
-                f"\n[dim]{abstract[:600]}{'…' if len(abstract) > 600 else ''}[/dim]"
-            )
-        self.update("\n".join(lines))
+            content.append(f"\n\n{abstract[:600]}{'…' if len(abstract) > 600 else ''}", style="dim")
+        self.update(content)
 
     def show_concept(self, concept: Concept | None, uat: UAT) -> None:
         if concept is None:
@@ -914,21 +903,22 @@ class LitbotApp(App):
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
-def _link_line(link_urls: list[str], adsurl: str, eprint: str, doi: str) -> str:
+def _link_line(adsurl: str, eprint: str, doi: str) -> "Text":
+    from rich.text import Text
+    from rich.style import Style
+    result = Text()
     parts = []
     if adsurl:
-        idx = len(link_urls)
-        link_urls.append(adsurl)
-        parts.append(f'[@click="open_link({idx})"][cyan]ADS[/cyan][/@click]')
+        parts.append(Text("ADS", style=Style(color="cyan", link=adsurl)))
     if eprint:
-        idx = len(link_urls)
-        link_urls.append(f"https://arxiv.org/abs/{eprint}")
-        parts.append(f'[@click="open_link({idx})"][cyan]arXiv:{eprint}[/cyan][/@click]')
+        parts.append(Text(f"arXiv:{eprint}", style=Style(color="cyan", link=f"https://arxiv.org/abs/{eprint}")))
     if doi:
-        idx = len(link_urls)
-        link_urls.append(f"https://doi.org/{doi}")
-        parts.append(f'[@click="open_link({idx})"][cyan]DOI[/cyan][/@click]')
-    return "  ".join(parts)
+        parts.append(Text("DOI", style=Style(color="cyan", link=f"https://doi.org/{doi}")))
+    for i, part in enumerate(parts):
+        if i:
+            result.append("  ")
+        result.append_text(part)
+    return result
 
 
 def _arxiv_id_from_identifiers(identifiers: list[str]) -> str:
