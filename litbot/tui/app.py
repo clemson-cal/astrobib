@@ -572,6 +572,7 @@ class LitbotApp(App):
     def _on_entry_highlighted(self, event: LibraryView.EntryHighlighted) -> None:
         if self._active_pane_id() == "pane-library":
             self.query_one(DetailPanel).show_entry(event.entry)
+            self.refresh_bindings()
 
     @on(AdsView.ArticleHighlighted)
     def _on_article_highlighted(self, event: AdsView.ArticleHighlighted) -> None:
@@ -739,6 +740,13 @@ class LitbotApp(App):
     def action_remove_paper(self) -> None:
         ads_view = self._active_ads_view()
         if ads_view is None:
+            if self._active_pane_id() == "pane-library":
+                entry = self.query_one(LibraryView)._highlighted_entry
+                if entry and self._library:
+                    self._library.remove_entry(entry.key)
+                    self._reload_library()
+                    self.refresh_bindings()
+                    self._set_status(f"[green]Removed {entry.key}[/green]")
             return
         article = ads_view._selected_article
         if article is None:
@@ -799,7 +807,11 @@ class LitbotApp(App):
         self.push_screen(HelpScreen())
 
     def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
+        pane_id = self._active_pane_id()
         if action == "add_paper":
+            if pane_id == "pane-library":
+                lib_view = self.query_one(LibraryView)
+                return lib_view._highlighted_entry is None
             ads_view = self._active_ads_view()
             if ads_view is not None:
                 article = ads_view._selected_article
@@ -807,6 +819,9 @@ class LitbotApp(App):
                     return self._library.get_by_bibcode(article.bibcode) is None
             return True
         if action == "remove_paper":
+            if pane_id == "pane-library":
+                lib_view = self.query_one(LibraryView)
+                return lib_view._highlighted_entry is not None
             ads_view = self._active_ads_view()
             if ads_view is not None:
                 article = ads_view._selected_article
