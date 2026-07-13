@@ -349,25 +349,15 @@ def list_cmd(keyword: str):
 
 @main.command("quota")
 def quota_cmd():
-    """Show ADS API rate-limit usage (requires one prior ADS call this session)."""
+    """Show ADS API rate-limit usage."""
     from . import ads_client
     import datetime
 
-    # Make a minimal search to get fresh headers
     console.print("Checking ADS quota…")
-    try:
-        ads_client.search("*", limit=1)
-    except RuntimeError as e:
-        console.print(f"[red]{e}[/red]")
-        raise SystemExit(1)
-    except Exception as e:
-        console.print(f"[red]{e}[/red]")
-        raise SystemExit(1)
-
-    quota = ads_client.get_quota()
+    quota = ads_client.refresh_quota()
     if quota is None:
-        console.print("[yellow]Rate-limit headers not available from ADS.[/yellow]")
-        return
+        console.print("[red]Could not reach ADS or no token configured.[/red]")
+        raise SystemExit(1)
 
     remaining = quota["remaining"]
     limit = quota["limit"]

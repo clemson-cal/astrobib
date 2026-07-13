@@ -457,6 +457,9 @@ class LitbotApp(App):
             self._ads_results = {a.bibcode: a for a in articles}
             self._view_mode = "ads"
             self._load_ads_articles(articles)
+            from .. import ads_client as _ac
+            if _ac.get_quota() is None:
+                _ac.refresh_quota()
             quota_str = _quota_str()
             self._set_status(
                 f"[yellow]{len(articles)} ADS result(s) for '{query}'[/yellow]"
@@ -530,6 +533,9 @@ class LitbotApp(App):
                 pass
             libs = [Library(root=p) for p in config.databases.values() if p.exists()]
             self._library = MergedLibrary(libs)
+            from .. import ads_client as _ac
+            if _ac.get_quota() is None:
+                _ac.refresh_quota()
             quota_str = _quota_str()
             self._set_status(
                 f"[green]Added {entry.key} → '{config.default_database}'[/green]"
