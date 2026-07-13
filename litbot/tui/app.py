@@ -49,10 +49,13 @@ class DetailPanel(Static):
             f"[dim]{entry.author}[/dim]\n",
             f"[green]{entry.year}[/green]",
         ]
-        if entry.eprint:
-            lines.append(f"  arXiv:[cyan]{entry.eprint}[/cyan]")
-        if entry.doi:
-            lines.append(f"  DOI: {entry.doi}")
+        link_line = _link_line(
+            adsurl=entry.adsurl,
+            eprint=entry.eprint,
+            doi=entry.doi,
+        )
+        if link_line:
+            lines.append(link_line)
         if entry.keywords:
             lines.append("\n[yellow]Keywords:[/yellow]")
             for kw in entry.keywords:
@@ -74,17 +77,22 @@ class DetailPanel(Static):
         if len(authors) > 3:
             author_str += " et al."
         abstract = article.abstract or ""
+        eprint = _arxiv_id_from_identifiers(article.identifier or [])
+        doi = (article.doi or [""])[0]
         lines = [
             f"[bold cyan]{article.bibcode}[/bold cyan]\n",
             f"[bold]{title}[/bold]\n",
             f"[dim]{author_str}[/dim]\n",
             f"[green]{article.year}[/green]",
         ]
+        link_line = _link_line(
+            adsurl=f"https://ui.adsabs.harvard.edu/abs/{article.bibcode}",
+            eprint=entry.eprint if entry else eprint,
+            doi=entry.doi if entry else doi,
+        )
+        if link_line:
+            lines.append(link_line)
         if entry:
-            if entry.eprint:
-                lines.append(f"  arXiv:[cyan]{entry.eprint}[/cyan]")
-            if entry.doi:
-                lines.append(f"  DOI: {entry.doi}")
             if entry.keywords:
                 lines.append("\n[yellow]Keywords:[/yellow]")
                 for kw in entry.keywords:
@@ -139,6 +147,10 @@ class LibraryView(Static):
     LibraryView Input {
         height: 3;
         dock: top;
+        display: none;
+    }
+    LibraryView Input.active {
+        display: block;
     }
     LibraryView DataTable {
         height: 1fr;
@@ -179,11 +191,15 @@ class LibraryView(Static):
         self._apply_filter(filter_val)
 
     def focus_filter(self) -> None:
-        self.query_one("#lib-filter", Input).focus()
+        inp = self.query_one("#lib-filter", Input)
+        inp.add_class("active")
+        inp.focus()
 
     def clear_filter(self) -> None:
         inp = self.query_one("#lib-filter", Input)
         inp.value = ""
+        inp.remove_class("active")
+        self.query_one("#lib-table", DataTable).focus()
 
     def toggle_selection(self) -> None:
         if self._highlighted_entry is None:
@@ -252,6 +268,9 @@ class LibraryView(Static):
     @on(Input.Changed, "#lib-filter")
     def _on_filter_changed(self, event: Input.Changed) -> None:
         self._apply_filter(event.value)
+        if not event.value:
+            event.input.remove_class("active")
+            self.query_one("#lib-table", DataTable).focus()
 
     @on(DataTable.RowHighlighted, "#lib-table")
     @on(DataTable.RowSelected, "#lib-table")
@@ -456,7 +475,6 @@ class LitbotApp(App):
         Binding("q", "quit", "Quit"),
         Binding("a", "add_paper", "Add"),
         Binding("d", "remove_paper", "Remove"),
-        Binding("b", "open_ads", "ADS page"),
         Binding("o", "open_pdf", "Open PDF"),
         Binding("X", "clear_pdf", "Clear PDF"),
         Binding("/", "filter", "Filter"),
@@ -799,19 +817,6 @@ class LitbotApp(App):
                     self.refresh_bindings()
                     self._set_status(f"[green]Cleared cached PDF for {entry.key}[/green]")
 
-    def action_open_ads(self) -> None:
-        import webbrowser
-        ads_view = self._active_ads_view()
-        if ads_view is not None:
-            article = ads_view._selected_article
-            if article:
-                webbrowser.open(f"https://ui.adsabs.harvard.edu/abs/{article.bibcode}")
-        elif self._active_pane_id() == "pane-library":
-            entry = self.query_one(LibraryView)._highlighted_entry
-            if entry:
-                url = entry.adsurl or f"https://ui.adsabs.harvard.edu/search/q={entry.key}"
-                webbrowser.open(url)
-
     def action_open_pdf(self) -> None:
         from .. import pdf, ads_client as _ac
         ads_view = self._active_ads_view()
@@ -868,11 +873,6 @@ class LitbotApp(App):
             if ads_view and ads_view._selected_article:
                 return _pdf.is_cached(ads_view._selected_article.bibcode)
             return False
-        if action == "open_ads":
-            if pane_id == "pane-library":
-                return self.query_one(LibraryView)._highlighted_entry is not None
-            ads_view = self._active_ads_view()
-            return ads_view is not None and ads_view._selected_article is not None
         if action == "add_paper":
             if pane_id == "pane-library":
                 lib_view = self.query_one(LibraryView)
@@ -900,6 +900,26 @@ class LitbotApp(App):
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
+
+def _link_line(adsurl: str, eprint: str, doi: str) -> str:
+    parts = []
+    if adsurl:
+        parts.append(f"[link={adsurl}][cyan]ADS[/cyan][/link]")
+    if eprint:
+        parts.append(
+            f"[link=https://arxiv.org/abs/{eprint}][cyan]arXiv:{eprint}[/cyan][/link]"
+        )
+    if doi:
+        parts.append(f"[link=https://doi.org/{doi}][cyan]DOI[/cyan][/link]")
+    return "  ".join(parts)
+
+
+def _arxiv_id_from_identifiers(identifiers: list[str]) -> str:
+    for ident in identifiers:
+        if ident.startswith("arXiv:"):
+            return ident[6:]
+    return ""
+
 
 def _quota_str() -> str:
     from .. import ads_client
