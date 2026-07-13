@@ -93,8 +93,8 @@ class UATBrowserScreen(Screen):
         for child in sorted(self._uat.children(concept.uid), key=lambda c: c.label):
             _add_node(node, child)
 
-    @on(Tree.NodeSelected)
-    def on_node_selected(self, event: Tree.NodeSelected) -> None:
+    @on(Tree.NodeHighlighted)
+    def on_node_highlighted(self, event: Tree.NodeHighlighted) -> None:
         concept: Concept | None = event.node.data
         self.query_one(ConceptDetail).show(concept, self._uat)
 
