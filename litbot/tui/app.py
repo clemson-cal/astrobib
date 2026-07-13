@@ -39,7 +39,17 @@ class DetailPanel(Static):
     }
     """
 
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self._link_urls: list[str] = []
+
+    def action_open_link(self, idx: int) -> None:
+        import webbrowser
+        if 0 <= idx < len(self._link_urls):
+            webbrowser.open(self._link_urls[idx])
+
     def show_entry(self, entry: Entry | None) -> None:
+        self._link_urls = []
         if entry is None:
             self.update("")
             return
@@ -50,6 +60,7 @@ class DetailPanel(Static):
             f"[green]{entry.year}[/green]",
         ]
         link_line = _link_line(
+            self._link_urls,
             adsurl=entry.adsurl,
             eprint=entry.eprint,
             doi=entry.doi,
@@ -68,6 +79,7 @@ class DetailPanel(Static):
         self.update("\n".join(lines))
 
     def show_ads_article(self, article, entry: Entry | None = None) -> None:
+        self._link_urls = []
         if article is None:
             self.update("")
             return
@@ -86,6 +98,7 @@ class DetailPanel(Static):
             f"[green]{article.year}[/green]",
         ]
         link_line = _link_line(
+            self._link_urls,
             adsurl=f"https://ui.adsabs.harvard.edu/abs/{article.bibcode}",
             eprint=entry.eprint if entry else eprint,
             doi=entry.doi if entry else doi,
@@ -851,10 +864,6 @@ class LitbotApp(App):
             self.query_one(LibraryView).refresh_pdf_status()
             self.refresh_bindings()
 
-    def action_open_url(self, url: str) -> None:
-        import webbrowser
-        webbrowser.open(url)
-
     def action_uat_browser(self) -> None:
         if self._uat is None:
             self._set_status("[yellow]UAT not cached — run: litbot uat update[/yellow]")
@@ -905,16 +914,20 @@ class LitbotApp(App):
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
-def _link_line(adsurl: str, eprint: str, doi: str) -> str:
+def _link_line(link_urls: list[str], adsurl: str, eprint: str, doi: str) -> str:
     parts = []
     if adsurl:
-        parts.append(f'[@click="open_url(\'{adsurl}\')"][cyan]ADS[/cyan][/@click]')
+        idx = len(link_urls)
+        link_urls.append(adsurl)
+        parts.append(f'[@click="open_link({idx})"][cyan]ADS[/cyan][/@click]')
     if eprint:
-        url = f"https://arxiv.org/abs/{eprint}"
-        parts.append(f'[@click="open_url(\'{url}\')"][cyan]arXiv:{eprint}[/cyan][/@click]')
+        idx = len(link_urls)
+        link_urls.append(f"https://arxiv.org/abs/{eprint}")
+        parts.append(f'[@click="open_link({idx})"][cyan]arXiv:{eprint}[/cyan][/@click]')
     if doi:
-        url = f"https://doi.org/{doi}"
-        parts.append(f'[@click="open_url(\'{url}\')"][cyan]DOI[/cyan][/@click]')
+        idx = len(link_urls)
+        link_urls.append(f"https://doi.org/{doi}")
+        parts.append(f'[@click="open_link({idx})"][cyan]DOI[/cyan][/@click]')
     return "  ".join(parts)
 
 
