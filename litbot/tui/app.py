@@ -16,9 +16,9 @@ from textual.widgets import (
 )
 from textual.widgets.tree import TreeNode
 
-from ..config import get_config
+from ..config import get_config, UAT_CACHE
 from ..library import Entry, Library, MergedLibrary
-from ..uat import UAT, get_uat
+from ..uat import UAT, Concept, get_uat
 
 
 # ── Detail panel ──────────────────────────────────────────────────────────────
@@ -33,7 +33,7 @@ class DetailPanel(Static):
     }
     """
 
-    def show(self, entry: Entry | None):
+    def show_entry(self, entry: Entry | None) -> None:
         if entry is None:
             self.update("")
             return
@@ -48,7 +48,7 @@ class DetailPanel(Static):
         if entry.doi:
             lines.append(f"  DOI: {entry.doi}")
         if entry.keywords:
-            lines.append(f"\n[yellow]Keywords:[/yellow]")
+            lines.append("\n[yellow]Keywords:[/yellow]")
             for kw in entry.keywords:
                 lines.append(f"  • {kw}")
         abstract = entry.data.get("abstract", "")
@@ -58,17 +58,40 @@ class DetailPanel(Static):
             )
         self.update("\n".join(lines))
 
+    def show_concept(self, concept: Concept | None, uat: UAT) -> None:
+        if concept is None:
+            self.update("[dim]Select a concept.[/dim]")
+            return
+        parents = uat.parents(concept.uid)
+        breadcrumb = " › ".join(p.label for p in parents) + (" › " if parents else "") + concept.label
+        lines = [
+            f"[dim]{breadcrumb}[/dim]\n",
+            f"[bold cyan]{concept.label}[/bold cyan]  [dim]UID {concept.uid}[/dim]",
+        ]
+        if concept.alt_labels:
+            lines.append("\n[yellow]Also known as:[/yellow]")
+            for alt in concept.alt_labels:
+                lines.append(f"  {alt}")
+        if concept.definition:
+            lines.append(f"\n[dim]{concept.definition}[/dim]")
+        children = uat.children(concept.uid)
+        if children:
+            lines.append(f"\n[yellow]Narrower ({len(children)}):[/yellow]")
+            for child in children[:20]:
+                lines.append(f"  • {child.label}")
+            if len(children) > 20:
+                lines.append(f"  [dim]… and {len(children) - 20} more[/dim]")
+        self.update("\n".join(lines))
 
-# ── Search modal ──────────────────────────────────────────────────────────────
+
+# ── Modals ────────────────────────────────────────────────────────────────────
 
 class SearchModal(ModalScreen[str]):
     DEFAULT_CSS = """
     SearchModal { align: center middle; }
     SearchModal Vertical {
         width: 60; height: auto;
-        border: round $primary;
-        padding: 1 2;
-        background: $surface;
+        border: round $primary; padding: 1 2; background: $surface;
     }
     """
 
@@ -88,16 +111,12 @@ class SearchModal(ModalScreen[str]):
             self.dismiss("")
 
 
-# ── Add paper modal ───────────────────────────────────────────────────────────
-
 class AddModal(ModalScreen[tuple[str, str] | None]):
     DEFAULT_CSS = """
     AddModal { align: center middle; }
     AddModal Vertical {
         width: 70; height: auto;
-        border: round $primary;
-        padding: 1 2;
-        background: $surface;
+        border: round $primary; padding: 1 2; background: $surface;
     }
     """
 
@@ -129,13 +148,15 @@ class LitbotApp(App):
     CSS = """
     Screen { layout: vertical; }
     #body { layout: horizontal; height: 1fr; }
-    #keyword-tree {
+    #left-panel {
         width: 28;
         min-width: 22;
         border-right: solid $panel-lighten-1;
     }
-    #paper-table { width: 1fr; }
-    #detail { width: 40; min-width: 30; }
+    #keyword-tree { width: 100%; height: 100%; }
+    #uat-tree     { width: 100%; height: 100%; display: none; }
+    #paper-table  { width: 1fr; }
+    #detail       { width: 40; min-width: 30; }
     #status-bar {
         height: 1;
         background: $panel;
@@ -149,9 +170,9 @@ class LitbotApp(App):
         Binding("a", "add_paper", "Add"),
         Binding("o", "open_pdf", "Open PDF"),
         Binding("/", "search", "Search"),
-        Binding("u", "uat_browse", "UAT"),
+        Binding("u", "toggle_uat", "UAT"),
         Binding("escape", "show_all", "All", show=False),
-        Binding("t", "focus_tree", "Topics", show=False),
+        Binding("t", "focus_left", "Left panel", show=False),
     ]
 
     def __init__(self):
@@ -160,11 +181,15 @@ class LitbotApp(App):
         self._uat: UAT | None = None
         self._current_entries: list[Entry] = []
         self._selected_entry: Entry | None = None
+        self._left_mode: str = "library"   # "library" | "uat"
+        self._uat_tree_built: bool = False
 
     def compose(self) -> ComposeResult:
         yield Header()
         with Horizontal(id="body"):
-            yield Tree("Keywords", id="keyword-tree")
+            with Vertical(id="left-panel"):
+                yield Tree("Keywords", id="keyword-tree")
+                yield Tree("UAT", id="uat-tree")
             yield DataTable(id="paper-table", cursor_type="row")
             yield DetailPanel(id="detail")
         yield Static("", id="status-bar")
@@ -179,24 +204,21 @@ class LitbotApp(App):
 
         libs = [Library(root=p) for p in config.databases.values() if p.exists()]
         self._library = MergedLibrary(libs)
-        from ..config import UAT_CACHE
         self._uat = get_uat(UAT_CACHE, auto_fetch=False)
 
         self._setup_table()
         self._build_keyword_tree()
         self._load_entries(self._library.entries())
         n = len(self._library.entries())
-        db_note = f"{len(libs)} database{'s' if len(libs) != 1 else ''}"
-        uat_note = f" · UAT ({len(self._uat)} concepts)" if self._uat else " · run: litbot uat update"
-        self._set_status(f"{n} papers · {db_note}{uat_note}")
+        db_note = f"{len(libs)} db"
+        uat_note = f" · UAT ({len(self._uat)})" if self._uat else " · [dim]litbot uat update[/dim]"
+        self._set_status(f"{n} papers · {db_note}{uat_note}  [dim]u: toggle UAT browser[/dim]")
 
-    # ── Keyword tree ──────────────────────────────────────────────────────────
+    # ── Left panel: keyword tree ───────────────────────────────────────────────
 
     def _build_keyword_tree(self):
         tree = self.query_one("#keyword-tree", Tree)
         tree.root.expand()
-
-        # "All papers" node
         tree.root.add("All papers", data=("all", set()))
 
         if self._library is None:
@@ -211,9 +233,8 @@ class LitbotApp(App):
                 if concept:
                     desc = self._uat.descendant_labels(label)
                     node = tree.root.add(label, data=("uat", desc))
-                    _add_uat_children(node, self._uat, concept.uid, self._uat)
+                    _add_uat_children(node, self._uat, concept.uid)
                 else:
-                    # label not in UAT — treat as plain keyword
                     tree.root.add(label, data=("kw", {label}))
         elif focus:
             for label in focus:
@@ -238,6 +259,45 @@ class LitbotApp(App):
             label_str = next(iter(labels)) if len(labels) == 1 else event.node.label.plain
             self._load_entries(entries)
             self._set_status(f"{len(entries)} paper(s) tagged [{label_str}]")
+        self.query_one("#detail", DetailPanel).show_entry(None)
+
+    # ── Left panel: UAT tree ───────────────────────────────────────────────────
+
+    def _build_uat_tree(self):
+        if self._uat_tree_built or self._uat is None:
+            return
+        tree = self.query_one("#uat-tree", Tree)
+        tree.root.expand()
+        for concept in sorted(self._uat.top_level(), key=lambda c: c.label):
+            tree.root.add(concept.label, data=concept, allow_expand=bool(concept.narrower))
+        self._uat_tree_built = True
+
+    @on(Tree.NodeExpanded, "#uat-tree")
+    def on_uat_node_expanded(self, event: Tree.NodeExpanded):
+        node = event.node
+        concept: Concept | None = node.data
+        if concept is None or node.children:
+            return
+        for child in sorted(self._uat.children(concept.uid), key=lambda c: c.label):
+            node.add(child.label, data=child, allow_expand=bool(child.narrower))
+
+    @on(Tree.NodeSelected, "#uat-tree")
+    def on_uat_node_selected(self, event: Tree.NodeSelected):
+        concept: Concept | None = event.node.data
+        detail = self.query_one("#detail", DetailPanel)
+        if concept is None or self._uat is None:
+            detail.show_entry(None)
+            return
+        detail.show_concept(concept, self._uat)
+        # Filter paper table by this concept and its descendants
+        if self._library is not None:
+            desc = self._uat.descendant_labels(concept.label)
+            entries = self._library.by_keyword("", descendant_labels=desc)
+            self._load_entries(entries)
+            self._set_status(
+                f"{len(entries)} paper(s) tagged [{concept.label}]  "
+                f"[dim]· {len(desc)} UAT concepts in subtree[/dim]"
+            )
 
     # ── Paper table ───────────────────────────────────────────────────────────
 
@@ -252,7 +312,6 @@ class LitbotApp(App):
         for e in self._current_entries:
             title = e.title[:55] + "…" if len(e.title) > 55 else e.title
             table.add_row(e.key, e.year, e.first_author_last, title, key=e.key)
-        self.query_one("#detail", DetailPanel).show(None)
         self._selected_entry = None
 
     @on(DataTable.RowSelected, "#paper-table")
@@ -261,9 +320,26 @@ class LitbotApp(App):
         if self._library and key:
             entry = self._library.get(key)
             self._selected_entry = entry
-            self.query_one("#detail", DetailPanel).show(entry)
+            self.query_one("#detail", DetailPanel).show_entry(entry)
 
     # ── Actions ───────────────────────────────────────────────────────────────
+
+    def action_toggle_uat(self):
+        if self._uat is None:
+            self._set_status("[yellow]UAT not cached — run: litbot uat update[/yellow]")
+            return
+        self._left_mode = "uat" if self._left_mode == "library" else "library"
+        in_uat = self._left_mode == "uat"
+        self.query_one("#keyword-tree", Tree).display = not in_uat
+        self.query_one("#uat-tree", Tree).display = in_uat
+        if in_uat:
+            self._build_uat_tree()
+            self.query_one("#uat-tree", Tree).focus()
+            self._set_status(f"UAT browser  [dim]· {len(self._uat)} concepts · u: back to library[/dim]")
+        else:
+            self.query_one("#keyword-tree", Tree).focus()
+            n = len(self._library.entries()) if self._library else 0
+            self._set_status(f"{n} papers  [dim]· u: UAT browser[/dim]")
 
     def action_search(self):
         async def handle(query: str):
@@ -279,7 +355,6 @@ class LitbotApp(App):
             ]
             self._load_entries(results)
             self._set_status(f'{len(results)} result(s) for "{query}"')
-
         self.push_screen(SearchModal(), handle)
 
     def action_show_all(self):
@@ -296,8 +371,6 @@ class LitbotApp(App):
             self._set_status(f"Fetching {bibcode} from ADS…")
             try:
                 from .. import ads_client
-                from ..config import get_config
-                from ..library import Library
                 data = ads_client.fetch_bibtex(bibcode)
                 if data is None:
                     self._set_status(f"[red]Could not fetch {bibcode}[/red]")
@@ -308,15 +381,12 @@ class LitbotApp(App):
                 config = get_config()
                 target_lib = Library(root=config.default_db_path)
                 entry = target_lib.save_entry(data)
-                # Refresh merged view
                 libs = [Library(root=p) for p in config.databases.values() if p.exists()]
-                from ..library import MergedLibrary
                 self._library = MergedLibrary(libs)
                 self._load_entries(self._library.entries())
                 self._set_status(f"[green]Added {entry.key} → '{config.default_database}'[/green]")
             except Exception as exc:
                 self._set_status(f"[red]{exc}[/red]")
-
         self.push_screen(AddModal(), handle)
 
     def action_open_pdf(self):
@@ -336,18 +406,9 @@ class LitbotApp(App):
         if not pdf.open_pdf(entry.key, eprint=entry.eprint):
             self._set_status(f"[red]Failed to fetch PDF for {entry.key}[/red]")
 
-    def action_uat_browse(self):
-        from .uat_browser import UATBrowserScreen
-        from ..config import UAT_CACHE
-        from ..uat import get_uat
-        uat = get_uat(UAT_CACHE, auto_fetch=False)
-        if uat is None:
-            self._set_status("[yellow]UAT not cached — run: litbot uat update[/yellow]")
-            return
-        self.push_screen(UATBrowserScreen(uat))
-
-    def action_focus_tree(self):
-        self.query_one("#keyword-tree", Tree).focus()
+    def action_focus_left(self):
+        tree_id = "#uat-tree" if self._left_mode == "uat" else "#keyword-tree"
+        self.query_one(tree_id, Tree).focus()
 
     def _set_status(self, msg: str):
         self.query_one("#status-bar", Static).update(msg)
@@ -355,11 +416,10 @@ class LitbotApp(App):
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
-def _add_uat_children(parent: TreeNode, uat: UAT, uid: str, root_uat: UAT, depth: int = 0):
+def _add_uat_children(parent: TreeNode, uat: UAT, uid: str, depth: int = 0):
     if depth > 3:
         return
     for child in uat.children(uid):
-        desc = root_uat.descendant_labels(child.label)
-        node = parent.add(child.label, data=("uat", desc))
+        node = parent.add(child.label, data=("uat", uat.descendant_labels(child.label)))
         if uat.children(child.uid):
-            _add_uat_children(node, uat, child.uid, root_uat, depth + 1)
+            _add_uat_children(node, uat, child.uid, depth + 1)
