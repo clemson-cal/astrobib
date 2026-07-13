@@ -171,6 +171,7 @@ class LitbotApp(App):
         Binding("o", "open_pdf", "Open PDF"),
         Binding("/", "search", "Search"),
         Binding("u", "toggle_uat", "UAT"),
+        Binding("question_mark", "help", "Help"),
         Binding("escape", "show_all", "All", show=False),
         Binding("t", "focus_left", "Left panel", show=False),
     ]
@@ -405,6 +406,10 @@ class LitbotApp(App):
         )
         if not pdf.open_pdf(entry.key, eprint=entry.eprint):
             self._set_status(f"[red]Failed to fetch PDF for {entry.key}[/red]")
+
+    def action_help(self):
+        from .help_screen import HelpScreen
+        self.push_screen(HelpScreen())
 
     def action_focus_left(self):
         tree_id = "#uat-tree" if self._left_mode == "uat" else "#keyword-tree"
