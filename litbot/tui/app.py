@@ -166,6 +166,7 @@ class LibraryView(Static):
     def on_mount(self) -> None:
         t = self.query_one("#lib-table", DataTable)
         t.add_column(" ", key="sel", width=2)
+        t.add_column("↓", key="pdf", width=2)
         t.add_column("Year", key="year", width=6)
         t.add_column("Author", key="author", width=20)
         t.add_column("Title", key="title")
@@ -226,16 +227,27 @@ class LibraryView(Static):
         return e.year
 
     def _refresh_table(self) -> None:
+        from .. import pdf as _pdf
         t = self.query_one("#lib-table", DataTable)
         t.clear()
         entries = sorted(self._filtered, key=self._sort_key, reverse=self._sort_reverse)
         for e in entries:
             sel = "✓" if e.key in self._selected_keys else ""
+            cached = "↓" if _pdf.is_cached(e.key) else ""
             kws = ", ".join(e.keywords[:3])
             if len(e.keywords) > 3:
                 kws += "…"
             title = e.title[:52] + "…" if len(e.title) > 52 else e.title
-            t.add_row(sel, e.year, e.first_author_last, title, kws, key=e.key)
+            t.add_row(sel, cached, e.year, e.first_author_last, title, kws, key=e.key)
+
+    def refresh_pdf_status(self) -> None:
+        from .. import pdf as _pdf
+        t = self.query_one("#lib-table", DataTable)
+        for e in self._all_entries:
+            try:
+                t.update_cell(e.key, "pdf", "↓" if _pdf.is_cached(e.key) else "")
+            except Exception:
+                pass
 
     @on(Input.Changed, "#lib-filter")
     def _on_filter_changed(self, event: Input.Changed) -> None:
@@ -446,6 +458,7 @@ class LitbotApp(App):
         Binding("d", "remove_paper", "Remove"),
         Binding("b", "open_ads", "ADS page"),
         Binding("o", "open_pdf", "Open PDF"),
+        Binding("X", "clear_pdf", "Clear PDF"),
         Binding("/", "filter", "Filter"),
         Binding("S", "ads_search", "ADS search"),
         Binding("r", "refresh_tab", "Refresh"),
@@ -765,6 +778,27 @@ class LitbotApp(App):
         self.refresh_bindings()
         self._set_status(f"[green]Removed {entry.key}[/green]")
 
+    def action_clear_pdf(self) -> None:
+        from .. import pdf as _pdf
+        ads_view = self._active_ads_view()
+        if ads_view is not None:
+            article = ads_view._selected_article
+            if article:
+                path = _pdf.cache_path(article.bibcode)
+                if path.exists():
+                    path.unlink()
+                    self.refresh_bindings()
+                    self._set_status(f"[green]Cleared cached PDF for {article.bibcode}[/green]")
+        elif self._active_pane_id() == "pane-library":
+            entry = self.query_one(LibraryView)._highlighted_entry
+            if entry:
+                path = _pdf.cache_path(entry.key)
+                if path.exists():
+                    path.unlink()
+                    self.query_one(LibraryView).refresh_pdf_status()
+                    self.refresh_bindings()
+                    self._set_status(f"[green]Cleared cached PDF for {entry.key}[/green]")
+
     def action_open_ads(self) -> None:
         import webbrowser
         ads_view = self._active_ads_view()
@@ -808,6 +842,9 @@ class LitbotApp(App):
         )
         if not pdf.open_pdf(key, eprint=eprint):
             self._set_status(f"[red]Failed to fetch PDF for {key}[/red]")
+        else:
+            self.query_one(LibraryView).refresh_pdf_status()
+            self.refresh_bindings()
 
     def action_uat_browser(self) -> None:
         if self._uat is None:
@@ -821,7 +858,16 @@ class LitbotApp(App):
         self.push_screen(HelpScreen())
 
     def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
+        from .. import pdf as _pdf
         pane_id = self._active_pane_id()
+        if action == "clear_pdf":
+            if pane_id == "pane-library":
+                entry = self.query_one(LibraryView)._highlighted_entry
+                return entry is not None and _pdf.is_cached(entry.key)
+            ads_view = self._active_ads_view()
+            if ads_view and ads_view._selected_article:
+                return _pdf.is_cached(ads_view._selected_article.bibcode)
+            return False
         if action == "open_ads":
             if pane_id == "pane-library":
                 return self.query_one(LibraryView)._highlighted_entry is not None
