@@ -442,6 +442,8 @@ class LitbotApp(App):
 
     BINDINGS = [
         Binding("q", "quit", "Quit"),
+        Binding("a", "add_paper", "Add"),
+        Binding("d", "remove_paper", "Remove"),
         Binding("o", "open_pdf", "Open PDF"),
         Binding("/", "filter", "Filter"),
         Binding("S", "ads_search", "ADS search"),
@@ -475,9 +477,6 @@ class LitbotApp(App):
         yield Footer()
 
     async def on_mount(self) -> None:
-        self.bind("a", "add_paper", description="Add", show=True)
-        self.bind("d", "remove_paper", description="Remove", show=False)
-
         self._uat = get_uat(UAT_CACHE, auto_fetch=False)
 
         self._library = Library(root=get_library_path())
@@ -544,10 +543,9 @@ class LitbotApp(App):
     @on(TabbedContent.TabActivated)
     def _on_tab_activated(self, event: TabbedContent.TabActivated) -> None:
         self.query_one(DetailPanel).show_entry(None)
+        self.refresh_bindings()
         pane_id = self._active_pane_id()
         if pane_id == "pane-library":
-            self.bind("a", "add_paper", description="Add", show=True)
-            self.bind("d", "remove_paper", description="Remove", show=False)
             lib_view = self.query_one(LibraryView)
             n = len(lib_view._filtered)
             total = len(lib_view._all_entries)
@@ -556,11 +554,6 @@ class LitbotApp(App):
         elif pane_id:
             tab_id = pane_id.removeprefix("pane-")
             ads_view = self._ads_views.get(tab_id)
-            if ads_view and ads_view._selected_article and self._library:
-                entry = self._library.get_by_bibcode(ads_view._selected_article.bibcode)
-                self._update_ads_footer(in_library=entry is not None)
-            else:
-                self._update_ads_footer(in_library=False)
             if ads_view:
                 if not ads_view._articles:
                     self._set_status(
@@ -586,7 +579,7 @@ class LitbotApp(App):
             return
         entry = self._library.get_by_bibcode(event.article.bibcode) if self._library else None
         self.query_one(DetailPanel).show_ads_article(event.article, entry=entry)
-        self._update_ads_footer(in_library=entry is not None)
+        self.refresh_bindings()
 
     # ── Actions ───────────────────────────────────────────────────────────────
 
@@ -737,7 +730,7 @@ class LitbotApp(App):
             self._reload_library()
             ads_view.update_in_db(self._library)
             self.query_one(DetailPanel).show_entry(self._library.get(entry.key))
-            self._update_ads_footer(in_library=True)
+            self.refresh_bindings()
             ads_client.refresh_quota()
             self._set_status(f"[green]Added {entry.key}[/green]{_quota_str()}")
         except Exception as exc:
@@ -760,7 +753,7 @@ class LitbotApp(App):
         self._library.remove_entry(entry.key)
         self._reload_library()
         ads_view.update_in_db(self._library)
-        self._update_ads_footer(in_library=False)
+        self.refresh_bindings()
         self._set_status(f"[green]Removed {entry.key}[/green]")
 
     def action_open_pdf(self) -> None:
@@ -805,10 +798,22 @@ class LitbotApp(App):
         from .help_screen import HelpScreen
         self.push_screen(HelpScreen())
 
-    def _update_ads_footer(self, in_library: bool) -> None:
-        self.bind("a", "add_paper", description="Add", show=not in_library)
-        self.bind("d", "remove_paper", description="Remove", show=in_library)
-        self.refresh_bindings()
+    def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
+        if action == "add_paper":
+            ads_view = self._active_ads_view()
+            if ads_view is not None:
+                article = ads_view._selected_article
+                if article and self._library:
+                    return self._library.get_by_bibcode(article.bibcode) is None
+            return True
+        if action == "remove_paper":
+            ads_view = self._active_ads_view()
+            if ads_view is not None:
+                article = ads_view._selected_article
+                if article and self._library:
+                    return self._library.get_by_bibcode(article.bibcode) is not None
+            return False
+        return True
 
     def _set_status(self, msg: str) -> None:
         self.query_one("#status-bar", Static).update(msg)
