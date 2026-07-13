@@ -14,8 +14,6 @@ from textual.widgets import (
     Static,
     Tree,
 )
-from textual.widgets.tree import TreeNode
-
 from ..config import get_config, UAT_CACHE
 from ..library import Entry, Library, MergedLibrary
 from ..uat import UAT, Concept, get_uat
@@ -56,6 +54,29 @@ class DetailPanel(Static):
             lines.append(
                 f"\n[dim]{abstract[:600]}{'…' if len(abstract) > 600 else ''}[/dim]"
             )
+        self.update("\n".join(lines))
+
+    def show_ads_article(self, article) -> None:
+        if article is None:
+            self.update("")
+            return
+        title = article.title[0] if article.title else ""
+        authors = article.author or []
+        author_str = ", ".join(a.split(",")[0] for a in authors[:3])
+        if len(authors) > 3:
+            author_str += " et al."
+        abstract = article.abstract or ""
+        lines = [
+            f"[bold cyan]{article.bibcode}[/bold cyan]\n",
+            f"[bold]{title}[/bold]\n",
+            f"[dim]{author_str}[/dim]\n",
+            f"[green]{article.year}[/green]",
+        ]
+        if abstract:
+            lines.append(
+                f"\n[dim]{abstract[:600]}{'…' if len(abstract) > 600 else ''}[/dim]"
+            )
+        lines.append("\n[dim]Press [bold]a[/bold] to add to library[/dim]")
         self.update("\n".join(lines))
 
     def show_concept(self, concept: Concept | None, uat: UAT) -> None:
@@ -99,6 +120,31 @@ class SearchModal(ModalScreen[str]):
         with Vertical():
             yield Label("Search library  [dim](Enter / Escape)[/dim]")
             yield Input(placeholder="author, title, or cite key…", id="search-input")
+
+    def on_mount(self):
+        self.query_one(Input).focus()
+
+    def on_input_submitted(self, event: Input.Submitted):
+        self.dismiss(event.value)
+
+    def on_key(self, event):
+        if event.key == "escape":
+            self.dismiss("")
+
+
+class AdsSearchModal(ModalScreen[str]):
+    DEFAULT_CSS = """
+    AdsSearchModal { align: center middle; }
+    AdsSearchModal Vertical {
+        width: 60; height: auto;
+        border: round $accent; padding: 1 2; background: $surface;
+    }
+    """
+
+    def compose(self) -> ComposeResult:
+        with Vertical():
+            yield Label("Search ADS  [dim](Enter / Escape)[/dim]")
+            yield Input(placeholder="author, title, or topic…", id="ads-input")
 
     def on_mount(self):
         self.query_one(Input).focus()
@@ -170,6 +216,7 @@ class LitbotApp(App):
         Binding("a", "add_paper", "Add"),
         Binding("o", "open_pdf", "Open PDF"),
         Binding("/", "search", "Search"),
+        Binding("S", "ads_search", "ADS search"),
         Binding("u", "toggle_uat", "UAT"),
         Binding("question_mark", "help", "Help"),
         Binding("escape", "show_all", "All", show=False),
@@ -184,6 +231,9 @@ class LitbotApp(App):
         self._selected_entry: Entry | None = None
         self._left_mode: str = "library"   # "library" | "uat"
         self._uat_tree_built: bool = False
+        self._ads_results: dict = {}       # bibcode -> ADS Article
+        self._selected_ads = None
+        self._view_mode: str = "library"   # "library" | "ads"
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -227,31 +277,44 @@ class LitbotApp(App):
         if self._library is None:
             return
 
-        focus = self._library.focus_labels()
-        local = self._library.local_keywords()
+        all_kws = self._library.all_keywords()
+        if not all_kws:
+            return
 
-        if self._uat and focus:
-            for label in focus:
-                concept = self._uat.by_label(label)
+        # Group keywords by their top-level UAT ancestor
+        groups: dict[str, list[str]] = {}
+        unclassified: list[str] = []
+
+        for kw in all_kws:
+            if self._uat:
+                concept = self._uat.by_label(kw)
                 if concept:
-                    desc = self._uat.descendant_labels(label)
-                    node = tree.root.add(label, data=("uat", desc))
-                    _add_uat_children(node, self._uat, concept.uid)
-                else:
-                    tree.root.add(label, data=("kw", {label}))
-        elif focus:
-            for label in focus:
-                tree.root.add(label, data=("kw", {label}))
+                    top = _top_ancestor(self._uat, concept.uid)
+                    groups.setdefault(top, []).append(kw)
+                    continue
+            unclassified.append(kw)
 
-        if local:
-            local_node = tree.root.add("[dim]local[/dim]", data=None)
-            for kw in local:
-                local_node.add(kw, data=("kw", {kw}))
+        for group_label in sorted(groups):
+            kws = groups[group_label]
+            group_desc = self._uat.descendant_labels(group_label) if self._uat else {group_label}
+            if len(kws) == 1 and kws[0].lower() == group_label.lower():
+                tree.root.add(group_label, data=("uat", group_desc))
+            else:
+                group_node = tree.root.add(group_label, data=("uat", group_desc))
+                for kw in sorted(kws):
+                    kw_desc = self._uat.descendant_labels(kw) if self._uat else {kw}
+                    group_node.add(kw, data=("uat", kw_desc))
+
+        if unclassified:
+            other_node = tree.root.add("[dim]other[/dim]", data=None)
+            for kw in unclassified:
+                other_node.add(kw, data=("kw", {kw}))
 
     @on(Tree.NodeSelected, "#keyword-tree")
     def on_keyword_selected(self, event: Tree.NodeSelected):
         if self._library is None or event.node.data is None:
             return
+        self._view_mode = "library"
         kind, labels = event.node.data
         if kind == "all":
             entries = self._library.entries()
@@ -292,11 +355,11 @@ class LitbotApp(App):
             detail.show_entry(None)
             return
         detail.show_concept(concept, self._uat)
-        # Filter paper table by this concept and its descendants
         if self._library is not None:
             desc = self._uat.descendant_labels(concept.label)
             entries = self._library.by_keyword("", descendant_labels=desc)
             self._load_entries(entries)
+            self._view_mode = "library"
             self._set_status(
                 f"{len(entries)} paper(s) tagged [{concept.label}]  "
                 f"[dim]· {len(desc)} UAT concepts in subtree[/dim]"
@@ -317,13 +380,32 @@ class LitbotApp(App):
             table.add_row(e.key, e.year, e.first_author_last, title, key=e.key)
         self._selected_entry = None
 
+    def _load_ads_articles(self, articles: list):
+        table = self.query_one("#paper-table", DataTable)
+        table.clear()
+        self._current_entries = []
+        self._selected_entry = None
+        self._selected_ads = None
+        for a in articles:
+            first_author = a.author[0].split(",")[0] if a.author else ""
+            title = a.title[0] if a.title else ""
+            short_title = title[:55] + "…" if len(title) > 55 else title
+            table.add_row(a.bibcode, str(a.year or ""), first_author, short_title, key=a.bibcode)
+
+    @on(DataTable.RowHighlighted, "#paper-table")
     @on(DataTable.RowSelected, "#paper-table")
-    def on_row_selected(self, event: DataTable.RowSelected):
-        key = event.row_key.value
-        if self._library and key:
-            entry = self._library.get(key)
+    def on_row_selected(self, event):
+        row_key = event.row_key.value if event.row_key else None
+        if not row_key:
+            return
+        detail = self.query_one("#detail", DetailPanel)
+        if self._view_mode == "ads":
+            self._selected_ads = self._ads_results.get(row_key)
+            detail.show_ads_article(self._selected_ads)
+        elif self._library:
+            entry = self._library.get(row_key)
             self._selected_entry = entry
-            self.query_one("#detail", DetailPanel).show_entry(entry)
+            detail.show_entry(entry)
 
     # ── Actions ───────────────────────────────────────────────────────────────
 
@@ -356,19 +438,52 @@ class LitbotApp(App):
                 or q in e.key.lower()
                 or any(q in kw.lower() for kw in e.keywords)
             ]
+            self._view_mode = "library"
             self._load_entries(results)
-            self._set_status(f'{len(results)} result(s) for "{query}"')
+            self._set_status(f'{len(results)} result(s) for "{query}"  [dim]· Escape: show all[/dim]')
         self.push_screen(SearchModal(), handle)
 
+    def action_ads_search(self):
+        async def handle(query: str):
+            if not query:
+                return
+            self._set_status(f"Searching ADS for '{query}'…")
+            try:
+                from .. import ads_client
+                articles = ads_client.search(query, limit=20)
+            except RuntimeError as e:
+                self._set_status(f"[red]{e}[/red]")
+                return
+            self._ads_results = {a.bibcode: a for a in articles}
+            self._view_mode = "ads"
+            self._load_ads_articles(articles)
+            self._set_status(
+                f"[yellow]{len(articles)} ADS result(s) for '{query}'[/yellow]"
+                f"  [dim]· a: add to library · Escape: back to library[/dim]"
+            )
+        self.push_screen(AdsSearchModal(), handle)
+
     def action_show_all(self):
+        self._view_mode = "library"
+        self._ads_results = {}
+        self._selected_ads = None
         if self._library:
             entries = self._library.entries()
             self._load_entries(entries)
             self._set_status(f"{len(entries)} papers in library")
 
     def action_add_paper(self):
+        if self._view_mode == "ads":
+            if self._selected_ads is None:
+                self._set_status("[yellow]Select an ADS result first.[/yellow]")
+                return
+            bibcode = self._selected_ads.bibcode
+            self._set_status(f"Fetching {bibcode}…")
+            self.run_worker(self._fetch_and_add(bibcode), exclusive=True)
+            return
+
         async def handle(result: tuple[str, str] | None):
-            if result is None or self._library is None:
+            if result is None:
                 return
             bibcode, extra_kw = result
             self._set_status(f"Fetching {bibcode} from ADS…")
@@ -384,6 +499,11 @@ class LitbotApp(App):
                 config = get_config()
                 target_lib = Library(root=config.default_db_path)
                 entry = target_lib.save_entry(data)
+                from .. import db as dbmod
+                try:
+                    dbmod.commit_entry(config.default_db_path, entry.key)
+                except Exception:
+                    pass
                 libs = [Library(root=p) for p in config.databases.values() if p.exists()]
                 self._library = MergedLibrary(libs)
                 self._load_entries(self._library.entries())
@@ -391,6 +511,30 @@ class LitbotApp(App):
             except Exception as exc:
                 self._set_status(f"[red]{exc}[/red]")
         self.push_screen(AddModal(), handle)
+
+    async def _fetch_and_add(self, bibcode: str) -> None:
+        try:
+            from .. import ads_client
+            data = ads_client.fetch_bibtex(bibcode)
+            if data is None:
+                self._set_status(f"[red]Could not fetch {bibcode}[/red]")
+                return
+            config = get_config()
+            target_lib = Library(root=config.default_db_path)
+            entry = target_lib.save_entry(data)
+            from .. import db as dbmod
+            try:
+                dbmod.commit_entry(config.default_db_path, entry.key)
+            except Exception:
+                pass
+            libs = [Library(root=p) for p in config.databases.values() if p.exists()]
+            self._library = MergedLibrary(libs)
+            self._set_status(
+                f"[green]Added {entry.key} → '{config.default_database}'[/green]"
+                f"  [dim]· Escape: back to library[/dim]"
+            )
+        except Exception as exc:
+            self._set_status(f"[red]{exc}[/red]")
 
     def action_open_pdf(self):
         entry = self._selected_entry
@@ -423,10 +567,12 @@ class LitbotApp(App):
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
-def _add_uat_children(parent: TreeNode, uat: UAT, uid: str, depth: int = 0):
-    if depth > 3:
-        return
-    for child in uat.children(uid):
-        node = parent.add(child.label, data=("uat", uat.descendant_labels(child.label)))
-        if uat.children(child.uid):
-            _add_uat_children(node, uat, child.uid, depth + 1)
+def _top_ancestor(uat: UAT, uid: str) -> str:
+    """Walk up the UAT hierarchy and return the top-level concept's label."""
+    concept = uat.by_uid(uid)
+    while concept and concept.broader:
+        parent = uat.by_uid(concept.broader[0])
+        if parent is None:
+            break
+        concept = parent
+    return concept.label if concept else ""

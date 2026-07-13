@@ -31,44 +31,14 @@ def db_group():
     """Manage the bib database."""
 
 
-@db_group.command("init")
-@click.argument("url_or_path")
+@db_group.command("clone")
+@click.argument("url")
 @click.option("--name", "-n", default="", help="Name for this database (default: repo name).")
 @click.option("--dest", "-d", type=click.Path(path_type=Path),
               help="Where to clone. Defaults to ~/.local/share/litbot/databases/<name>.")
-@click.option("--new", "create_new", is_flag=True,
-              help="Create a new empty database instead of cloning.")
-def db_init(url_or_path: str, name: str, dest: Path | None, create_new: bool):
-    """Clone or create a bib database and register it.
-
-    URL_OR_PATH is a git URL (to clone) or a local path (to register or create).
-    """
+def db_clone(url: str, name: str, dest: Path | None):
+    """Clone a remote bib database and register it."""
     from . import db as dbmod
-
-    if create_new:
-        target = dest or Path(url_or_path).expanduser().resolve()
-        db_name = name or target.name
-        if target.exists() and any(target.iterdir()):
-            console.print(f"[red]{target} already exists and is not empty.[/red]")
-            raise SystemExit(1)
-        console.print(f"Creating new database '{db_name}' at {target}…")
-        dbmod.init_empty(target)
-        save_database(db_name, target)
-        console.print(f"[green]Created and registered '{db_name}'[/green]")
-        return
-
-    url = url_or_path
-    is_local = not url.startswith(("http", "git@", "git://", "ssh://"))
-
-    if is_local:
-        target = Path(url).expanduser().resolve()
-        if not (target / "bib").is_dir():
-            console.print(f"[red]{target} does not look like a bib database (no bib/ directory).[/red]")
-            raise SystemExit(1)
-        db_name = name or target.name
-        save_database(db_name, target)
-        console.print(f"[green]Registered '{db_name}' → {target}[/green]")
-        return
 
     repo_name = url.rstrip("/").rsplit("/", 1)[-1].removesuffix(".git")
     db_name = name or repo_name
@@ -86,6 +56,39 @@ def db_init(url_or_path: str, name: str, dest: Path | None, create_new: bool):
 
     save_database(db_name, target)
     console.print(f"[green]Cloned and registered '{db_name}'[/green]")
+
+
+@db_group.command("init")
+@click.argument("path", default="", required=False)
+@click.option("--name", "-n", default="", help="Name for this database (default: directory name).")
+def db_init(path: str, name: str):
+    """Create a new empty bib database and register it.
+
+    PATH defaults to ~/.local/share/litbot/databases/<name>.
+    If PATH already exists and contains a bib/ directory, it is registered as-is.
+    """
+    from . import db as dbmod
+
+    if not path and not name:
+        console.print("[red]Provide a path or --name.[/red]")
+        raise SystemExit(1)
+
+    target = Path(path).expanduser().resolve() if path else DEFAULT_DB_DIR / name
+    db_name = name or target.name
+
+    if target.exists() and (target / "bib").is_dir():
+        save_database(db_name, target)
+        console.print(f"[green]Registered '{db_name}' → {target}[/green]")
+        return
+
+    if target.exists() and any(target.iterdir()):
+        console.print(f"[red]{target} already exists and is not empty.[/red]")
+        raise SystemExit(1)
+
+    console.print(f"Creating new database '{db_name}' at {target}…")
+    dbmod.init_empty(target)
+    save_database(db_name, target)
+    console.print(f"[green]Created and registered '{db_name}'[/green]")
 
 
 @db_group.command("list")
@@ -119,10 +122,9 @@ def db_pull(db_name: str):
 
 
 @db_group.command("push")
-@click.option("--message", "-m", default="Update library", show_default=True)
 @click.option("--db", "db_name", default="", help="Database to push (default: default database).")
-def db_push(message: str, db_name: str):
-    """Commit pending changes and push (default database unless --db given)."""
+def db_push(db_name: str):
+    """Push committed changes to the remote."""
     from . import db as dbmod
     config = _get_config()
     try:
@@ -130,13 +132,28 @@ def db_push(message: str, db_name: str):
     except RuntimeError as e:
         console.print(f"[red]{e}[/red]")
         raise SystemExit(1)
-    pending = dbmod.status(db_path)
-    if not pending:
-        console.print("Nothing to commit.")
-        return
-    console.print(pending)
     try:
-        out = dbmod.push(db_path, message=message)
+        out = dbmod.push(db_path)
+        console.print(f"[green]{out}[/green]")
+    except dbmod.DatabaseError as e:
+        console.print(f"[red]{e}[/red]")
+        raise SystemExit(1)
+
+
+@db_group.command("publish")
+@click.option("--message", "-m", default="Update library", show_default=True)
+@click.option("--db", "db_name", default="", help="Database to publish (default: default database).")
+def db_publish(message: str, db_name: str):
+    """Stage all changes, commit, and push (default database unless --db given)."""
+    from . import db as dbmod
+    config = _get_config()
+    try:
+        db_path = config.db_path(db_name or None)
+    except RuntimeError as e:
+        console.print(f"[red]{e}[/red]")
+        raise SystemExit(1)
+    try:
+        out = dbmod.publish(db_path, message=message)
         console.print(f"[green]{out}[/green]")
     except dbmod.DatabaseError as e:
         console.print(f"[red]{e}[/red]")
@@ -256,6 +273,13 @@ def add_cmd(bibcode: str, keywords: str, db_name: str, force: bool):
 
     entry = library.save_entry(data)
     target_name = db_name or config.default_database
+
+    from . import db as dbmod
+    try:
+        dbmod.commit_entry(db_path, entry.key)
+    except Exception:
+        pass
+
     console.print(f"[green]Added[/green] {entry.key} → '{target_name}'")
     if entry.keywords:
         for kw in entry.keywords:

@@ -20,7 +20,7 @@ pip install git+https://github.com/your-group/litbot
 litbot uat update
 
 # Clone your group's bib database
-litbot db init https://github.com/your-group/bib-database
+litbot db clone https://github.com/your-group/bib-database
 
 # Launch the TUI
 litbot
@@ -49,20 +49,18 @@ litbot
 
 ```bash
 # Clone an existing group database
-litbot db init https://github.com/group/bib-database
-
-# Register a local checkout
-litbot db init /path/to/local/bib-database
+litbot db clone https://github.com/group/bib-database
 
 # Create a new empty database
-litbot db init --new /path/to/new-database
+litbot db init /path/to/new-database
 
 # List configured databases
 litbot db list
 
 # Sync
 litbot db pull                        # pull default database
-litbot db push -m "Add Smith 2020"    # commit and push default database
+litbot db push                        # push committed changes
+litbot db publish -m "Add Smith 2020" # stage, commit, and push
 litbot db pull --db collab            # pull a named database
 ```
 
@@ -75,7 +73,7 @@ export. Writes go to the default database unless `--db <name>` is given.
 # Search ADS
 litbot search "magnetohydrodynamical simulations" --ads
 
-# Add by ADS bibcode (UAT keywords imported automatically)
+# Add by ADS bibcode (UAT keywords imported automatically; auto-committed)
 litbot add 2020ApJ...900...12S
 
 # Add with extra keywords
@@ -84,6 +82,9 @@ litbot add 2020ApJ...900...12S --keywords "Magnetohydrodynamical simulations"
 # Write to a specific database
 litbot add 2020ApJ...900...12S --db personal
 ```
+
+`litbot add` saves the `.bib` file and automatically commits it. Run
+`litbot db push` when you're ready to share.
 
 ### Generating refs.bib for a manuscript
 
@@ -126,7 +127,6 @@ A bib database is a plain git repository:
 
 ```
 my-bib/
-├── keywords.yaml   # UAT focus areas and local extensions
 └── bib/
     ├── smith2020_merger.bib
     └── jones2021_mhd.bib
@@ -136,21 +136,8 @@ Each `.bib` file holds one entry. UAT keywords are stored in the standard
 `keywords` BibTeX field (populated automatically from ADS). Papers can
 carry multiple keywords.
 
-### keywords.yaml
-
-```yaml
-# UAT concept labels that define the browsable focus area.
-# The TUI shows the full UAT subtree rooted at each label.
-focus:
-  - Computational methods
-  - Compact objects
-  - General relativity
-
-# Group-specific terms not in the UAT
-_local:
-  - Sprout
-  - Mara
-```
+The TUI's keyword tree is built dynamically from the keywords actually
+present in your bib entries, grouped by their top-level UAT concept.
 
 ---
 

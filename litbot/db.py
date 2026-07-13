@@ -34,17 +34,15 @@ def init_empty(dest: Path) -> None:
     dest.mkdir(parents=True, exist_ok=True)
     (dest / "bib").mkdir(exist_ok=True)
     (dest / "bib" / ".gitkeep").touch()
-    (dest / "keywords.yaml").write_text(
-        "# UAT-aligned keyword navigation for this group.\n"
-        "# See https://astrothesaurus.org for UAT concept labels.\n\n"
-        "focus:\n"
-        "  - Computational methods\n"
-        "  - Compact objects\n\n"
-        "_local: []\n"
-    )
     _git(dest, "init", check=True)
     _git(dest, "add", "-A", check=True)
     _git(dest, "commit", "-m", "Initialize bib database", check=True)
+
+
+def commit_entry(db_path: Path, key: str) -> None:
+    """Stage and commit a single bib entry. Silently no-ops on failure."""
+    _git(db_path, "add", f"bib/{key}.bib")
+    _git(db_path, "commit", "-m", f"Add {key}")
 
 
 def pull(db_path: Path) -> str:
@@ -55,7 +53,17 @@ def pull(db_path: Path) -> str:
     return out
 
 
-def push(db_path: Path, message: str = "Update library") -> str:
+def push(db_path: Path) -> str:
+    """Push committed changes to the remote."""
+    push_r = _git(db_path, "push")
+    out = (push_r.stdout + push_r.stderr).strip()
+    if push_r.returncode != 0:
+        raise DatabaseError(out)
+    return out or "Pushed."
+
+
+def publish(db_path: Path, message: str = "Update library") -> str:
+    """Stage all changes, commit, and push."""
     _git(db_path, "add", "-A")
     commit = _git(db_path, "commit", "-m", message)
     if commit.returncode != 0:
@@ -63,11 +71,7 @@ def push(db_path: Path, message: str = "Update library") -> str:
         if "nothing to commit" in stdout:
             return "Nothing to commit."
         raise DatabaseError(commit.stderr.strip() or stdout)
-    push_r = _git(db_path, "push")
-    out = (push_r.stdout + push_r.stderr).strip()
-    if push_r.returncode != 0:
-        raise DatabaseError(out)
-    return out or "Pushed."
+    return push(db_path)
 
 
 def status(db_path: Path) -> str:

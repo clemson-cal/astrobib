@@ -4,7 +4,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import bibtexparser
-import yaml
 from bibtexparser.bparser import BibTexParser
 from bibtexparser.customization import convert_to_unicode
 
@@ -127,21 +126,8 @@ class Library:
         self._entries[key] = entry
         return entry
 
-    def keywords_config(self) -> dict:
-        kw_file = self.root / "keywords.yaml"
-        if not kw_file.exists():
-            return {}
-        with open(kw_file) as f:
-            return yaml.safe_load(f) or {}
-
     def git_root(self) -> Path:
         return self.root
-
-    def focus_labels(self) -> list[str]:
-        return self.keywords_config().get("focus", [])
-
-    def local_keywords(self) -> list[str]:
-        return self.keywords_config().get("_local", [])
 
     def all_keywords(self) -> list[str]:
         """Collect all unique keyword strings from the library entries."""
@@ -196,26 +182,6 @@ class MergedLibrary:
                     seen.add(kw)
                     result.append(kw)
         return sorted(result)
-
-    def focus_labels(self) -> list[str]:
-        seen: set[str] = set()
-        result: list[str] = []
-        for lib in self._libs:
-            for label in lib.focus_labels():
-                if label not in seen:
-                    seen.add(label)
-                    result.append(label)
-        return result
-
-    def local_keywords(self) -> list[str]:
-        seen: set[str] = set()
-        result: list[str] = []
-        for lib in self._libs:
-            for kw in lib.local_keywords():
-                if kw not in seen:
-                    seen.add(kw)
-                    result.append(kw)
-        return result
 
 
 def _parse_bib_file(path: Path) -> Entry | None:

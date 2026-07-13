@@ -59,7 +59,7 @@ def _load_config() -> Config:
     if not databases:
         path = Path.cwd().resolve()
         while path != path.parent:
-            if (path / "keywords.yaml").exists() and (path / "bib").is_dir():
+            if (path / "bib").is_dir() and (path / ".git").exists():
                 databases["default"] = path
                 default_database = "default"
                 break
@@ -89,8 +89,8 @@ def _load_config() -> Config:
     if not databases:
         raise RuntimeError(
             "No bib database configured.\n"
-            "Clone an existing one:  litbot db init <git-url>\n"
-            "Create a new one:       litbot db init --new <path>\n"
+            "Clone an existing one:  litbot db clone <git-url>\n"
+            "Create a new one:       litbot db init <path>\n"
             "Or set:                 LITBOT_DB=/path/to/database"
         )
 
