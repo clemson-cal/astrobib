@@ -10,9 +10,13 @@ from pathlib import Path
 
 import httpx
 
-from .state import PDF_CACHE_DIR
+from .state import PDF_CACHE_DIR, get_email
 
-_UNPAYWALL_EMAIL = "litbot@example.com"
+_UNPAYWALL_EMAIL_FALLBACK = "litbot@example.com"
+
+
+def _unpaywall_email() -> str:
+    return get_email() or _UNPAYWALL_EMAIL_FALLBACK
 
 
 def cache_path(citekey: str) -> Path:
@@ -30,7 +34,7 @@ def oa_url_with_detail(doi: str) -> tuple[str | None, dict | None]:
     try:
         resp = httpx.get(
             f"https://api.unpaywall.org/v2/{doi}",
-            params={"email": _UNPAYWALL_EMAIL},
+            params={"email": _unpaywall_email()},
             timeout=10,
             follow_redirects=True,
         )
@@ -60,7 +64,7 @@ def oa_url(doi: str) -> str | None:
     try:
         resp = httpx.get(
             f"https://api.unpaywall.org/v2/{doi}",
-            params={"email": _UNPAYWALL_EMAIL},
+            params={"email": _unpaywall_email()},
             timeout=10,
             follow_redirects=True,
         )

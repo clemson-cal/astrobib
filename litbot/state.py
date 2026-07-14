@@ -52,6 +52,19 @@ def set_token(token: str) -> None:
     _state = state
 
 
+def get_email() -> str | None:
+    """Return user email for Unpaywall (env var or saved state)."""
+    return os.environ.get("LITBOT_EMAIL") or _load().get("email") or None
+
+
+def set_email(email: str) -> None:
+    global _state
+    state = _load()
+    state["email"] = email.strip()
+    _save(state)
+    _state = state
+
+
 def get_library_path() -> Path:
     """Return the library root, creating bib/ if needed."""
     path = LIBRARY_DIR

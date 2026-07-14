@@ -10,7 +10,7 @@ from rich.console import Console
 from rich.table import Table
 from rich.text import Text
 
-from .state import get_token, set_token, get_library_path, UAT_CACHE
+from .state import get_token, set_token, get_email, set_email, get_library_path, UAT_CACHE
 from .library import Library
 from .keys import generate_key
 from . import ads_client
@@ -56,6 +56,30 @@ def token_cmd(token: str | None):
         new_token = click.prompt("ADS token", hide_input=True)
         set_token(new_token)
         console.print("[green]ADS token saved.[/green]")
+
+
+# ── email ─────────────────────────────────────────────────────────────────────
+
+@main.command("email")
+@click.argument("address", required=False)
+def email_cmd(address: str | None):
+    """Set or show the email address used for Unpaywall PDF lookups."""
+    if address:
+        set_email(address)
+        console.print(f"[green]Email saved: {address}[/green]")
+        return
+    current = get_email()
+    if current:
+        console.print(f"Unpaywall email: [cyan]{current}[/cyan]")
+        if click.confirm("Replace?", default=False):
+            new = click.prompt("New email")
+            set_email(new)
+            console.print(f"[green]Email saved: {new}[/green]")
+    else:
+        console.print("[yellow]No email set — Unpaywall lookups will fail.[/yellow]")
+        new = click.prompt("Email address")
+        set_email(new)
+        console.print(f"[green]Email saved: {new}[/green]")
 
 
 # ── add ───────────────────────────────────────────────────────────────────────
