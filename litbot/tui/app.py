@@ -669,6 +669,7 @@ class LitbotApp(App):
         Binding("q", "quit", "Quit"),
         Binding("a", "add_paper", "Add"),
         Binding("d", "remove_paper", "Remove"),
+        Binding("p", "download_pdf", "DL PDF"),
         Binding("o", "open_pdf", "Open PDF"),
         Binding("X", "clear_pdf", "Clear PDF"),
         Binding("/", "filter", "Filter"),
@@ -1096,6 +1097,43 @@ class LitbotApp(App):
                     self.refresh_bindings()
                     self._set_status(f"[green]Cleared cached PDF for {entry.key}[/green]")
 
+    def action_download_pdf(self) -> None:
+        from .. import pdf, ads_client as _ac
+        ads_view = self._active_ads_view()
+        if ads_view is not None:
+            article = ads_view._selected_article
+            if article is None:
+                return
+            eprint = _ac.arxiv_id_from_article(article)
+            doi = (article.doi or [""])[0]
+            key = article.bibcode
+        else:
+            entry = self.query_one(LibraryView)._highlighted_entry
+            if entry is None:
+                return
+            eprint, doi, key = entry.eprint, entry.doi, entry.key
+        if not eprint and not doi:
+            self._set_status(f"[yellow]No arXiv ID or DOI for {key}[/yellow]")
+            return
+        self._set_status(f"Downloading {key}…")
+        self.run_worker(self._do_download_pdf(key, eprint, doi, ads_view), exclusive=True)
+
+    async def _do_download_pdf(self, key: str, eprint: str, doi: str,
+                                ads_view: "AdsView | None") -> None:
+        import asyncio
+        from .. import pdf
+        path = await asyncio.to_thread(pdf.fetch, key, eprint=eprint, doi=doi, force=True)
+        if path is None:
+            self._set_status(f"[red]No PDF found for {key}[/red]")
+        else:
+            sz = path.stat().st_size // 1024
+            self._set_status(f"[green]Downloaded {key}  ({sz} KB)[/green]")
+            if ads_view is not None:
+                ads_view.refresh_pdf_status()
+            else:
+                self.query_one(LibraryView).refresh_pdf_status()
+            self.refresh_bindings()
+
     def action_open_pdf(self) -> None:
         from .. import pdf, ads_client as _ac
         ads_view = self._active_ads_view()
@@ -1219,7 +1257,7 @@ class LitbotApp(App):
                 return _pdf.is_cached(ads_view._selected_article.bibcode)
             return False
 
-        if action == "open_pdf":
+        if action in ("open_pdf", "download_pdf"):
             if on_library:
                 entry = self.query_one(LibraryView)._highlighted_entry
                 return entry is not None and bool(entry.eprint or entry.doi)
