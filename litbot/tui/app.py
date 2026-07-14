@@ -1107,22 +1107,29 @@ class LitbotApp(App):
             eprint = _ac.arxiv_id_from_article(article)
             doi = (article.doi or [""])[0]
             key = article.bibcode
+            adsurl = f"https://ui.adsabs.harvard.edu/abs/{article.bibcode}"
         else:
             entry = self.query_one(LibraryView)._highlighted_entry
             if entry is None:
                 return
-            eprint, doi, key = entry.eprint, entry.doi, entry.key
+            eprint, doi, key, adsurl = entry.eprint, entry.doi, entry.key, entry.adsurl
         if not eprint and not doi:
             self._set_status(f"[yellow]No arXiv ID or DOI for {key}[/yellow]")
             return
         self._set_status(f"Downloading {key}…")
-        self.run_worker(self._do_download_pdf(key, eprint, doi, ads_view), exclusive=True)
+        self.run_worker(self._do_download_pdf(key, eprint, doi, adsurl, ads_view), exclusive=True)
 
     async def _do_download_pdf(self, key: str, eprint: str, doi: str,
-                                ads_view: "AdsView | None") -> None:
+                                adsurl: str, ads_view: "AdsView | None") -> None:
         import asyncio
         from .. import pdf
-        path = await asyncio.to_thread(pdf.fetch, key, eprint=eprint, doi=doi, force=True)
+        try:
+            path = await asyncio.to_thread(
+                pdf.fetch, key, eprint=eprint, doi=doi, adsurl=adsurl, force=True
+            )
+        except RuntimeError as e:
+            self._set_status(f"[yellow]{e}[/yellow]")
+            return
         if path is None:
             self._set_status(f"[red]No PDF found for {key}[/red]")
         else:
@@ -1145,15 +1152,14 @@ class LitbotApp(App):
             eprint = _ac.arxiv_id_from_article(article)
             doi = (article.doi or [""])[0]
             key = article.bibcode
+            adsurl = f"https://ui.adsabs.harvard.edu/abs/{article.bibcode}"
         else:
             lib_view = self.query_one(LibraryView)
             entry = lib_view._highlighted_entry
             if entry is None:
                 self._set_status("[yellow]Select a paper first.[/yellow]")
                 return
-            eprint = entry.eprint
-            doi = entry.doi
-            key = entry.key
+            eprint, doi, key, adsurl = entry.eprint, entry.doi, entry.key, entry.adsurl
         if not eprint and not doi:
             self._set_status(f"[yellow]No arXiv ID or DOI for {key}[/yellow]")
             return
@@ -1163,12 +1169,19 @@ class LitbotApp(App):
             self._set_status(f"Fetching {key} via Unpaywall…")
         else:
             self._set_status(f"Fetching {key} from arXiv:{eprint}…")
-        self.run_worker(self._do_open_pdf(key, eprint, doi, ads_view), exclusive=True)
+        self.run_worker(self._do_open_pdf(key, eprint, doi, adsurl, ads_view), exclusive=True)
 
-    async def _do_open_pdf(self, key: str, eprint: str, doi: str, ads_view: "AdsView | None") -> None:
+    async def _do_open_pdf(self, key: str, eprint: str, doi: str,
+                            adsurl: str, ads_view: "AdsView | None") -> None:
         import asyncio
         from .. import pdf
-        opened = await asyncio.to_thread(pdf.open_pdf, key, eprint=eprint, doi=doi)
+        try:
+            opened = await asyncio.to_thread(
+                pdf.open_pdf, key, eprint=eprint, doi=doi, adsurl=adsurl
+            )
+        except RuntimeError as e:
+            self._set_status(f"[yellow]{e}[/yellow]")
+            return
         if not opened:
             self._set_status(f"[red]No open-access PDF found for {key}[/red]")
         else:

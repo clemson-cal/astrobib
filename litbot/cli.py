@@ -269,12 +269,12 @@ def pdf_group():
     """Manage locally cached PDFs for a paper."""
 
 
-def _resolve(key_or_bibcode: str) -> tuple[str, str, str]:
-    """Return (full_key, eprint, doi), querying ADS if not in library."""
+def _resolve(key_or_bibcode: str) -> tuple[str, str, str, str]:
+    """Return (full_key, eprint, doi, adsurl), querying ADS if not in library."""
     library = Library(root=get_library_path())
     entry = library.resolve(key_or_bibcode) or library.get_by_bibcode(key_or_bibcode)
     if entry:
-        return entry.key, entry.eprint, entry.doi
+        return entry.key, entry.eprint, entry.doi, entry.adsurl
     matches = library.possible_matches(key_or_bibcode)
     if len(matches) > 1:
         console.print(f"[yellow]Ambiguous key '{key_or_bibcode}' — did you mean:[/yellow]")
@@ -289,7 +289,8 @@ def _resolve(key_or_bibcode: str) -> tuple[str, str, str]:
             console.print(f"[red]{key_or_bibcode} not found on ADS.[/red]")
             raise SystemExit(1)
         a = results[0]
-        return key_or_bibcode, ads_client.arxiv_id_from_article(a) or "", (a.doi or [""])[0]
+        adsurl = f"https://ui.adsabs.harvard.edu/abs/{a.bibcode}"
+        return key_or_bibcode, ads_client.arxiv_id_from_article(a) or "", (a.doi or [""])[0], adsurl
     except RuntimeError as e:
         console.print(f"[red]{e}[/red]")
         raise SystemExit(1)
@@ -300,7 +301,7 @@ def _resolve(key_or_bibcode: str) -> tuple[str, str, str]:
 def pdf_check(citekey_or_bibcode: str):
     """Show available PDF sources without downloading."""
     from . import pdf
-    key, eprint, doi = _resolve(citekey_or_bibcode)
+    key, eprint, doi, adsurl = _resolve(citekey_or_bibcode)
     cached_path = pdf.cache_path(key)
     lib = Library(root=get_library_path())
     entry = lib.get(key)
@@ -324,7 +325,7 @@ def pdf_check(citekey_or_bibcode: str):
             console.print(f"  [cyan]Unpaywall[/cyan]  {doi}")
             console.print(f"             → {oa}")
         else:
-            console.print(f"  [dim]Unpaywall  {doi}  (no OA PDF)[/dim]")
+            console.print(f"  [dim]Unpaywall  {doi}  (no direct PDF)[/dim]")
             if detail:
                 best = detail.get("best_oa_location") or {}
                 if best.get("url"):
@@ -334,6 +335,9 @@ def pdf_check(citekey_or_bibcode: str):
                     console.print(f"  [dim]           {n} OA location(s), none with direct PDF[/dim]")
                 elif not detail.get("is_oa"):
                     console.print(f"  [dim]           Unpaywall reports paper is not OA[/dim]")
+            if not pdf.playwright_ready():
+                console.print(f"  [yellow]  → browser fallback available:[/yellow]"
+                              f"  [cyan]{pdf.PLAYWRIGHT_HINT}[/cyan]")
     else:
         console.print(f"  [dim]Unpaywall  —[/dim]")
 
@@ -344,12 +348,16 @@ def pdf_check(citekey_or_bibcode: str):
 def pdf_download(citekey_or_bibcode: str, source: str):
     """Download PDF, replacing any cached copy."""
     from . import pdf
-    key, eprint, doi = _resolve(citekey_or_bibcode)
+    key, eprint, doi, adsurl = _resolve(citekey_or_bibcode)
     if not eprint and not doi:
         console.print(f"[red]No arXiv ID or DOI for {key}.[/red]")
         raise SystemExit(1)
     console.print(f"Downloading {key} (source={source})…")
-    path = pdf.fetch(key, eprint=eprint, doi=doi, source=source, force=True)
+    try:
+        path = pdf.fetch(key, eprint=eprint, doi=doi, adsurl=adsurl, source=source, force=True)
+    except RuntimeError as e:
+        console.print(f"[yellow]{e}[/yellow]")
+        raise SystemExit(1)
     if path is None:
         console.print(f"[red]No PDF found via source={source}.[/red]")
         raise SystemExit(1)
@@ -363,18 +371,23 @@ def pdf_download(citekey_or_bibcode: str, source: str):
 def pdf_open(citekey_or_bibcode: str, source: str):
     """Open PDF, downloading if not cached (force re-download if --source given)."""
     from . import pdf
-    key, eprint, doi = _resolve(citekey_or_bibcode)
+    key, eprint, doi, adsurl = _resolve(citekey_or_bibcode)
     if not eprint and not doi:
         console.print(f"[red]No arXiv ID or DOI for {key}.[/red]")
         raise SystemExit(1)
-    force = source != "auto"  # explicit source overrides cache
+    force = source != "auto"
     if pdf.is_cached(key) and not force:
         console.print(f"Opening cached {key}…")
     elif doi and source != "arxiv":
         console.print(f"Fetching {key} via Unpaywall…")
     else:
         console.print(f"Fetching {key} from arXiv…")
-    if not pdf.open_pdf(key, eprint=eprint, doi=doi, source=source, force=force):
+    try:
+        ok = pdf.open_pdf(key, eprint=eprint, doi=doi, adsurl=adsurl, source=source, force=force)
+    except RuntimeError as e:
+        console.print(f"[yellow]{e}[/yellow]")
+        raise SystemExit(1)
+    if not ok:
         console.print(f"[red]No PDF found via source={source}.[/red]")
         raise SystemExit(1)
 
@@ -384,7 +397,7 @@ def pdf_open(citekey_or_bibcode: str, source: str):
 def pdf_clear(citekey_or_bibcode: str):
     """Remove the locally cached PDF."""
     from . import pdf
-    key, _, _ = _resolve(citekey_or_bibcode)
+    key, _, _, _ = _resolve(citekey_or_bibcode)
     path = pdf.cache_path(key)
     if not path.exists():
         console.print(f"[dim]No cached PDF for {key}.[/dim]")
