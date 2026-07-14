@@ -467,9 +467,10 @@ class AdsView(Static):
     """
 
     class ArticleHighlighted(Message):
-        def __init__(self, article) -> None:
+        def __init__(self, article, tab_id: str) -> None:
             super().__init__()
             self.article = article
+            self.tab_id = tab_id
 
     def __init__(self, query: str, tab_id: str) -> None:
         super().__init__(id=f"ads-view-{tab_id}")
@@ -509,7 +510,7 @@ class AdsView(Static):
             t.add_row("", cached, lib_icon, star, str(a.year or ""), first_author, short_title, key=a.bibcode)
         first = articles[0] if articles else None
         self._selected_article = first
-        self.post_message(self.ArticleHighlighted(first))
+        self.post_message(self.ArticleHighlighted(first, self.tab_id))
 
     def toggle_selection(self) -> None:
         if self._selected_article is None:
@@ -555,7 +556,7 @@ class AdsView(Static):
             return
         article = next((a for a in self._articles if a.bibcode == key), None)
         self._selected_article = article
-        self.post_message(self.ArticleHighlighted(article))
+        self.post_message(self.ArticleHighlighted(article, self.tab_id))
 
 
 # ── Modals ────────────────────────────────────────────────────────────────────
@@ -829,7 +830,7 @@ class LitbotApp(App):
     def _on_article_highlighted(self, event: AdsView.ArticleHighlighted) -> None:
         if event.article is None:
             return
-        if self._active_ads_view() is not event.sender:
+        if self._active_pane_id() != f"pane-{event.tab_id}":
             return
         entry = self._library.get_by_bibcode(event.article.bibcode) if self._library else None
         self.query_one(DetailPanel).show_ads_article(event.article, entry=entry)
