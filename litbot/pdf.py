@@ -23,8 +23,38 @@ def is_cached(citekey: str) -> bool:
     return cache_path(citekey).exists()
 
 
+def oa_url_with_detail(doi: str) -> tuple[str | None, dict | None]:
+    """Like oa_url but also returns the raw Unpaywall response dict."""
+    if not doi:
+        return None, None
+    try:
+        resp = httpx.get(
+            f"https://api.unpaywall.org/v2/{doi}",
+            params={"email": _UNPAYWALL_EMAIL},
+            timeout=10,
+            follow_redirects=True,
+        )
+        if resp.status_code != 200:
+            return None, None
+        data = resp.json()
+        best = data.get("best_oa_location") or {}
+        if best.get("url_for_pdf"):
+            return best["url_for_pdf"], data
+        for loc in data.get("oa_locations") or []:
+            if loc.get("url_for_pdf"):
+                return loc["url_for_pdf"], data
+        return None, data
+    except Exception:
+        return None, None
+
+
 def oa_url(doi: str) -> str | None:
-    """Return a direct PDF URL from Unpaywall, or None if unavailable."""
+    """Return a direct PDF URL from Unpaywall, or None if unavailable.
+
+    Checks best_oa_location.url_for_pdf first, then scans all oa_locations
+    for any direct PDF link, since Unpaywall sometimes omits url_for_pdf on
+    the best location even when other locations have it.
+    """
     if not doi:
         return None
     try:
@@ -36,8 +66,15 @@ def oa_url(doi: str) -> str | None:
         )
         if resp.status_code != 200:
             return None
-        best = resp.json().get("best_oa_location") or {}
-        return best.get("url_for_pdf")
+        data = resp.json()
+        best = data.get("best_oa_location") or {}
+        if best.get("url_for_pdf"):
+            return best["url_for_pdf"]
+        # Scan all OA locations for any direct PDF link
+        for loc in data.get("oa_locations") or []:
+            if loc.get("url_for_pdf"):
+                return loc["url_for_pdf"]
+        return None
     except Exception:
         return None
 

@@ -195,25 +195,86 @@ def show_cmd(key: str):
 # ── open ──────────────────────────────────────────────────────────────────────
 
 @main.command("open")
-@click.argument("key")
-def open_cmd(key: str):
-    """Open the PDF for a cite key (fetching from arXiv if needed)."""
+@click.argument("key_or_bibcode")
+@click.option("--check", "-c", is_flag=True, help="Show available PDF sources without downloading.")
+def open_cmd(key_or_bibcode: str, check: bool):
+    """Open the PDF for a cite key or ADS bibcode.
+
+    Accepts a local cite key, or an ADS bibcode (looks it up if not in library).
+    Use --check to inspect available sources without downloading.
+    """
     from . import pdf
     library = Library(root=get_library_path())
-    entry = library.get(key)
-    if entry is None:
-        console.print(f"[red]{key} not found.[/red]")
+
+    # Resolve to eprint + doi
+    eprint = doi = ""
+    display_key = key_or_bibcode
+
+    entry = library.get(key_or_bibcode) or library.get_by_bibcode(key_or_bibcode)
+    if entry:
+        eprint = entry.eprint
+        doi = entry.doi
+        display_key = entry.key
+    else:
+        console.print(f"[dim]{key_or_bibcode} not in library — querying ADS…[/dim]")
+        try:
+            from . import ads_client
+            results = ads_client.search(f"bibcode:{key_or_bibcode}", limit=1)
+            if not results:
+                console.print(f"[red]{key_or_bibcode} not found on ADS.[/red]")
+                raise SystemExit(1)
+            a = results[0]
+            eprint = ads_client.arxiv_id_from_article(a) or ""
+            doi = (a.doi or [""])[0]
+        except RuntimeError as e:
+            console.print(f"[red]{e}[/red]")
+            raise SystemExit(1)
+
+    if not eprint and not doi:
+        console.print(f"[red]No arXiv ID or DOI found for {display_key}.[/red]")
         raise SystemExit(1)
-    if not entry.eprint and not entry.doi:
-        console.print(f"[yellow]No arXiv ID or DOI for {key}.[/yellow]")
-        raise SystemExit(1)
-    if pdf.is_cached(key):
+
+    if check:
+        cached_path = pdf.cache_path(display_key)
+        console.print(f"\n[bold]{display_key}[/bold]")
+        if cached_path.exists():
+            sz = cached_path.stat().st_size // 1024
+            console.print(f"  [green]cached[/green]     {cached_path}  ({sz} KB)")
+        else:
+            console.print(f"  [dim]cached     —[/dim]")
+        if eprint:
+            console.print(f"  [cyan]arXiv[/cyan]      {eprint}")
+            console.print(f"             → https://arxiv.org/pdf/{eprint}")
+        else:
+            console.print(f"  [dim]arXiv      —[/dim]")
+        if doi:
+            console.print(f"  [dim]checking Unpaywall for {doi}…[/dim]")
+            oa, unpaywall_detail = pdf.oa_url_with_detail(doi)
+            if oa:
+                console.print(f"  [cyan]Unpaywall[/cyan]  {doi}")
+                console.print(f"             → {oa}")
+            else:
+                console.print(f"  [dim]Unpaywall  {doi}  (no OA PDF)[/dim]")
+                if unpaywall_detail:
+                    best = unpaywall_detail.get("best_oa_location") or {}
+                    if best.get("url"):
+                        console.print(f"  [dim]           landing page: {best['url']}[/dim]")
+                    n_locs = len(unpaywall_detail.get("oa_locations") or [])
+                    if n_locs:
+                        console.print(f"  [dim]           {n_locs} OA location(s) found, none with direct PDF[/dim]")
+                    elif not unpaywall_detail.get("is_oa"):
+                        console.print(f"  [dim]           Unpaywall reports paper is not OA[/dim]")
+        else:
+            console.print(f"  [dim]Unpaywall  —[/dim]")
+        return
+
+    if pdf.is_cached(display_key):
         console.print("Opening cached PDF…")
-    elif entry.doi:
+    elif doi:
         console.print("Fetching via Unpaywall…")
     else:
-        console.print(f"Fetching from arXiv:{entry.eprint}…")
-    if not pdf.open_pdf(key, eprint=entry.eprint, doi=entry.doi):
+        console.print(f"Fetching from arXiv:{eprint}…")
+    if not pdf.open_pdf(display_key, eprint=eprint, doi=doi):
         console.print(f"[red]No open-access PDF found.[/red]")
         raise SystemExit(1)
 

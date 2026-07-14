@@ -93,7 +93,7 @@ def fetch_bibtex(bibcode: str) -> dict | None:
     try:
         results = list(_ads.SearchQuery(q=f"bibcode:{bibcode}", fl=["abstract"], rows=1))
         if results and results[0].abstract:
-            data["abstract"] = results[0].abstract
+            data["abstract"] = _clean_abstract(results[0].abstract)
     except Exception:
         pass
     return data
@@ -115,6 +115,14 @@ def arxiv_id_from_article(article: _ads.search.Article) -> str | None:
         if ident.startswith("arXiv:"):
             return ident[6:]
     return None
+
+
+def _clean_abstract(text: str) -> str:
+    """Strip HTML tags and LaTeX braces from abstract text (display-only field)."""
+    import re
+    text = re.sub(r'<[^>]+>', '', text)   # strip HTML tags (<SUB>, <i>, etc.)
+    text = text.replace('{', '').replace('}', '')  # remove LaTeX brace groups
+    return ' '.join(text.split())          # normalize whitespace
 
 
 def _parse_bibtex_string(raw: str) -> dict | None:
