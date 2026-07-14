@@ -257,17 +257,12 @@ _SOURCE_OPT = click.option(
 
 
 @main.group("pdf")
-@click.argument("citekey_or_bibcode")
-@click.pass_context
-def pdf_group(ctx: click.Context, citekey_or_bibcode: str):
+def pdf_group():
     """Manage locally cached PDFs for a paper."""
-    ctx.ensure_object(dict)
-    ctx.obj["key_or_bibcode"] = citekey_or_bibcode
 
 
 def _resolve(key_or_bibcode: str) -> tuple[str, str, str]:
     """Return (display_key, eprint, doi), querying ADS if not in library."""
-    from . import pdf as _pdf_unused  # noqa: ensure pdf importable
     library = Library(root=get_library_path())
     entry = library.get(key_or_bibcode) or library.get_by_bibcode(key_or_bibcode)
     if entry:
@@ -287,11 +282,11 @@ def _resolve(key_or_bibcode: str) -> tuple[str, str, str]:
 
 
 @pdf_group.command("check")
-@click.pass_context
-def pdf_check(ctx: click.Context):
+@click.argument("citekey_or_bibcode")
+def pdf_check(citekey_or_bibcode: str):
     """Show available PDF sources without downloading."""
     from . import pdf
-    key, eprint, doi = _resolve(ctx.obj["key_or_bibcode"])
+    key, eprint, doi = _resolve(citekey_or_bibcode)
     cached_path = pdf.cache_path(key)
     console.print(f"\n[bold]{key}[/bold]")
     if cached_path.exists():
@@ -326,12 +321,12 @@ def pdf_check(ctx: click.Context):
 
 
 @pdf_group.command("download")
+@click.argument("citekey_or_bibcode")
 @_SOURCE_OPT
-@click.pass_context
-def pdf_download(ctx: click.Context, source: str):
+def pdf_download(citekey_or_bibcode: str, source: str):
     """Download PDF, replacing any cached copy."""
     from . import pdf
-    key, eprint, doi = _resolve(ctx.obj["key_or_bibcode"])
+    key, eprint, doi = _resolve(citekey_or_bibcode)
     if not eprint and not doi:
         console.print(f"[red]No arXiv ID or DOI for {key}.[/red]")
         raise SystemExit(1)
@@ -345,12 +340,12 @@ def pdf_download(ctx: click.Context, source: str):
 
 
 @pdf_group.command("open")
+@click.argument("citekey_or_bibcode")
 @_SOURCE_OPT
-@click.pass_context
-def pdf_open(ctx: click.Context, source: str):
+def pdf_open(citekey_or_bibcode: str, source: str):
     """Open PDF, downloading if not cached (force re-download if --source given)."""
     from . import pdf
-    key, eprint, doi = _resolve(ctx.obj["key_or_bibcode"])
+    key, eprint, doi = _resolve(citekey_or_bibcode)
     if not eprint and not doi:
         console.print(f"[red]No arXiv ID or DOI for {key}.[/red]")
         raise SystemExit(1)
@@ -367,11 +362,11 @@ def pdf_open(ctx: click.Context, source: str):
 
 
 @pdf_group.command("clear")
-@click.pass_context
-def pdf_clear(ctx: click.Context):
+@click.argument("citekey_or_bibcode")
+def pdf_clear(citekey_or_bibcode: str):
     """Remove the locally cached PDF."""
     from . import pdf
-    key, _, _ = _resolve(ctx.obj["key_or_bibcode"])
+    key, _, _ = _resolve(citekey_or_bibcode)
     path = pdf.cache_path(key)
     if not path.exists():
         console.print(f"[dim]No cached PDF for {key}.[/dim]")
