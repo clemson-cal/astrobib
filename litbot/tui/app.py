@@ -6,7 +6,7 @@ from pathlib import Path
 from textual import on
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.containers import Horizontal, Vertical
+from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.message import Message
 from textual.screen import ModalScreen
 from textual.widgets import (
@@ -15,6 +15,7 @@ from textual.widgets import (
     Header,
     Input,
     Label,
+    Link,
     Static,
     TabbedContent,
     TabPane,
@@ -29,86 +30,134 @@ from . import tabs_state
 
 # ── Detail panel ──────────────────────────────────────────────────────────────
 
-class DetailPanel(Static):
+class DetailPanel(VerticalScroll):
     DEFAULT_CSS = """
     DetailPanel {
-        height: 100%;
-        padding: 1 2;
-        border-left: solid $panel-lighten-1;
-        overflow-y: auto;
+        border-top: solid $panel-lighten-1;
+    }
+    DetailPanel #detail-body {
+        height: auto;
+        padding: 1 2 0 2;
+    }
+    DetailPanel #detail-links {
+        height: auto;
+        padding: 0 2 0 2;
+        layout: horizontal;
+    }
+    DetailPanel #detail-footer {
+        height: auto;
+        padding: 0 2 1 2;
+    }
+    DetailPanel Link {
+        width: auto;
+        padding-right: 2;
+        color: cyan;
+        text-style: none;
+        &:hover { text-style: underline; }
     }
     """
 
+    def compose(self) -> ComposeResult:
+        yield Static("", id="detail-body")
+        with Horizontal(id="detail-links"):
+            yield Link("ADS", url="", id="link-ads")
+            yield Link("", url="", id="link-arxiv")
+            yield Link("DOI", url="", id="link-doi")
+        yield Static("", id="detail-footer")
+
+    def _set_links(self, adsurl: str, eprint: str, doi: str) -> None:
+        link_ads = self.query_one("#link-ads", Link)
+        link_arxiv = self.query_one("#link-arxiv", Link)
+        link_doi = self.query_one("#link-doi", Link)
+
+        link_ads.url = adsurl
+        link_ads.display = bool(adsurl)
+
+        if eprint:
+            link_arxiv.text = f"arXiv:{eprint}"
+            link_arxiv.url = f"https://arxiv.org/abs/{eprint}"
+        link_arxiv.display = bool(eprint)
+
+        link_doi.url = f"https://doi.org/{doi}" if doi else ""
+        link_doi.display = bool(doi)
+
+        self.query_one("#detail-links").display = bool(adsurl or eprint or doi)
+
     def show_entry(self, entry: Entry | None) -> None:
+        body = self.query_one("#detail-body", Static)
+        footer = self.query_one("#detail-footer", Static)
         if entry is None:
-            self.update("")
+            body.update("")
+            footer.update("")
+            self._set_links("", "", "")
             return
         from rich.text import Text
         content = Text()
-        content.append(entry.key, style="bold cyan")
-        content.append("\n\n")
         content.append(entry.title, style="bold")
         content.append("\n\n")
-        content.append(entry.author, style="dim")
-        content.append("\n\n")
+        content.append(_format_authors(entry.author), style="dim")
+        content.append("   ·   ", style="dim")
         content.append(entry.year, style="green")
-        link_line = _link_line(adsurl=entry.adsurl, eprint=entry.eprint, doi=entry.doi)
-        if len(link_line):
-            content.append("\n")
-            content.append_text(link_line)
-        if entry.keywords:
-            content.append("\n\n")
-            content.append("Keywords:", style="yellow")
-            for kw in entry.keywords:
-                content.append(f"\n  • {kw}")
         abstract = entry.data.get("abstract", "")
         if abstract:
-            content.append(f"\n\n{abstract[:600]}{'…' if len(abstract) > 600 else ''}", style="dim")
-        self.update(content)
+            content.append("\n\n")
+            content.append(abstract[:1000] + ("…" if len(abstract) > 1000 else ""))
+        body.update(content)
+        self._set_links(entry.adsurl, entry.eprint, entry.doi)
+        foot = Text()
+        if entry.keywords:
+            foot.append(" · ".join(entry.keywords), style="dim")
+            foot.append("\n\n")
+        foot.append(entry.key, style="dim")
+        footer.update(foot)
 
     def show_ads_article(self, article, entry: Entry | None = None) -> None:
+        body = self.query_one("#detail-body", Static)
+        footer = self.query_one("#detail-footer", Static)
         if article is None:
-            self.update("")
+            body.update("")
+            footer.update("")
+            self._set_links("", "", "")
             return
         from rich.text import Text
         title = article.title[0] if article.title else ""
         authors = article.author or []
-        author_str = ", ".join(a.split(",")[0] for a in authors[:3])
-        if len(authors) > 3:
-            author_str += " et al."
+        author_str = _format_authors(" and ".join(authors))
         abstract = article.abstract or ""
         eprint = _arxiv_id_from_identifiers(article.identifier or [])
         doi = (article.doi or [""])[0]
         content = Text()
-        content.append(article.bibcode, style="bold cyan")
-        content.append("\n\n")
         content.append(title, style="bold")
         content.append("\n\n")
         content.append(author_str, style="dim")
-        content.append("\n\n")
+        content.append("   ·   ", style="dim")
         content.append(str(article.year or ""), style="green")
-        link_line = _link_line(
+        if abstract:
+            content.append("\n\n")
+            content.append(abstract[:1000] + ("…" if len(abstract) > 1000 else ""))
+        body.update(content)
+        self._set_links(
             adsurl=f"https://ui.adsabs.harvard.edu/abs/{article.bibcode}",
             eprint=entry.eprint if entry else eprint,
             doi=entry.doi if entry else doi,
         )
-        if len(link_line):
-            content.append("\n")
-            content.append_text(link_line)
+        foot = Text()
         if entry:
             if entry.keywords:
-                content.append("\n\n")
-                content.append("Keywords:", style="yellow")
-                for kw in entry.keywords:
-                    content.append(f"\n  • {kw}")
-            content.append("\n\n✓ in library", style="dim")
-        if abstract:
-            content.append(f"\n\n{abstract[:600]}{'…' if len(abstract) > 600 else ''}", style="dim")
-        self.update(content)
+                foot.append(" · ".join(entry.keywords), style="dim")
+                foot.append("\n\n")
+            foot.append(entry.key, style="dim")
+        elif article.bibcode:
+            foot.append(article.bibcode, style="dim")
+        footer.update(foot)
 
     def show_concept(self, concept: Concept | None, uat: UAT) -> None:
+        body = self.query_one("#detail-body", Static)
+        footer = self.query_one("#detail-footer", Static)
+        footer.update("")
+        self._set_links("", "", "")
         if concept is None:
-            self.update("[dim]Select a concept.[/dim]")
+            body.update("[dim]Select a concept.[/dim]")
             return
         parents = uat.parents(concept.uid)
         breadcrumb = (
@@ -133,7 +182,7 @@ class DetailPanel(Static):
                 lines.append(f"  • {child.label}")
             if len(children) > 20:
                 lines.append(f"  [dim]… and {len(children) - 20} more[/dim]")
-        self.update("\n".join(lines))
+        body.update("\n".join(lines))
 
 
 # ── Library view ──────────────────────────────────────────────────────────────
@@ -460,11 +509,10 @@ class LitbotApp(App):
     TITLE = "litbot"
     CSS = """
     Screen { layout: vertical; }
-    #body { layout: horizontal; height: 1fr; }
-    TabbedContent { width: 1fr; height: 100%; }
+    TabbedContent { height: 2fr; }
     TabbedContent ContentSwitcher { height: 1fr; }
     TabPane { padding: 0; height: 100%; }
-    #detail { width: 42; min-width: 30; }
+    #detail { height: 1fr; }
     #status-bar {
         height: 1;
         background: $panel;
@@ -482,7 +530,7 @@ class LitbotApp(App):
         Binding("/", "filter", "Filter"),
         Binding("S", "ads_search", "ADS search"),
         Binding("r", "refresh_tab", "Refresh"),
-        Binding("ctrl+w", "close_tab", "Close tab", show=False),
+        Binding("ctrl+w", "close_tab", "Close tab", show=True),
         Binding("[", "prev_tab", "Prev tab", show=False),
         Binding("]", "next_tab", "Next tab", show=False),
         Binding("space", "toggle_select", "Select", show=False),
@@ -491,6 +539,7 @@ class LitbotApp(App):
         Binding("u", "uat_browser", "UAT"),
         Binding("question_mark", "help", "Help"),
         Binding("escape", "clear_filter", "Clear", show=False),
+        Binding("z", "zoom", "Zoom", show=False),
     ]
 
     def __init__(self) -> None:
@@ -499,14 +548,14 @@ class LitbotApp(App):
         self._uat: UAT | None = None
         self._tab_states: list[dict] = []
         self._ads_views: dict[str, AdsView] = {}
+        self._split_idx: int = 0
 
     def compose(self) -> ComposeResult:
         yield Header()
-        with Horizontal(id="body"):
-            with TabbedContent(id="tabs"):
-                with TabPane("Library", id="pane-library"):
-                    yield LibraryView()
-            yield DetailPanel(id="detail")
+        with TabbedContent(id="tabs"):
+            with TabPane("Library", id="pane-library"):
+                yield LibraryView()
+        yield DetailPanel(id="detail")
         yield Static("", id="status-bar")
         yield Footer()
 
@@ -519,7 +568,8 @@ class LitbotApp(App):
         self._tab_states = tabs_state.load()
         has_token = bool(get_token())
         for tab_data in self._tab_states:
-            await self._create_ads_tab(tab_data, fetch=has_token)
+            await self._create_ads_tab(tab_data, fetch=has_token, switch=False)
+        self.call_after_refresh(self._focus_active_table)
 
         n = len(self._library.entries())
         uat_note = f" · UAT ({len(self._uat)})" if self._uat else ""
@@ -538,12 +588,16 @@ class LitbotApp(App):
         tab_id = pane_id.removeprefix("pane-")
         return self._ads_views.get(tab_id)
 
-    async def _create_ads_tab(self, tab_data: dict, fetch: bool = True) -> AdsView:
+    async def _create_ads_tab(self, tab_data: dict, fetch: bool = True, switch: bool = True) -> AdsView:
         tab_id = tab_data["id"]
         ads_view = AdsView(query=tab_data["query"], tab_id=tab_id)
         self._ads_views[tab_id] = ads_view
         pane = TabPane(tab_data["label"], ads_view, id=f"pane-{tab_id}")
-        await self.query_one(TabbedContent).add_pane(pane)
+        tc = self.query_one(TabbedContent)
+        await tc.add_pane(pane)
+        if switch:
+            tc.active = f"pane-{tab_id}"
+            self.call_after_refresh(self._focus_active_table)
         if fetch:
             await self._do_refresh(ads_view, tab_data)
         return ads_view
@@ -623,6 +677,14 @@ class LitbotApp(App):
 
     def action_prev_tab(self) -> None:
         self._switch_tab(-1)
+
+    _SPLIT_RATIOS = [("2fr", "1fr"), ("1fr", "1fr"), ("1fr", "2fr"), ("3fr", "1fr")]
+
+    def action_zoom(self) -> None:
+        self._split_idx = (self._split_idx + 1) % len(self._SPLIT_RATIOS)
+        top, bottom = self._SPLIT_RATIOS[self._split_idx]
+        self.query_one(TabbedContent).styles.height = top
+        self.query_one(DetailPanel).styles.height = bottom
 
     def _switch_tab(self, direction: int) -> None:
         tabs = self.query_one(Tabs)
@@ -867,34 +929,52 @@ class LitbotApp(App):
     def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
         from .. import pdf as _pdf
         pane_id = self._active_pane_id()
+        on_library = pane_id == "pane-library"
+        ads_view = self._active_ads_view()
+
+        # Actions only valid on ADS tabs
+        if action in ("refresh_tab", "close_tab"):
+            return not on_library
+
+        # Actions only valid on Library tab
+        if action in ("filter", "toggle_select", "export_selected"):
+            return on_library
+
         if action == "clear_pdf":
-            if pane_id == "pane-library":
+            if on_library:
                 entry = self.query_one(LibraryView)._highlighted_entry
                 return entry is not None and _pdf.is_cached(entry.key)
-            ads_view = self._active_ads_view()
             if ads_view and ads_view._selected_article:
                 return _pdf.is_cached(ads_view._selected_article.bibcode)
             return False
+
+        if action == "open_pdf":
+            if on_library:
+                entry = self.query_one(LibraryView)._highlighted_entry
+                return entry is not None and bool(entry.eprint)
+            if ads_view:
+                return ads_view._selected_article is not None
+            return False
+
         if action == "add_paper":
-            if pane_id == "pane-library":
-                lib_view = self.query_one(LibraryView)
-                return lib_view._highlighted_entry is None
-            ads_view = self._active_ads_view()
+            if on_library:
+                return False
             if ads_view is not None:
                 article = ads_view._selected_article
                 if article and self._library:
                     return self._library.get_by_bibcode(article.bibcode) is None
             return True
+
         if action == "remove_paper":
-            if pane_id == "pane-library":
+            if on_library:
                 lib_view = self.query_one(LibraryView)
                 return lib_view._highlighted_entry is not None
-            ads_view = self._active_ads_view()
             if ads_view is not None:
                 article = ads_view._selected_article
                 if article and self._library:
                     return self._library.get_by_bibcode(article.bibcode) is not None
             return False
+
         return True
 
     def _set_status(self, msg: str) -> None:
@@ -903,21 +983,22 @@ class LitbotApp(App):
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
-def _link_line(adsurl: str, eprint: str, doi: str) -> "Text":
-    from rich.text import Text
-    from rich.style import Style
-    result = Text()
+
+def _format_authors(raw: str, max_count: int = 5) -> str:
+    if not raw:
+        return ""
+    authors = [a.strip() for a in raw.split(" and ")]
     parts = []
-    if adsurl:
-        parts.append(Text("ADS", style=Style(color="cyan", link=adsurl)))
-    if eprint:
-        parts.append(Text(f"arXiv:{eprint}", style=Style(color="cyan", link=f"https://arxiv.org/abs/{eprint}")))
-    if doi:
-        parts.append(Text("DOI", style=Style(color="cyan", link=f"https://doi.org/{doi}")))
-    for i, part in enumerate(parts):
-        if i:
-            result.append("  ")
-        result.append_text(part)
+    for a in authors[:max_count]:
+        if "," in a:
+            last, rest = a.split(",", 1)
+            initial = rest.strip()[:1]
+            parts.append(f"{last.strip()}, {initial}." if initial else last.strip())
+        else:
+            parts.append(a)
+    result = "; ".join(parts)
+    if len(authors) > max_count:
+        result += " et al."
     return result
 
 
