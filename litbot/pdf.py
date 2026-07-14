@@ -51,10 +51,12 @@ def fetch(citekey: str, *, eprint: str | None = None, doi: str | None = None) ->
     if path.exists():
         return path
 
-    if eprint:
-        url: str | None = f"https://arxiv.org/pdf/{eprint.strip()}"
-    elif doi:
-        url = oa_url(doi)
+    if doi:
+        url: str | None = oa_url(doi)
+        if url is None and eprint:
+            url = f"https://arxiv.org/pdf/{eprint.strip()}"
+    elif eprint:
+        url = f"https://arxiv.org/pdf/{eprint.strip()}"
     else:
         return None
 

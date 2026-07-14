@@ -918,10 +918,10 @@ class LitbotApp(App):
             return
         if pdf.is_cached(key):
             self._set_status(f"Opening {key}…")
-        elif eprint:
-            self._set_status(f"Fetching {key} from arXiv:{eprint}…")
+        elif doi:
+            self._set_status(f"Fetching {key} via Unpaywall…")
         else:
-            self._set_status(f"Searching Unpaywall for {key}…")
+            self._set_status(f"Fetching {key} from arXiv:{eprint}…")
         if not pdf.open_pdf(key, eprint=eprint, doi=doi):
             self._set_status(f"[red]No open-access PDF found for {key}[/red]")
         else:

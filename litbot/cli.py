@@ -209,10 +209,10 @@ def open_cmd(key: str):
         raise SystemExit(1)
     if pdf.is_cached(key):
         console.print("Opening cached PDF…")
-    elif entry.eprint:
-        console.print(f"Fetching from arXiv:{entry.eprint}…")
+    elif entry.doi:
+        console.print("Fetching via Unpaywall…")
     else:
-        console.print("Searching Unpaywall…")
+        console.print(f"Fetching from arXiv:{entry.eprint}…")
     if not pdf.open_pdf(key, eprint=entry.eprint, doi=entry.doi):
         console.print(f"[red]No open-access PDF found.[/red]")
         raise SystemExit(1)
