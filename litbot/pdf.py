@@ -83,27 +83,25 @@ def oa_url(doi: str) -> str | None:
         return None
 
 
-def fetch(citekey: str, *, eprint: str | None = None, doi: str | None = None) -> Path | None:
-    """Return cached PDF path, downloading if needed.
+SOURCE_AUTO = "auto"
+SOURCE_ARXIV = "arxiv"
+SOURCE_JOURNAL = "journal"
 
-    Tries arXiv first (if eprint given), then Unpaywall (if doi given).
-    """
-    path = cache_path(citekey)
-    if path.exists():
-        return path
 
+def _resolve_url(*, eprint: str | None, doi: str | None, source: str) -> str | None:
+    if source == SOURCE_ARXIV:
+        return f"https://arxiv.org/pdf/{eprint.strip()}" if eprint else None
+    if source == SOURCE_JOURNAL:
+        return oa_url(doi) if doi else None
+    # auto: journal first, arXiv fallback
     if doi:
-        url: str | None = oa_url(doi)
-        if url is None and eprint:
-            url = f"https://arxiv.org/pdf/{eprint.strip()}"
-    elif eprint:
-        url = f"https://arxiv.org/pdf/{eprint.strip()}"
-    else:
-        return None
+        url = oa_url(doi)
+        if url:
+            return url
+    return f"https://arxiv.org/pdf/{eprint.strip()}" if eprint else None
 
-    if not url:
-        return None
 
+def _download_url(path: Path, url: str) -> Path | None:
     try:
         with httpx.stream("GET", url, follow_redirects=True, timeout=60) as resp:
             resp.raise_for_status()
@@ -114,22 +112,38 @@ def fetch(citekey: str, *, eprint: str | None = None, doi: str | None = None) ->
             with open(path, "wb") as f:
                 for chunk in resp.iter_bytes():
                     f.write(chunk)
+        return path
     except (httpx.HTTPError, OSError):
         return None
 
-    return path
+
+def fetch(citekey: str, *, eprint: str | None = None, doi: str | None = None,
+          source: str = SOURCE_AUTO, force: bool = False) -> Path | None:
+    """Return cached PDF path, downloading if needed.
+
+    source: 'auto' (journal then arXiv), 'journal' (Unpaywall only),
+            'arxiv' (arXiv only). force=True re-downloads even if cached.
+    """
+    path = cache_path(citekey)
+    if path.exists() and not force:
+        return path
+    if path.exists() and force:
+        path.unlink()
+    url = _resolve_url(eprint=eprint, doi=doi, source=source)
+    if not url:
+        return None
+    return _download_url(path, url)
 
 
-def open_pdf(citekey: str, *, eprint: str | None = None, doi: str | None = None) -> bool:
-    path = fetch(citekey, eprint=eprint, doi=doi)
+def open_pdf(citekey: str, *, eprint: str | None = None, doi: str | None = None,
+             source: str = SOURCE_AUTO, force: bool = False) -> bool:
+    path = fetch(citekey, eprint=eprint, doi=doi, source=source, force=force)
     if path is None:
         return False
-
     if sys.platform == "darwin":
         subprocess.run(["open", str(path)], check=False)
     elif sys.platform.startswith("linux"):
         subprocess.run(["xdg-open", str(path)], check=False)
     else:
         subprocess.run(["start", str(path)], shell=True, check=False)
-
     return True

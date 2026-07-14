@@ -247,91 +247,137 @@ def show_cmd(key: str):
     console.print(entry.path.read_text())
 
 
-# ── open ──────────────────────────────────────────────────────────────────────
+# ── pdf ───────────────────────────────────────────────────────────────────────
 
-@main.command("open")
-@click.argument("key_or_bibcode")
-@click.option("--check", "-c", is_flag=True, help="Show available PDF sources without downloading.")
-def open_cmd(key_or_bibcode: str, check: bool):
-    """Open the PDF for a cite key or ADS bibcode.
+_SOURCE = click.Choice(["auto", "arxiv", "journal"])
+_SOURCE_OPT = click.option(
+    "--source", "-s", type=_SOURCE, default="auto", show_default=True,
+    help="auto: journal then arXiv fallback; journal: Unpaywall only; arxiv: arXiv only.",
+)
 
-    Accepts a local cite key, or an ADS bibcode (looks it up if not in library).
-    Use --check to inspect available sources without downloading.
-    """
-    from . import pdf
+
+@main.group("pdf")
+@click.argument("citekey_or_bibcode")
+@click.pass_context
+def pdf_group(ctx: click.Context, citekey_or_bibcode: str):
+    """Manage locally cached PDFs for a paper."""
+    ctx.ensure_object(dict)
+    ctx.obj["key_or_bibcode"] = citekey_or_bibcode
+
+
+def _resolve(key_or_bibcode: str) -> tuple[str, str, str]:
+    """Return (display_key, eprint, doi), querying ADS if not in library."""
+    from . import pdf as _pdf_unused  # noqa: ensure pdf importable
     library = Library(root=get_library_path())
-
-    # Resolve to eprint + doi
-    eprint = doi = ""
-    display_key = key_or_bibcode
-
     entry = library.get(key_or_bibcode) or library.get_by_bibcode(key_or_bibcode)
     if entry:
-        eprint = entry.eprint
-        doi = entry.doi
-        display_key = entry.key
-    else:
-        console.print(f"[dim]{key_or_bibcode} not in library — querying ADS…[/dim]")
-        try:
-            from . import ads_client
-            results = ads_client.search(f"bibcode:{key_or_bibcode}", limit=1)
-            if not results:
-                console.print(f"[red]{key_or_bibcode} not found on ADS.[/red]")
-                raise SystemExit(1)
-            a = results[0]
-            eprint = ads_client.arxiv_id_from_article(a) or ""
-            doi = (a.doi or [""])[0]
-        except RuntimeError as e:
-            console.print(f"[red]{e}[/red]")
+        return entry.key, entry.eprint, entry.doi
+    console.print(f"[dim]{key_or_bibcode} not in library — querying ADS…[/dim]")
+    try:
+        from . import ads_client
+        results = ads_client.search(f"bibcode:{key_or_bibcode}", limit=1)
+        if not results:
+            console.print(f"[red]{key_or_bibcode} not found on ADS.[/red]")
             raise SystemExit(1)
-
-    if not eprint and not doi:
-        console.print(f"[red]No arXiv ID or DOI found for {display_key}.[/red]")
+        a = results[0]
+        return key_or_bibcode, ads_client.arxiv_id_from_article(a) or "", (a.doi or [""])[0]
+    except RuntimeError as e:
+        console.print(f"[red]{e}[/red]")
         raise SystemExit(1)
 
-    if check:
-        cached_path = pdf.cache_path(display_key)
-        console.print(f"\n[bold]{display_key}[/bold]")
-        if cached_path.exists():
-            sz = cached_path.stat().st_size // 1024
-            console.print(f"  [green]cached[/green]     {cached_path}  ({sz} KB)")
-        else:
-            console.print(f"  [dim]cached     —[/dim]")
-        if eprint:
-            console.print(f"  [cyan]arXiv[/cyan]      {eprint}")
-            console.print(f"             → https://arxiv.org/pdf/{eprint}")
-        else:
-            console.print(f"  [dim]arXiv      —[/dim]")
-        if doi:
-            console.print(f"  [dim]checking Unpaywall for {doi}…[/dim]")
-            oa, unpaywall_detail = pdf.oa_url_with_detail(doi)
-            if oa:
-                console.print(f"  [cyan]Unpaywall[/cyan]  {doi}")
-                console.print(f"             → {oa}")
-            else:
-                console.print(f"  [dim]Unpaywall  {doi}  (no OA PDF)[/dim]")
-                if unpaywall_detail:
-                    best = unpaywall_detail.get("best_oa_location") or {}
-                    if best.get("url"):
-                        console.print(f"  [dim]           landing page: {best['url']}[/dim]")
-                    n_locs = len(unpaywall_detail.get("oa_locations") or [])
-                    if n_locs:
-                        console.print(f"  [dim]           {n_locs} OA location(s) found, none with direct PDF[/dim]")
-                    elif not unpaywall_detail.get("is_oa"):
-                        console.print(f"  [dim]           Unpaywall reports paper is not OA[/dim]")
-        else:
-            console.print(f"  [dim]Unpaywall  —[/dim]")
-        return
 
-    if pdf.is_cached(display_key):
-        console.print("Opening cached PDF…")
-    elif doi:
-        console.print("Fetching via Unpaywall…")
+@pdf_group.command("check")
+@click.pass_context
+def pdf_check(ctx: click.Context):
+    """Show available PDF sources without downloading."""
+    from . import pdf
+    key, eprint, doi = _resolve(ctx.obj["key_or_bibcode"])
+    cached_path = pdf.cache_path(key)
+    console.print(f"\n[bold]{key}[/bold]")
+    if cached_path.exists():
+        sz = cached_path.stat().st_size // 1024
+        console.print(f"  [green]cached[/green]     {cached_path}  ({sz} KB)")
     else:
-        console.print(f"Fetching from arXiv:{eprint}…")
-    if not pdf.open_pdf(display_key, eprint=eprint, doi=doi):
-        console.print(f"[red]No open-access PDF found.[/red]")
+        console.print(f"  [dim]cached     —[/dim]")
+    if eprint:
+        console.print(f"  [cyan]arXiv[/cyan]      {eprint}")
+        console.print(f"             → https://arxiv.org/pdf/{eprint}")
+    else:
+        console.print(f"  [dim]arXiv      —[/dim]")
+    if doi:
+        console.print(f"  [dim]checking Unpaywall for {doi}…[/dim]")
+        oa, detail = pdf.oa_url_with_detail(doi)
+        if oa:
+            console.print(f"  [cyan]Unpaywall[/cyan]  {doi}")
+            console.print(f"             → {oa}")
+        else:
+            console.print(f"  [dim]Unpaywall  {doi}  (no OA PDF)[/dim]")
+            if detail:
+                best = detail.get("best_oa_location") or {}
+                if best.get("url"):
+                    console.print(f"  [dim]           landing page: {best['url']}[/dim]")
+                n = len(detail.get("oa_locations") or [])
+                if n:
+                    console.print(f"  [dim]           {n} OA location(s), none with direct PDF[/dim]")
+                elif not detail.get("is_oa"):
+                    console.print(f"  [dim]           Unpaywall reports paper is not OA[/dim]")
+    else:
+        console.print(f"  [dim]Unpaywall  —[/dim]")
+
+
+@pdf_group.command("download")
+@_SOURCE_OPT
+@click.pass_context
+def pdf_download(ctx: click.Context, source: str):
+    """Download PDF, replacing any cached copy."""
+    from . import pdf
+    key, eprint, doi = _resolve(ctx.obj["key_or_bibcode"])
+    if not eprint and not doi:
+        console.print(f"[red]No arXiv ID or DOI for {key}.[/red]")
         raise SystemExit(1)
+    console.print(f"Downloading {key} (source={source})…")
+    path = pdf.fetch(key, eprint=eprint, doi=doi, source=source, force=True)
+    if path is None:
+        console.print(f"[red]No PDF found via source={source}.[/red]")
+        raise SystemExit(1)
+    sz = path.stat().st_size // 1024
+    console.print(f"[green]Saved {path}  ({sz} KB)[/green]")
+
+
+@pdf_group.command("open")
+@_SOURCE_OPT
+@click.pass_context
+def pdf_open(ctx: click.Context, source: str):
+    """Open PDF, downloading if not cached (force re-download if --source given)."""
+    from . import pdf
+    key, eprint, doi = _resolve(ctx.obj["key_or_bibcode"])
+    if not eprint and not doi:
+        console.print(f"[red]No arXiv ID or DOI for {key}.[/red]")
+        raise SystemExit(1)
+    force = source != "auto"  # explicit source overrides cache
+    if pdf.is_cached(key) and not force:
+        console.print(f"Opening cached {key}…")
+    elif doi and source != "arxiv":
+        console.print(f"Fetching {key} via Unpaywall…")
+    else:
+        console.print(f"Fetching {key} from arXiv…")
+    if not pdf.open_pdf(key, eprint=eprint, doi=doi, source=source, force=force):
+        console.print(f"[red]No PDF found via source={source}.[/red]")
+        raise SystemExit(1)
+
+
+@pdf_group.command("clear")
+@click.pass_context
+def pdf_clear(ctx: click.Context):
+    """Remove the locally cached PDF."""
+    from . import pdf
+    key, _, _ = _resolve(ctx.obj["key_or_bibcode"])
+    path = pdf.cache_path(key)
+    if not path.exists():
+        console.print(f"[dim]No cached PDF for {key}.[/dim]")
+        return
+    path.unlink()
+    console.print(f"[green]Cleared {path}[/green]")
 
 
 # ── list ──────────────────────────────────────────────────────────────────────
