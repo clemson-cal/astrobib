@@ -121,7 +121,7 @@ def fetch(citekey: str, *, eprint: str | None = None, doi: str | None = None,
           source: str = SOURCE_AUTO, force: bool = False) -> Path | None:
     """Return cached PDF path, downloading if needed.
 
-    source: 'auto' (journal then arXiv), 'journal' (Unpaywall only),
+    source: 'auto' (journal then arXiv fallback), 'journal' (Unpaywall only),
             'arxiv' (arXiv only). force=True re-downloads even if cached.
     """
     path = cache_path(citekey)
@@ -129,10 +129,19 @@ def fetch(citekey: str, *, eprint: str | None = None, doi: str | None = None,
         return path
     if path.exists() and force:
         path.unlink()
-    url = _resolve_url(eprint=eprint, doi=doi, source=source)
-    if not url:
-        return None
-    return _download_url(path, url)
+    if source != SOURCE_AUTO:
+        url = _resolve_url(eprint=eprint, doi=doi, source=source)
+        return _download_url(path, url) if url else None
+    # auto: try journal PDF, then fall back to arXiv if download fails
+    if doi:
+        url = oa_url(doi)
+        if url:
+            result = _download_url(path, url)
+            if result:
+                return result
+    if eprint:
+        return _download_url(path, f"https://arxiv.org/pdf/{eprint.strip()}")
+    return None
 
 
 def open_pdf(citekey: str, *, eprint: str | None = None, doi: str | None = None,
