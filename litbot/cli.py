@@ -10,7 +10,10 @@ from rich.console import Console
 from rich.table import Table
 from rich.text import Text
 
-from .state import get_token, set_token, get_email, set_email, get_library_path, UAT_CACHE
+from .state import (
+    get_token, set_token, get_email, set_email,
+    get_library_path, STATE_FILE, PDF_CACHE_DIR, UAT_CACHE,
+)
 from .library import Library
 from .keys import generate_key
 from . import ads_client
@@ -28,58 +31,86 @@ def main(ctx: click.Context):
         LitbotApp().run()
 
 
-# ── token ─────────────────────────────────────────────────────────────────────
+# ── config ────────────────────────────────────────────────────────────────────
 
-@main.command("token")
-@click.argument("token", required=False)
-def token_cmd(token: str | None):
-    """Set or show the ADS API token.
+@main.group("config", invoke_without_command=True)
+@click.pass_context
+def config_group(ctx: click.Context):
+    """Show or edit litbot configuration."""
+    if ctx.invoked_subcommand is None:
+        _show_config()
 
-    With no argument, shows current token (masked) or prompts to enter one.
-    """
+
+def _show_config() -> None:
+    token = get_token()
+    email = get_email()
+    table = Table(box=None, show_header=False, padding=(0, 2, 0, 0))
+    table.add_column("key", style="dim", width=16)
+    table.add_column("value")
+    table.add_column("source", style="dim")
+
     if token:
-        set_token(token)
+        masked = token[:4] + "…" + token[-4:] if len(token) > 8 else "****"
+        table.add_row("ads_token", Text(masked, style="cyan"), _source("ADS_API_TOKEN", token))
+    else:
+        table.add_row("ads_token", Text("not set", style="yellow"), "")
+
+    if email:
+        table.add_row("email", Text(email, style="cyan"), _source("LITBOT_EMAIL", email))
+    else:
+        table.add_row("email", Text("not set", style="yellow"), "")
+
+    table.add_row("library", Text(str(get_library_path()), style="dim"), "")
+    table.add_row("state_file", Text(str(STATE_FILE), style="dim"), "")
+    table.add_row("pdf_cache", Text(str(PDF_CACHE_DIR), style="dim"), "")
+    console.print(table)
+
+
+def _source(env_var: str, current_value: str | None) -> str:
+    import os
+    return f"env:{env_var}" if os.environ.get(env_var) else "state.json"
+
+
+@config_group.command("token")
+@click.argument("value", required=False)
+def config_token(value: str | None):
+    """Get or set the ADS API token."""
+    if value:
+        set_token(value)
         console.print("[green]ADS token saved.[/green]")
         return
-
     current = get_token()
     if current:
         masked = current[:4] + "…" + current[-4:] if len(current) > 8 else "****"
-        console.print(f"ADS token: [dim]{masked}[/dim]")
+        console.print(f"ads_token: [cyan]{masked}[/cyan]")
         if click.confirm("Replace?", default=False):
-            new_token = click.prompt("New ADS token", hide_input=True)
-            set_token(new_token)
+            set_token(click.prompt("New ADS token", hide_input=True))
             console.print("[green]ADS token saved.[/green]")
     else:
         console.print("[yellow]No ADS token set.[/yellow]")
         console.print("Get one at: https://ui.adsabs.harvard.edu/user/settings/token")
-        new_token = click.prompt("ADS token", hide_input=True)
-        set_token(new_token)
+        set_token(click.prompt("ADS token", hide_input=True))
         console.print("[green]ADS token saved.[/green]")
 
 
-# ── email ─────────────────────────────────────────────────────────────────────
-
-@main.command("email")
+@config_group.command("email")
 @click.argument("address", required=False)
-def email_cmd(address: str | None):
-    """Set or show the email address used for Unpaywall PDF lookups."""
+def config_email(address: str | None):
+    """Get or set the email address used for Unpaywall PDF lookups."""
     if address:
         set_email(address)
         console.print(f"[green]Email saved: {address}[/green]")
         return
     current = get_email()
     if current:
-        console.print(f"Unpaywall email: [cyan]{current}[/cyan]")
+        console.print(f"email: [cyan]{current}[/cyan]")
         if click.confirm("Replace?", default=False):
-            new = click.prompt("New email")
-            set_email(new)
-            console.print(f"[green]Email saved: {new}[/green]")
+            set_email(click.prompt("New email"))
+            console.print("[green]Email saved.[/green]")
     else:
-        console.print("[yellow]No email set — Unpaywall lookups will fail.[/yellow]")
-        new = click.prompt("Email address")
-        set_email(new)
-        console.print(f"[green]Email saved: {new}[/green]")
+        console.print("[yellow]No email set — Unpaywall PDF lookups will fail.[/yellow]")
+        set_email(click.prompt("Email address"))
+        console.print("[green]Email saved.[/green]")
 
 
 # ── add ───────────────────────────────────────────────────────────────────────

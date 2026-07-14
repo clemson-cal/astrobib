@@ -23,7 +23,10 @@ from textual.widgets import (
 )
 
 from ..library import Entry, Library
-from ..state import UAT_CACHE, get_library_path, get_token
+from ..state import (
+    UAT_CACHE, PDF_CACHE_DIR, STATE_FILE,
+    get_library_path, get_token, set_token, get_email, set_email,
+)
 from ..uat import UAT, Concept, get_uat
 from . import tabs_state
 
@@ -182,6 +185,82 @@ class DetailPanel(VerticalScroll):
             if len(children) > 20:
                 lines.append(f"  [dim]… and {len(children) - 20} more[/dim]")
         body.update("\n".join(lines))
+
+
+# ── Config view ───────────────────────────────────────────────────────────────
+
+class ConfigView(VerticalScroll):
+    DEFAULT_CSS = """
+    ConfigView {
+        height: 100%;
+        padding: 2 4;
+    }
+    ConfigView .cfg-row {
+        height: 3;
+        layout: horizontal;
+        margin-bottom: 1;
+    }
+    ConfigView .cfg-label {
+        width: 20;
+        padding: 1 2 1 0;
+        color: $text-muted;
+        text-align: right;
+    }
+    ConfigView Input {
+        width: 56;
+    }
+    ConfigView #cfg-info {
+        margin-top: 2;
+        height: auto;
+    }
+    """
+
+    def compose(self) -> ComposeResult:
+        with Horizontal(classes="cfg-row"):
+            yield Label("ADS token", classes="cfg-label")
+            yield Input(password=True, placeholder="paste ADS token…", id="cfg-token")
+        with Horizontal(classes="cfg-row"):
+            yield Label("Unpaywall email", classes="cfg-label")
+            yield Input(placeholder="your@email.com", id="cfg-email")
+        yield Static("", id="cfg-info")
+
+    def on_mount(self) -> None:
+        self.query_one("#cfg-token", Input).value = get_token() or ""
+        self.query_one("#cfg-email", Input).value = get_email() or ""
+        self._refresh_info()
+
+    def _refresh_info(self) -> None:
+        from rich.text import Text
+        from .. import ads_client
+        t = Text()
+        t.append("library    ", style="dim")
+        t.append(str(get_library_path()) + "\n", style="cyan")
+        t.append("pdf cache  ", style="dim")
+        t.append(str(PDF_CACHE_DIR) + "\n", style="cyan")
+        t.append("state file ", style="dim")
+        t.append(str(STATE_FILE), style="cyan")
+        quota = ads_client.get_quota()
+        if quota and quota.get("limit"):
+            remaining = quota["remaining"]
+            limit = quota["limit"]
+            color = "green" if remaining > limit * 0.2 else "yellow" if remaining > 0 else "red"
+            t.append("\nADS quota  ", style="dim")
+            t.append(f"{remaining}/{limit}", style=color)
+        self.query_one("#cfg-info", Static).update(t)
+
+    @on(Input.Submitted, "#cfg-token")
+    def _save_token(self, event: Input.Submitted) -> None:
+        value = event.value.strip()
+        if value:
+            set_token(value)
+            self.app._set_status("[green]ADS token saved.[/green]")
+
+    @on(Input.Submitted, "#cfg-email")
+    def _save_email(self, event: Input.Submitted) -> None:
+        value = event.value.strip()
+        if value:
+            set_email(value)
+            self.app._set_status(f"[green]Email saved: {value}[/green]")
 
 
 # ── Library view ──────────────────────────────────────────────────────────────
@@ -589,7 +668,6 @@ class LitbotApp(App):
         Binding("space", "toggle_select", "Select", show=False),
         Binding("s", "star", "Star", show=False),
         Binding("e", "export_selected", "Export"),
-        Binding("T", "set_token", "Token", show=False),
         Binding("u", "uat_browser", "UAT"),
         Binding("question_mark", "help", "Help"),
         Binding("escape", "clear_filter", "Clear", show=False),
@@ -610,6 +688,8 @@ class LitbotApp(App):
             with TabbedContent(id="tabs"):
                 with TabPane("Library", id="pane-library"):
                     yield LibraryView()
+                with TabPane("Config", id="pane-config"):
+                    yield ConfigView()
             yield DetailPanel(id="detail")
         yield Static("", id="status-bar")
         yield Footer()
@@ -699,6 +779,13 @@ class LitbotApp(App):
         self.refresh_bindings()
         pane_id = self._active_pane_id()
         detail = self.query_one(DetailPanel)
+        if pane_id == "pane-config":
+            detail.show_entry(None)
+            self._set_status("Config  [dim]Enter to save each field[/dim]")
+            self.call_after_refresh(
+                lambda: self.query_one("#cfg-token", Input).focus()
+            )
+            return
         if pane_id == "pane-library":
             lib_view = self.query_one(LibraryView)
             detail.show_entry(lib_view._highlighted_entry)
@@ -821,7 +908,8 @@ class LitbotApp(App):
 
     def action_ads_search(self) -> None:
         if not get_token():
-            self.push_screen(TokenModal(), self._after_token_set)
+            self.query_one(TabbedContent).active = "pane-config"
+            self._set_status("[yellow]Set your ADS token in Config, then press S to search.[/yellow]")
             return
 
         async def handle(query: str) -> None:
@@ -832,13 +920,6 @@ class LitbotApp(App):
             await self._create_ads_tab(tab_data, fetch=True)
 
         self.push_screen(AdsSearchModal(), handle)
-
-    def _after_token_set(self, token: str) -> None:
-        if token:
-            self._set_status("[green]ADS token saved. Press S to search.[/green]")
-
-    def action_set_token(self) -> None:
-        self.push_screen(TokenModal(), self._after_token_set)
 
     async def action_close_tab(self) -> None:
         pane_id = self._active_pane_id()
@@ -1090,11 +1171,17 @@ class LitbotApp(App):
         from .. import pdf as _pdf
         pane_id = self._active_pane_id()
         on_library = pane_id == "pane-library"
+        on_config = pane_id == "pane-config"
         ads_view = self._active_ads_view()
+
+        # Config tab suppresses all data actions
+        if on_config and action not in ("ads_search", "quit", "help", "uat_browser",
+                                        "prev_tab", "next_tab"):
+            return False
 
         # Actions only valid on ADS tabs
         if action in ("refresh_tab", "close_tab"):
-            return not on_library
+            return not on_library and not on_config
 
         # Actions only valid on Library tab
         if action in ("filter", "export_selected"):
