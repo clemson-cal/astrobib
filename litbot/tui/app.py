@@ -229,6 +229,8 @@ class LibraryView(Static):
         t = self.query_one("#lib-table", DataTable)
         t.add_column(" ", key="sel", width=2)
         t.add_column("↓", key="pdf", width=2)
+        t.add_column("●", key="lib", width=2)
+        t.add_column("★", key="star", width=2)
         t.add_column("Year", key="year", width=6)
         t.add_column("Author", key="author", width=20)
         t.add_column("Title", key="title")
@@ -300,11 +302,12 @@ class LibraryView(Static):
         for e in entries:
             sel = "✓" if e.key in self._selected_keys else ""
             cached = "↓" if _pdf.is_cached(e.key) else ""
+            star = "★" if e.starred else ""
             kws = ", ".join(e.keywords[:3])
             if len(e.keywords) > 3:
                 kws += "…"
             title = e.title[:52] + "…" if len(e.title) > 52 else e.title
-            t.add_row(sel, cached, e.year, e.first_author_last, title, kws, key=e.key)
+            t.add_row(sel, cached, "●", star, e.year, e.first_author_last, title, kws, key=e.key)
         first = entries[0] if entries else None
         self._highlighted_entry = first
         self.post_message(self.EntryHighlighted(first))
@@ -315,6 +318,14 @@ class LibraryView(Static):
         for e in self._all_entries:
             try:
                 t.update_cell(e.key, "pdf", "↓" if _pdf.is_cached(e.key) else "")
+            except Exception:
+                pass
+
+    def refresh_star_status(self) -> None:
+        t = self.query_one("#lib-table", DataTable)
+        for e in self._all_entries:
+            try:
+                t.update_cell(e.key, "star", "★" if e.starred else "")
             except Exception:
                 pass
 
@@ -376,37 +387,73 @@ class AdsView(Static):
         self.tab_id = tab_id
         self._articles: list = []
         self._selected_article = None
+        self._selected_bibcodes: set[str] = set()
 
     def compose(self) -> ComposeResult:
         yield DataTable(cursor_type="row")
 
     def on_mount(self) -> None:
         t = self.query_one(DataTable)
-        t.add_column("✓", key="indb", width=3)
+        t.add_column(" ", key="sel", width=2)
+        t.add_column("↓", key="pdf", width=2)
+        t.add_column("●", key="lib", width=2)
+        t.add_column("★", key="star", width=2)
         t.add_column("Year", key="year", width=6)
         t.add_column("Author", key="author", width=20)
         t.add_column("Title", key="title")
 
     def load_articles(self, articles: list, library: Library | None) -> None:
+        from .. import pdf as _pdf
         self._articles = articles
+        self._selected_bibcodes.clear()
         t = self.query_one(DataTable)
         t.clear()
         for a in articles:
-            in_db = "✓" if library and library.has_bibcode(a.bibcode) else ""
+            cached = "↓" if _pdf.is_cached(a.bibcode) else ""
+            entry = library.get_by_bibcode(a.bibcode) if library else None
+            lib_icon = "●" if entry else ""
+            star = "★" if entry and entry.starred else ""
             first_author = a.author[0].split(",")[0] if a.author else ""
             title = a.title[0] if a.title else ""
             short_title = title[:55] + "…" if len(title) > 55 else title
-            t.add_row(in_db, str(a.year or ""), first_author, short_title, key=a.bibcode)
+            t.add_row("", cached, lib_icon, star, str(a.year or ""), first_author, short_title, key=a.bibcode)
         first = articles[0] if articles else None
         self._selected_article = first
         self.post_message(self.ArticleHighlighted(first))
 
-    def update_in_db(self, library: Library | None) -> None:
+    def toggle_selection(self) -> None:
+        if self._selected_article is None:
+            return
+        bibcode = self._selected_article.bibcode
+        if bibcode in self._selected_bibcodes:
+            self._selected_bibcodes.discard(bibcode)
+            new_val = ""
+        else:
+            self._selected_bibcodes.add(bibcode)
+            new_val = "✓"
+        try:
+            self.query_one(DataTable).update_cell(bibcode, "sel", new_val)
+        except Exception:
+            pass
+
+    def update_lib_status(self, library: Library | None) -> None:
         t = self.query_one(DataTable)
         for a in self._articles:
-            in_db = "✓" if library and library.has_bibcode(a.bibcode) else ""
+            entry = library.get_by_bibcode(a.bibcode) if library else None
+            lib_icon = "●" if entry else ""
+            star = "★" if entry and entry.starred else ""
             try:
-                t.update_cell(a.bibcode, "indb", in_db)
+                t.update_cell(a.bibcode, "lib", lib_icon)
+                t.update_cell(a.bibcode, "star", star)
+            except Exception:
+                pass
+
+    def refresh_pdf_status(self) -> None:
+        from .. import pdf as _pdf
+        t = self.query_one(DataTable)
+        for a in self._articles:
+            try:
+                t.update_cell(a.bibcode, "pdf", "↓" if _pdf.is_cached(a.bibcode) else "")
             except Exception:
                 pass
 
@@ -540,6 +587,7 @@ class LitbotApp(App):
         Binding("[", "prev_tab", "Prev tab", show=False),
         Binding("]", "next_tab", "Next tab", show=False),
         Binding("space", "toggle_select", "Select", show=False),
+        Binding("s", "star", "Star", show=False),
         Binding("e", "export_selected", "Export"),
         Binding("T", "set_token", "Token", show=False),
         Binding("u", "uat_browser", "UAT"),
@@ -573,15 +621,25 @@ class LitbotApp(App):
         self.query_one(LibraryView).load(self._library)
 
         self._tab_states = tabs_state.load()
-        has_token = bool(get_token())
         for tab_data in self._tab_states:
-            await self._create_ads_tab(tab_data, fetch=has_token, switch=False)
+            await self._create_ads_tab(tab_data, fetch=False, switch=False)
         self.call_after_refresh(self._focus_active_table)
 
         n = len(self._library.entries())
         uat_note = f" · UAT ({len(self._uat)})" if self._uat else ""
         token_note = "" if get_token() else "  [yellow]T: set ADS token[/yellow]"
         self._set_status(f"{n} papers{uat_note}{token_note}")
+
+        # Restore ADS results in background after the app is displayed
+        if get_token() and self._tab_states:
+            self.call_after_refresh(self._restore_tabs_background)
+
+    def _restore_tabs_background(self) -> None:
+        for tab_data in self._tab_states:
+            tab_id = tab_data["id"]
+            ads_view = self._ads_views.get(tab_id)
+            if ads_view:
+                self.run_worker(self._do_refresh(ads_view, tab_data))
 
     # ── Tab helpers ───────────────────────────────────────────────────────────
 
@@ -610,10 +668,11 @@ class LitbotApp(App):
         return ads_view
 
     async def _do_refresh(self, ads_view: AdsView, tab_data: dict) -> None:
+        import asyncio
         self._set_status(f"Searching ADS for '{ads_view.query}'…")
         try:
             from .. import ads_client
-            articles = ads_client.search(ads_view.query, limit=20)
+            articles = await asyncio.to_thread(ads_client.search, ads_view.query, 20)
             ads_view.load_articles(articles, self._library)
             tab_data["bibcodes"] = [a.bibcode for a in articles]
             tab_data["refreshed"] = int(time.time())
@@ -631,7 +690,7 @@ class LitbotApp(App):
         self._library = Library(root=get_library_path())
         self.query_one(LibraryView).load(self._library)
         for av in self._ads_views.values():
-            av.update_in_db(self._library)
+            av.update_lib_status(self._library)
 
     # ── Tab events ────────────────────────────────────────────────────────────
 
@@ -731,12 +790,17 @@ class LitbotApp(App):
             self.query_one(LibraryView).clear_filter()
 
     def action_toggle_select(self) -> None:
-        if self._active_pane_id() != "pane-library":
-            return
         focused = self.focused
         if isinstance(focused, Input):
             return
-        self.query_one(LibraryView).toggle_selection()
+        pane_id = self._active_pane_id()
+        if pane_id == "pane-library":
+            self.query_one(LibraryView).toggle_selection()
+        else:
+            ads_view = self._active_ads_view()
+            if ads_view:
+                ads_view.toggle_selection()
+                self.refresh_bindings()
 
     def action_export_selected(self) -> None:
         if self._active_pane_id() != "pane-library":
@@ -797,6 +861,11 @@ class LitbotApp(App):
     def action_add_paper(self) -> None:
         ads_view = self._active_ads_view()
         if ads_view is not None:
+            if ads_view._selected_bibcodes:
+                n = len(ads_view._selected_bibcodes)
+                self._set_status(f"Fetching {n} paper(s)…")
+                self.run_worker(self._fetch_and_add_batch(list(ads_view._selected_bibcodes), ads_view), exclusive=True)
+                return
             article = ads_view._selected_article
             if article is None:
                 self._set_status("[yellow]Select an article first.[/yellow]")
@@ -829,21 +898,60 @@ class LitbotApp(App):
             self.push_screen(AddModal(), handle)
 
     async def _fetch_and_add(self, bibcode: str, ads_view: AdsView) -> None:
+        import asyncio
         try:
             from .. import ads_client
-            data = ads_client.fetch_bibtex(bibcode)
+            data = await asyncio.to_thread(ads_client.fetch_bibtex, bibcode)
             if data is None:
                 self._set_status(f"[red]Could not fetch {bibcode}[/red]")
                 return
             entry = self._library.save_entry(data)
             self._reload_library()
-            ads_view.update_in_db(self._library)
+            ads_view.update_lib_status(self._library)
             self.query_one(DetailPanel).show_entry(self._library.get(entry.key))
             self.refresh_bindings()
             ads_client.refresh_quota()
             self._set_status(f"[green]Added {entry.key}[/green]{_quota_str()}")
         except Exception as exc:
             self._set_status(f"[red]{exc}[/red]")
+
+    async def _fetch_and_add_batch(self, bibcodes: list[str], ads_view: AdsView) -> None:
+        import asyncio
+        from .. import ads_client
+        added: list[str] = []
+        skipped: list[str] = []
+        total = len(bibcodes)
+        for i, bibcode in enumerate(bibcodes):
+            if self._library and self._library.has_bibcode(bibcode):
+                skipped.append(bibcode)
+                self._set_status(f"[dim]Skipping {bibcode} — already in library ({i+1}/{total})[/dim]")
+                continue
+            self._set_status(f"Fetching [{i+1}/{total}] {bibcode}…")
+            try:
+                data = await asyncio.to_thread(ads_client.fetch_bibtex, bibcode)
+                if data is None:
+                    skipped.append(bibcode)
+                    self._set_status(f"[yellow]Could not fetch {bibcode} ({i+1}/{total})[/yellow]")
+                    continue
+                entry = self._library.save_entry(data)
+                added.append(entry.key)
+                self._set_status(f"[green]Added {entry.key}[/green]  [{i+1}/{total}]")
+            except Exception as exc:
+                skipped.append(bibcode)
+                self._set_status(f"[red]{bibcode}: {exc}[/red]")
+        self._reload_library()
+        ads_view._selected_bibcodes.clear()
+        t = ads_view.query_one(DataTable)
+        for a in ads_view._articles:
+            try:
+                t.update_cell(a.bibcode, "sel", "")
+            except Exception:
+                pass
+        self.refresh_bindings()
+        msg = f"[green]Added {len(added)} paper(s)[/green]"
+        if skipped:
+            msg += f"  [dim]{len(skipped)} skipped[/dim]"
+        self._set_status(msg + _quota_str())
 
     def action_remove_paper(self) -> None:
         ads_view = self._active_ads_view()
@@ -922,11 +1030,50 @@ class LitbotApp(App):
             self._set_status(f"Fetching {key} via Unpaywall…")
         else:
             self._set_status(f"Fetching {key} from arXiv:{eprint}…")
-        if not pdf.open_pdf(key, eprint=eprint, doi=doi):
+        self.run_worker(self._do_open_pdf(key, eprint, doi, ads_view), exclusive=True)
+
+    async def _do_open_pdf(self, key: str, eprint: str, doi: str, ads_view: "AdsView | None") -> None:
+        import asyncio
+        from .. import pdf
+        opened = await asyncio.to_thread(pdf.open_pdf, key, eprint=eprint, doi=doi)
+        if not opened:
             self._set_status(f"[red]No open-access PDF found for {key}[/red]")
         else:
-            self.query_one(LibraryView).refresh_pdf_status()
+            self._set_status(f"[green]Opened {key}[/green]")
+            if ads_view is not None:
+                ads_view.refresh_pdf_status()
+            else:
+                self.query_one(LibraryView).refresh_pdf_status()
             self.refresh_bindings()
+
+    def action_star(self) -> None:
+        if self._library is None:
+            return
+        pane_id = self._active_pane_id()
+        if pane_id == "pane-library":
+            lib_view = self.query_one(LibraryView)
+            entry = lib_view._highlighted_entry
+            if entry is None:
+                return
+            new_starred = not entry.starred
+            self._library.set_starred(entry.key, new_starred)
+            lib_view.refresh_star_status()
+            self._set_status(f"{'★ Starred' if new_starred else 'Unstarred'} {entry.key}")
+        else:
+            ads_view = self._active_ads_view()
+            if ads_view is None:
+                return
+            article = ads_view._selected_article
+            if article is None:
+                return
+            entry = self._library.get_by_bibcode(article.bibcode)
+            if entry is None:
+                self._set_status("[yellow]Not in library — add it first to star it.[/yellow]")
+                return
+            new_starred = not entry.starred
+            self._library.set_starred(entry.key, new_starred)
+            ads_view.update_lib_status(self._library)
+            self._set_status(f"{'★ Starred' if new_starred else 'Unstarred'} {entry.key}")
 
     def action_uat_browser(self) -> None:
         if self._uat is None:
@@ -950,8 +1097,24 @@ class LitbotApp(App):
             return not on_library
 
         # Actions only valid on Library tab
-        if action in ("filter", "toggle_select", "export_selected"):
+        if action in ("filter", "export_selected"):
             return on_library
+
+        if action == "toggle_select":
+            if on_library:
+                return True
+            if ads_view:
+                return ads_view._selected_article is not None
+            return False
+
+        if action == "star":
+            if on_library:
+                lib_view = self.query_one(LibraryView)
+                return lib_view._highlighted_entry is not None
+            if ads_view:
+                a = ads_view._selected_article
+                return a is not None and self._library is not None and self._library.has_bibcode(a.bibcode)
+            return False
 
         if action == "clear_pdf":
             if on_library:
@@ -976,6 +1139,11 @@ class LitbotApp(App):
             if on_library:
                 return False
             if ads_view is not None:
+                if ads_view._selected_bibcodes:
+                    return any(
+                        not (self._library and self._library.has_bibcode(bc))
+                        for bc in ads_view._selected_bibcodes
+                    )
                 article = ads_view._selected_article
                 if article and self._library:
                     return self._library.get_by_bibcode(article.bibcode) is None

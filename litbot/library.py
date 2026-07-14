@@ -27,6 +27,7 @@ FIELD_ORDER = [
     "adsnote",
     "keywords",
     "abstract",
+    "litbot_starred",
 ]
 
 
@@ -71,6 +72,10 @@ class Entry:
     def keywords(self) -> list[str]:
         raw = self.data.get("keywords", "")
         return [k.strip() for k in raw.split(",") if k.strip()]
+
+    @property
+    def starred(self) -> bool:
+        return self.data.get("litbot_starred", "").strip().lower() == "true"
 
     @property
     def first_author_last(self) -> str:
@@ -136,6 +141,16 @@ class Library:
         entry = Entry(data=data, path=path)
         self._entries[key] = entry
         return entry
+
+    def set_starred(self, key: str, starred: bool) -> None:
+        entry = self._entries.get(key)
+        if entry is None:
+            return
+        if starred:
+            entry.data["litbot_starred"] = "true"
+        else:
+            entry.data.pop("litbot_starred", None)
+        entry.path.write_text(format_bib_entry(entry.data))
 
     def remove_entry(self, key: str) -> None:
         path = self.root / "bib" / f"{key}.bib"
