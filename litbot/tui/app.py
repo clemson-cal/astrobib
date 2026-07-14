@@ -306,6 +306,9 @@ class LibraryView(Static):
                 kws += "…"
             title = e.title[:52] + "…" if len(e.title) > 52 else e.title
             t.add_row(sel, cached, e.year, e.first_author_last, title, kws, key=e.key)
+        first = entries[0] if entries else None
+        self._highlighted_entry = first
+        self.post_message(self.EntryHighlighted(first))
 
     def refresh_pdf_status(self) -> None:
         from .. import pdf as _pdf
@@ -395,6 +398,9 @@ class AdsView(Static):
             title = a.title[0] if a.title else ""
             short_title = title[:55] + "…" if len(title) > 55 else title
             t.add_row(in_db, str(a.year or ""), first_author, short_title, key=a.bibcode)
+        first = articles[0] if articles else None
+        self._selected_article = first
+        self.post_message(self.ArticleHighlighted(first))
 
     def update_in_db(self, library: Library | None) -> None:
         t = self.query_one(DataTable)
@@ -632,11 +638,12 @@ class LitbotApp(App):
 
     @on(TabbedContent.TabActivated)
     def _on_tab_activated(self, event: TabbedContent.TabActivated) -> None:
-        self.query_one(DetailPanel).show_entry(None)
         self.refresh_bindings()
         pane_id = self._active_pane_id()
+        detail = self.query_one(DetailPanel)
         if pane_id == "pane-library":
             lib_view = self.query_one(LibraryView)
+            detail.show_entry(lib_view._highlighted_entry)
             n = len(lib_view._filtered)
             total = len(lib_view._all_entries)
             shown = f" · {n} shown" if n != total else ""
@@ -645,6 +652,12 @@ class LitbotApp(App):
             tab_id = pane_id.removeprefix("pane-")
             ads_view = self._ads_views.get(tab_id)
             if ads_view:
+                article = ads_view._selected_article
+                if article:
+                    entry = self._library.get_by_bibcode(article.bibcode) if self._library else None
+                    detail.show_ads_article(article, entry=entry)
+                else:
+                    detail.show_entry(None)
                 if not ads_view._articles:
                     self._set_status(
                         f"[dim]'{ads_view.query}' — press [bold]r[/bold] to load results[/dim]"
