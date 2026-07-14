@@ -148,7 +148,9 @@ def add_cmd(bibcode: str, keywords: str, force: bool):
         data["keywords"] = ", ".join(filter(None, [existing_kw, keywords]))
 
     entry = lib.save_entry(data)
-    console.print(f"[green]Added[/green] {entry.key}")
+    display = entry.short_key or entry.key
+    suffix = f"  [dim]({entry.key})[/dim]" if display != entry.key else ""
+    console.print(f"[green]Added[/green] {display}{suffix}")
     if entry.keywords:
         for kw in entry.keywords:
             console.print(f"  • {kw}")
@@ -238,11 +240,17 @@ def search_cmd(query: str, limit: int, use_ads: bool):
 @main.command("show")
 @click.argument("key")
 def show_cmd(key: str):
-    """Print the BibTeX entry for a cite key."""
+    """Print the BibTeX entry for a cite key (full or shortened)."""
     library = Library(root=get_library_path())
-    entry = library.get(key)
+    entry = library.resolve(key)
     if entry is None:
-        console.print(f"[red]{key} not found.[/red]")
+        matches = library.possible_matches(key)
+        if len(matches) > 1:
+            console.print(f"[yellow]Ambiguous key '{key}' — did you mean:[/yellow]")
+            for m in matches[:6]:
+                console.print(f"  [cyan]{m.short_key}[/cyan]  [dim]{m.title[:55]}[/dim]")
+        else:
+            console.print(f"[red]{key} not found.[/red]")
         raise SystemExit(1)
     console.print(entry.path.read_text())
 
@@ -262,11 +270,17 @@ def pdf_group():
 
 
 def _resolve(key_or_bibcode: str) -> tuple[str, str, str]:
-    """Return (display_key, eprint, doi), querying ADS if not in library."""
+    """Return (full_key, eprint, doi), querying ADS if not in library."""
     library = Library(root=get_library_path())
-    entry = library.get(key_or_bibcode) or library.get_by_bibcode(key_or_bibcode)
+    entry = library.resolve(key_or_bibcode) or library.get_by_bibcode(key_or_bibcode)
     if entry:
         return entry.key, entry.eprint, entry.doi
+    matches = library.possible_matches(key_or_bibcode)
+    if len(matches) > 1:
+        console.print(f"[yellow]Ambiguous key '{key_or_bibcode}' — did you mean:[/yellow]")
+        for m in matches[:6]:
+            console.print(f"  [cyan]{m.short_key}[/cyan]  [dim]{m.title[:55]}[/dim]")
+        raise SystemExit(1)
     console.print(f"[dim]{key_or_bibcode} not in library — querying ADS…[/dim]")
     try:
         from . import ads_client
@@ -288,7 +302,11 @@ def pdf_check(citekey_or_bibcode: str):
     from . import pdf
     key, eprint, doi = _resolve(citekey_or_bibcode)
     cached_path = pdf.cache_path(key)
-    console.print(f"\n[bold]{key}[/bold]")
+    lib = Library(root=get_library_path())
+    entry = lib.get(key)
+    display = (entry.short_key or key) if entry else key
+    suffix = f"  [dim]({key})[/dim]" if display != key else ""
+    console.print(f"\n[bold]{display}[/bold]{suffix}")
     if cached_path.exists():
         sz = cached_path.stat().st_size // 1024
         console.print(f"  [green]cached[/green]     {cached_path}  ({sz} KB)")
@@ -555,8 +573,9 @@ def _print_entry_table(entries: list):
     table = Table("Key", "Year", "First Author", "Title", box=None,
                   show_header=True, header_style="bold")
     for e in entries:
+        display = e.short_key or e.key
         table.add_row(
-            Text(e.key, style="cyan"),
+            Text(display, style="cyan"),
             e.year,
             e.first_author_last,
             e.title[:70] + ("…" if len(e.title) > 70 else ""),

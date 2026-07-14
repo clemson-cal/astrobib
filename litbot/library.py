@@ -35,6 +35,7 @@ FIELD_ORDER = [
 class Entry:
     data: dict
     path: Path
+    short_key: str = ""  # set by Library after all entries are loaded
 
     @property
     def key(self) -> str:
@@ -104,6 +105,23 @@ class Library:
                     self._entries[entry.key] = entry
             except Exception:
                 pass
+        self._compute_short_keys()
+
+    def _compute_short_keys(self) -> None:
+        """Populate Entry.short_key for all entries: shortest unambiguous prefix."""
+        all_keys = list(self._entries)
+        for key, entry in self._entries.items():
+            base = key[:-5]  # strip the 5-char sha256 suffix
+            if sum(1 for k in all_keys if k.startswith(base)) == 1:
+                entry.short_key = base
+            else:
+                for n in range(1, 6):
+                    prefix = key[:len(base) + n]
+                    if sum(1 for k in all_keys if k.startswith(prefix)) == 1:
+                        entry.short_key = prefix
+                        break
+                else:
+                    entry.short_key = key
 
     def entries(self) -> list[Entry]:
         return list(self._entries.values())
@@ -111,8 +129,23 @@ class Library:
     def get(self, key: str) -> Entry | None:
         return self._entries.get(key)
 
+    def resolve(self, input_key: str) -> Entry | None:
+        """Resolve a full or shortened key to an entry.
+
+        Tries exact match first, then unambiguous prefix match.
+        Returns None if not found or ambiguous.
+        """
+        if input_key in self._entries:
+            return self._entries[input_key]
+        matches = [e for k, e in self._entries.items() if k.startswith(input_key)]
+        return matches[0] if len(matches) == 1 else None
+
     def has(self, key: str) -> bool:
         return key in self._entries
+
+    def possible_matches(self, input_key: str) -> list[Entry]:
+        """Return all entries whose key starts with input_key (for ambiguity reporting)."""
+        return [e for e in self._entries.values() if e.key.startswith(input_key)]
 
     def has_bibcode(self, bibcode: str) -> bool:
         return any(bibcode in e.data.get("adsurl", "") for e in self._entries.values())
@@ -140,6 +173,7 @@ class Library:
         path.write_text(format_bib_entry(data))
         entry = Entry(data=data, path=path)
         self._entries[key] = entry
+        self._compute_short_keys()
         return entry
 
     def set_starred(self, key: str, starred: bool) -> None:
@@ -157,6 +191,7 @@ class Library:
         if path.exists():
             path.unlink()
         self._entries.pop(key, None)
+        self._compute_short_keys()
 
     def all_keywords(self) -> list[str]:
         seen: set[str] = set()

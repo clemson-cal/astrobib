@@ -110,7 +110,10 @@ class DetailPanel(VerticalScroll):
         if entry.keywords:
             foot.append(" · ".join(entry.keywords), style="dim")
             foot.append("\n\n")
-        foot.append(entry.key, style="dim")
+        short = entry.short_key or entry.key
+        foot.append(short, style="cyan")
+        if short != entry.key:
+            foot.append(f"  [{entry.key}]", style="dim")
         footer.update(foot)
 
     def show_ads_article(self, article, entry: Entry | None = None) -> None:
@@ -148,7 +151,10 @@ class DetailPanel(VerticalScroll):
             if entry.keywords:
                 foot.append(" · ".join(entry.keywords), style="dim")
                 foot.append("\n\n")
-            foot.append(entry.key, style="dim")
+            short = entry.short_key or entry.key
+            foot.append(short, style="cyan")
+            if short != entry.key:
+                foot.append(f"  [{entry.key}]", style="dim")
         elif article.bibcode:
             foot.append(article.bibcode, style="dim")
         footer.update(foot)
@@ -973,7 +979,7 @@ class LitbotApp(App):
                         data["keywords"] = ", ".join(filter(None, [existing_kw, extra_kw]))
                     entry = self._library.save_entry(data)
                     self._reload_library()
-                    self._set_status(f"[green]Added {entry.key}[/green]")
+                    self._set_status(f"[green]Added {entry.short_key or entry.key}[/green]")
                 except Exception as exc:
                     self._set_status(f"[red]{exc}[/red]")
             self.push_screen(AddModal(), handle)
@@ -992,7 +998,7 @@ class LitbotApp(App):
             self.query_one(DetailPanel).show_entry(self._library.get(entry.key))
             self.refresh_bindings()
             ads_client.refresh_quota()
-            self._set_status(f"[green]Added {entry.key}[/green]{_quota_str()}")
+            self._set_status(f"[green]Added {entry.short_key or entry.key}[/green]{_quota_str()}")
         except Exception as exc:
             self._set_status(f"[red]{exc}[/red]")
 
@@ -1016,7 +1022,7 @@ class LitbotApp(App):
                     continue
                 entry = self._library.save_entry(data)
                 added.append(entry.key)
-                self._set_status(f"[green]Added {entry.key}[/green]  [{i+1}/{total}]")
+                self._set_status(f"[green]Added {entry.short_key or entry.key}[/green]  [{i+1}/{total}]")
             except Exception as exc:
                 skipped.append(bibcode)
                 self._set_status(f"[red]{bibcode}: {exc}[/red]")
@@ -1043,7 +1049,7 @@ class LitbotApp(App):
                     self._library.remove_entry(entry.key)
                     self._reload_library()
                     self.refresh_bindings()
-                    self._set_status(f"[green]Removed {entry.key}[/green]")
+                    self._set_status(f"[green]Removed {entry.short_key or entry.key}[/green]")
             return
         article = ads_view._selected_article
         if article is None:
@@ -1057,7 +1063,7 @@ class LitbotApp(App):
             return
         self._library.remove_entry(entry.key)
         self._reload_library()
-        ads_view.update_in_db(self._library)
+        ads_view.update_lib_status(self._library)
         self.refresh_bindings()
         self._set_status(f"[green]Removed {entry.key}[/green]")
 
@@ -1139,7 +1145,7 @@ class LitbotApp(App):
             new_starred = not entry.starred
             self._library.set_starred(entry.key, new_starred)
             lib_view.refresh_star_status()
-            self._set_status(f"{'★ Starred' if new_starred else 'Unstarred'} {entry.key}")
+            self._set_status(f"{'★ Starred' if new_starred else 'Unstarred'} {entry.short_key or entry.key}")
         else:
             ads_view = self._active_ads_view()
             if ads_view is None:
@@ -1154,7 +1160,7 @@ class LitbotApp(App):
             new_starred = not entry.starred
             self._library.set_starred(entry.key, new_starred)
             ads_view.update_lib_status(self._library)
-            self._set_status(f"{'★ Starred' if new_starred else 'Unstarred'} {entry.key}")
+            self._set_status(f"{'★ Starred' if new_starred else 'Unstarred'} {entry.short_key or entry.key}")
 
     def action_uat_browser(self) -> None:
         if self._uat is None:

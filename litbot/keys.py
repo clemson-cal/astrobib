@@ -6,9 +6,9 @@ import unicodedata
 
 
 def generate_key(data: dict) -> str:
-    """Return a cite key of the form AuthorYYYYhhhh.
+    """Return a cite key of the form AuthorYYYYlllll.
 
-    The suffix is the first 5 hex chars of SHA-256 applied to a stable
+    The suffix is 5 lowercase letters derived from SHA-256 applied to a stable
     identifier: the arXiv ID when present (survives the arXiv→published
     transition), otherwise the ADS bibcode extracted from adsurl.
     """
@@ -18,7 +18,8 @@ def generate_key(data: dict) -> str:
         adsurl = data.get("adsurl", "")
         stable_id = adsurl.rstrip("/").rsplit("/", 1)[-1] if adsurl else data.get("ID", "")
 
-    suffix = hashlib.sha256(stable_id.encode()).hexdigest()[:5]
+    h = hashlib.sha256(stable_id.encode()).digest()
+    suffix = "".join(chr(ord("a") + b % 26) for b in h[:5])
 
     author = data.get("author", "")
     first_author = author.split(" and ")[0].strip().split(",")[0].strip()
