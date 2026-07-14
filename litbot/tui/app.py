@@ -760,7 +760,10 @@ class LitbotApp(App):
 
     async def _do_refresh(self, ads_view: AdsView, tab_data: dict) -> None:
         import asyncio
-        self._set_status(f"Searching ADS for '{ads_view.query}'…")
+        def _is_active() -> bool:
+            return self._active_ads_view() is ads_view
+        if _is_active():
+            self._set_status(f"Searching ADS for '{ads_view.query}'…")
         try:
             from .. import ads_client
             articles = await asyncio.to_thread(ads_client.search, ads_view.query, 20)
@@ -770,12 +773,14 @@ class LitbotApp(App):
             tabs_state.save(self._tab_states)
             ads_client.refresh_quota()
             n = len(articles)
-            self._set_status(
-                f"[yellow]{n} result(s) for '{ads_view.query}'[/yellow]"
-                f"  [dim]a: add · d: remove · r: refresh · Ctrl+W: close{_quota_str()}[/dim]"
-            )
+            if _is_active():
+                self._set_status(
+                    f"[yellow]{n} result(s) for '{ads_view.query}'[/yellow]"
+                    f"  [dim]a: add · d: remove · r: refresh · Ctrl+W: close{_quota_str()}[/dim]"
+                )
         except RuntimeError as e:
-            self._set_status(f"[red]{e}[/red]")
+            if _is_active():
+                self._set_status(f"[red]{e}[/red]")
 
     def _reload_library(self) -> None:
         self._library = Library(root=get_library_path())
