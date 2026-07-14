@@ -99,9 +99,8 @@ class DetailPanel(VerticalScroll):
         content.append("   ·   ", style="dim")
         content.append(entry.year, style="green")
         abstract = entry.data.get("abstract", "")
-        if abstract:
-            content.append("\n\n")
-            content.append(abstract[:1000] + ("…" if len(abstract) > 1000 else ""))
+        content.append("\n\n")
+        content.append(abstract[:1000] + ("…" if len(abstract) > 1000 else ""))
         body.update(content)
         self._set_links(entry.adsurl, entry.eprint, entry.doi)
         foot = Text()
