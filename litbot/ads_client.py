@@ -86,7 +86,17 @@ def fetch_bibtex(bibcode: str) -> dict | None:
     raw = exporter.execute()
     if not raw:
         return None
-    return _parse_bibtex_string(raw)
+    data = _parse_bibtex_string(raw)
+    if data is None:
+        return None
+    # BibTeX export omits the abstract; fetch it separately
+    try:
+        results = list(_ads.SearchQuery(q=f"bibcode:{bibcode}", fl=["abstract"], rows=1))
+        if results and results[0].abstract:
+            data["abstract"] = results[0].abstract
+    except Exception:
+        pass
+    return data
 
 
 def fetch_bibtex_bulk(bibcodes: list[str]) -> list[dict]:

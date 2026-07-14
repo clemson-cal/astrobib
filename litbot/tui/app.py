@@ -33,7 +33,7 @@ from . import tabs_state
 class DetailPanel(VerticalScroll):
     DEFAULT_CSS = """
     DetailPanel {
-        border-top: solid $panel-lighten-1;
+        border-left: solid $panel-lighten-1;
     }
     DetailPanel #detail-body {
         height: auto;
@@ -509,10 +509,11 @@ class LitbotApp(App):
     TITLE = "litbot"
     CSS = """
     Screen { layout: vertical; }
-    TabbedContent { height: 2fr; }
+    #body { layout: horizontal; height: 1fr; }
+    TabbedContent { width: 1fr; height: 100%; }
     TabbedContent ContentSwitcher { height: 1fr; }
     TabPane { padding: 0; height: 100%; }
-    #detail { height: 1fr; }
+    #detail { width: 48; min-width: 30; }
     #status-bar {
         height: 1;
         background: $panel;
@@ -552,10 +553,11 @@ class LitbotApp(App):
 
     def compose(self) -> ComposeResult:
         yield Header()
-        with TabbedContent(id="tabs"):
-            with TabPane("Library", id="pane-library"):
-                yield LibraryView()
-        yield DetailPanel(id="detail")
+        with Horizontal(id="body"):
+            with TabbedContent(id="tabs"):
+                with TabPane("Library", id="pane-library"):
+                    yield LibraryView()
+            yield DetailPanel(id="detail")
         yield Static("", id="status-bar")
         yield Footer()
 
@@ -678,13 +680,11 @@ class LitbotApp(App):
     def action_prev_tab(self) -> None:
         self._switch_tab(-1)
 
-    _SPLIT_RATIOS = [("2fr", "1fr"), ("1fr", "1fr"), ("1fr", "2fr"), ("3fr", "1fr")]
+    _PANEL_WIDTHS = [48, 64, 80, 32]
 
     def action_zoom(self) -> None:
-        self._split_idx = (self._split_idx + 1) % len(self._SPLIT_RATIOS)
-        top, bottom = self._SPLIT_RATIOS[self._split_idx]
-        self.query_one(TabbedContent).styles.height = top
-        self.query_one(DetailPanel).styles.height = bottom
+        self._split_idx = (self._split_idx + 1) % len(self._PANEL_WIDTHS)
+        self.query_one(DetailPanel).styles.width = self._PANEL_WIDTHS[self._split_idx]
 
     def _switch_tab(self, direction: int) -> None:
         tabs = self.query_one(Tabs)
