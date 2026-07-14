@@ -902,9 +902,7 @@ class LitbotApp(App):
                 self._set_status("[yellow]Select an article first.[/yellow]")
                 return
             eprint = _ac.arxiv_id_from_article(article)
-            if not eprint:
-                self._set_status(f"[yellow]No arXiv ID for {article.bibcode}[/yellow]")
-                return
+            doi = (article.doi or [""])[0]
             key = article.bibcode
         else:
             lib_view = self.query_one(LibraryView)
@@ -912,17 +910,20 @@ class LitbotApp(App):
             if entry is None:
                 self._set_status("[yellow]Select a paper first.[/yellow]")
                 return
-            if not entry.eprint:
-                self._set_status(f"[yellow]No arXiv ID for {entry.key}[/yellow]")
-                return
             eprint = entry.eprint
+            doi = entry.doi
             key = entry.key
-        cached = pdf.is_cached(key)
-        self._set_status(
-            f"Opening {key}…" if cached else f"Fetching {key} from arXiv:{eprint}…"
-        )
-        if not pdf.open_pdf(key, eprint=eprint):
-            self._set_status(f"[red]Failed to fetch PDF for {key}[/red]")
+        if not eprint and not doi:
+            self._set_status(f"[yellow]No arXiv ID or DOI for {key}[/yellow]")
+            return
+        if pdf.is_cached(key):
+            self._set_status(f"Opening {key}…")
+        elif eprint:
+            self._set_status(f"Fetching {key} from arXiv:{eprint}…")
+        else:
+            self._set_status(f"Searching Unpaywall for {key}…")
+        if not pdf.open_pdf(key, eprint=eprint, doi=doi):
+            self._set_status(f"[red]No open-access PDF found for {key}[/red]")
         else:
             self.query_one(LibraryView).refresh_pdf_status()
             self.refresh_bindings()
@@ -963,9 +964,12 @@ class LitbotApp(App):
         if action == "open_pdf":
             if on_library:
                 entry = self.query_one(LibraryView)._highlighted_entry
-                return entry is not None and bool(entry.eprint)
+                return entry is not None and bool(entry.eprint or entry.doi)
             if ads_view:
-                return ads_view._selected_article is not None
+                a = ads_view._selected_article
+                return a is not None and bool(
+                    a.identifier or (a.doi and a.doi[0])
+                )
             return False
 
         if action == "add_paper":

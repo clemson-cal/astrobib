@@ -1,4 +1,7 @@
-"""Ephemeral PDF management: fetch on demand, cache locally."""
+"""Ephemeral PDF management: fetch on demand, cache locally.
+
+Fetch chain: cached → arXiv (eprint) → Unpaywall OA (doi) → None.
+"""
 from __future__ import annotations
 
 import subprocess
@@ -9,6 +12,8 @@ import httpx
 
 from .state import PDF_CACHE_DIR
 
+_UNPAYWALL_EMAIL = "litbot@example.com"
+
 
 def cache_path(citekey: str) -> Path:
     return PDF_CACHE_DIR / f"{citekey}.pdf"
@@ -18,17 +23,43 @@ def is_cached(citekey: str) -> bool:
     return cache_path(citekey).exists()
 
 
-def fetch(citekey: str, eprint: str | None = None) -> Path | None:
-    """Return cached PDF path, downloading from arXiv if needed."""
+def oa_url(doi: str) -> str | None:
+    """Return a direct PDF URL from Unpaywall, or None if unavailable."""
+    if not doi:
+        return None
+    try:
+        resp = httpx.get(
+            f"https://api.unpaywall.org/v2/{doi}",
+            params={"email": _UNPAYWALL_EMAIL},
+            timeout=10,
+            follow_redirects=True,
+        )
+        if resp.status_code != 200:
+            return None
+        best = resp.json().get("best_oa_location") or {}
+        return best.get("url_for_pdf")
+    except Exception:
+        return None
+
+
+def fetch(citekey: str, *, eprint: str | None = None, doi: str | None = None) -> Path | None:
+    """Return cached PDF path, downloading if needed.
+
+    Tries arXiv first (if eprint given), then Unpaywall (if doi given).
+    """
     path = cache_path(citekey)
     if path.exists():
         return path
 
-    if not eprint:
+    if eprint:
+        url: str | None = f"https://arxiv.org/pdf/{eprint.strip()}"
+    elif doi:
+        url = oa_url(doi)
+    else:
         return None
 
-    arxiv_id = eprint.strip()
-    url = f"https://arxiv.org/pdf/{arxiv_id}"
+    if not url:
+        return None
 
     try:
         with httpx.stream("GET", url, follow_redirects=True, timeout=60) as resp:
@@ -46,8 +77,8 @@ def fetch(citekey: str, eprint: str | None = None) -> Path | None:
     return path
 
 
-def open_pdf(citekey: str, eprint: str | None = None) -> bool:
-    path = fetch(citekey, eprint=eprint)
+def open_pdf(citekey: str, *, eprint: str | None = None, doi: str | None = None) -> bool:
+    path = fetch(citekey, eprint=eprint, doi=doi)
     if path is None:
         return False
 

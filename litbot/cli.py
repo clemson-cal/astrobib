@@ -204,13 +204,17 @@ def open_cmd(key: str):
     if entry is None:
         console.print(f"[red]{key} not found.[/red]")
         raise SystemExit(1)
-    if not entry.eprint:
-        console.print(f"[yellow]No arXiv ID for {key}.[/yellow]")
+    if not entry.eprint and not entry.doi:
+        console.print(f"[yellow]No arXiv ID or DOI for {key}.[/yellow]")
         raise SystemExit(1)
-    status = "Opening cached PDF" if pdf.is_cached(key) else f"Fetching from arXiv:{entry.eprint}"
-    console.print(f"{status}…")
-    if not pdf.open_pdf(key, eprint=entry.eprint):
-        console.print(f"[red]Failed to fetch PDF.[/red]")
+    if pdf.is_cached(key):
+        console.print("Opening cached PDF…")
+    elif entry.eprint:
+        console.print(f"Fetching from arXiv:{entry.eprint}…")
+    else:
+        console.print("Searching Unpaywall…")
+    if not pdf.open_pdf(key, eprint=entry.eprint, doi=entry.doi):
+        console.print(f"[red]No open-access PDF found.[/red]")
         raise SystemExit(1)
 
 
