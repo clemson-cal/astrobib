@@ -64,11 +64,18 @@ def downloads_snapshot() -> set[Path]:
     return {f for f in d.glob("*.pdf")} if d.exists() else set()
 
 
-def poll_downloads(citekey: str, before: set[Path], timeout: int = 60) -> Path | None:
-    """Watch ~/Downloads for a new PDF not in before; move it to cache on arrival."""
+def poll_downloads(citekey: str, before: set[Path], timeout: int = 60,
+                   cancel=None) -> Path | None:
+    """Watch ~/Downloads for a new PDF not in before; move it to cache on arrival.
+
+    Uses a two-poll size-stability check so we don't grab a partial download.
+    cancel: a threading.Event — when set, returns None immediately.
+    """
     deadline = time.monotonic() + timeout
     prev_sizes: dict[Path, int] = {}
     while time.monotonic() < deadline:
+        if cancel is not None and cancel.is_set():
+            return None
         time.sleep(1)
         d = Path.home() / "Downloads"
         current = {f for f in d.glob("*.pdf")} if d.exists() else set()
@@ -78,6 +85,11 @@ def poll_downloads(citekey: str, before: set[Path], timeout: int = 60) -> Path |
             except OSError:
                 continue
             if prev_sizes.get(f) == size and size > 0:
+                try:
+                    if f.read_bytes(4)[:4] != b"%PDF":
+                        continue
+                except OSError:
+                    continue
                 dest = cache_path(citekey)
                 dest.parent.mkdir(parents=True, exist_ok=True)
                 shutil.move(str(f), str(dest))

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 import time
 from pathlib import Path
 
@@ -31,6 +32,38 @@ from ..uat import UAT, Concept, get_uat
 from . import tabs_state
 
 
+# ── PDF action button ─────────────────────────────────────────────────────────
+
+class PdfButton(Static, can_focus=True):
+    """Clickable download trigger in the detail panel."""
+    DEFAULT_CSS = """
+    PdfButton {
+        width: auto;
+        padding: 0 1;
+        margin-right: 1;
+        background: $panel-lighten-1;
+        color: $text-muted;
+        &:hover { background: $panel-lighten-2; color: $text; }
+        &:focus { background: $panel-lighten-2; }
+    }
+    PdfButton.arxiv  { color: cyan; }
+    PdfButton.oa     { color: cyan; }
+    PdfButton.browser { color: yellow; }
+    """
+
+    class Clicked(Message):
+        def __init__(self, source: str) -> None:
+            super().__init__()
+            self.source = source
+
+    def __init__(self, label: str, source: str, **kwargs) -> None:
+        super().__init__(label, **kwargs)
+        self._source = source
+
+    def on_click(self) -> None:
+        self.post_message(self.Clicked(self._source))
+
+
 # ── Detail panel ──────────────────────────────────────────────────────────────
 
 class DetailPanel(VerticalScroll):
@@ -44,12 +77,11 @@ class DetailPanel(VerticalScroll):
     }
     DetailPanel #detail-links {
         height: auto;
-        padding: 0 2 0 2;
+        padding: 1 2;
         layout: horizontal;
-    }
-    DetailPanel #detail-footer {
-        height: auto;
-        padding: 0 2 1 2;
+        margin-top: 1;
+        border-top: solid $panel-lighten-1;
+        border-bottom: solid $panel-lighten-1;
     }
     DetailPanel Link {
         width: auto;
@@ -57,6 +89,21 @@ class DetailPanel(VerticalScroll):
         color: cyan;
         text-style: none;
         &:hover { text-style: underline; }
+    }
+    DetailPanel #pdf-sources {
+        height: auto;
+        padding: 1 2 0 2;
+        layout: horizontal;
+    }
+    DetailPanel #pdf-status {
+        height: 1;
+        padding: 0 2;
+    }
+    DetailPanel #detail-footer {
+        height: auto;
+        padding: 1 2 1 2;
+        margin-top: 1;
+        border-top: solid $panel-lighten-1;
     }
     """
 
@@ -66,6 +113,11 @@ class DetailPanel(VerticalScroll):
             yield Link("ADS", url="", id="link-ads")
             yield Link("", url="", id="link-arxiv")
             yield Link("DOI", url="", id="link-doi")
+        with Horizontal(id="pdf-sources"):
+            yield PdfButton("arXiv ↓", source="arxiv", id="pdf-btn-arxiv", classes="arxiv")
+            yield PdfButton("ADS OA ↓", source="oa", id="pdf-btn-oa", classes="oa")
+            yield PdfButton("browser ↓", source="browser", id="pdf-btn-browser", classes="browser")
+        yield Static("", id="pdf-status")
         yield Static("", id="detail-footer")
 
     def _set_links(self, adsurl: str, eprint: str, doi: str) -> None:
@@ -86,6 +138,17 @@ class DetailPanel(VerticalScroll):
 
         self.query_one("#detail-links").display = bool(adsurl or eprint or doi)
 
+    def _update_pdf_buttons(self, *, has_eprint: bool, has_adsurl: bool, has_doi: bool) -> None:
+        self.query_one("#pdf-btn-arxiv").display = has_eprint
+        self.query_one("#pdf-btn-oa").display = has_adsurl
+        self.query_one("#pdf-btn-browser").display = has_doi or has_adsurl
+        has_any = has_eprint or has_adsurl or has_doi
+        self.query_one("#pdf-sources").display = has_any
+        self.query_one("#pdf-status", Static).update("")
+
+    def set_pdf_status(self, text: str) -> None:
+        self.query_one("#pdf-status", Static).update(text)
+
     def show_entry(self, entry: Entry | None) -> None:
         body = self.query_one("#detail-body", Static)
         footer = self.query_one("#detail-footer", Static)
@@ -93,6 +156,7 @@ class DetailPanel(VerticalScroll):
             body.update("")
             footer.update("")
             self._set_links("", "", "")
+            self._update_pdf_buttons(has_eprint=False, has_adsurl=False, has_doi=False)
             return
         from rich.text import Text
         content = Text()
@@ -106,6 +170,11 @@ class DetailPanel(VerticalScroll):
         content.append(abstract[:1000] + ("…" if len(abstract) > 1000 else ""))
         body.update(content)
         self._set_links(entry.adsurl, entry.eprint, entry.doi)
+        self._update_pdf_buttons(
+            has_eprint=bool(entry.eprint),
+            has_adsurl=bool(entry.adsurl),
+            has_doi=bool(entry.doi),
+        )
         foot = Text()
         if entry.keywords:
             foot.append(" · ".join(entry.keywords), style="dim")
@@ -114,8 +183,6 @@ class DetailPanel(VerticalScroll):
         foot.append(short, style="cyan")
         if short != entry.key:
             foot.append(f"  [{entry.key}]", style="dim")
-        foot.append("\n")
-        _append_pdf_sources(foot, eprint=entry.eprint, doi=entry.doi)
         footer.update(foot)
 
     def show_ads_article(self, article, entry: Entry | None = None) -> None:
@@ -125,6 +192,7 @@ class DetailPanel(VerticalScroll):
             body.update("")
             footer.update("")
             self._set_links("", "", "")
+            self._update_pdf_buttons(has_eprint=False, has_adsurl=False, has_doi=False)
             return
         from rich.text import Text
         title = article.title[0] if article.title else ""
@@ -148,6 +216,13 @@ class DetailPanel(VerticalScroll):
             eprint=entry.eprint if entry else eprint,
             doi=entry.doi if entry else doi,
         )
+        eff_eprint = entry.eprint if entry else eprint
+        eff_doi = entry.doi if entry else doi
+        self._update_pdf_buttons(
+            has_eprint=bool(eff_eprint),
+            has_adsurl=bool(article.bibcode),
+            has_doi=bool(eff_doi),
+        )
         foot = Text()
         if entry:
             if entry.keywords:
@@ -157,13 +232,8 @@ class DetailPanel(VerticalScroll):
             foot.append(short, style="cyan")
             if short != entry.key:
                 foot.append(f"  [{entry.key}]", style="dim")
-            foot.append("\n")
-            _append_pdf_sources(foot, eprint=entry.eprint, doi=entry.doi)
-        else:
-            if article.bibcode:
-                foot.append(article.bibcode, style="dim")
-            foot.append("\n")
-            _append_pdf_sources(foot, eprint=eprint, doi=doi)
+        elif article.bibcode:
+            foot.append(article.bibcode, style="dim")
         footer.update(foot)
 
     def show_concept(self, concept: Concept | None, uat: UAT) -> None:
@@ -171,6 +241,7 @@ class DetailPanel(VerticalScroll):
         footer = self.query_one("#detail-footer", Static)
         footer.update("")
         self._set_links("", "", "")
+        self._update_pdf_buttons(has_eprint=False, has_adsurl=False, has_doi=False)
         if concept is None:
             body.update("[dim]Select a concept.[/dim]")
             return
@@ -691,6 +762,7 @@ class LitbotApp(App):
         self._tab_states: list[dict] = []
         self._ads_views: dict[str, AdsView] = {}
         self._split_idx: int = 0
+        self._poll_cancel: threading.Event | None = None
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -837,6 +909,41 @@ class LitbotApp(App):
         entry = self._library.get_by_bibcode(event.article.bibcode) if self._library else None
         self.query_one(DetailPanel).show_ads_article(event.article, entry=entry)
         self.refresh_bindings()
+
+    @on(PdfButton.Clicked)
+    def _on_pdf_button_clicked(self, event: PdfButton.Clicked) -> None:
+        from .. import pdf, ads_client as _ac
+        ads_view = self._active_ads_view()
+        if ads_view is not None:
+            article = ads_view._selected_article
+            if article is None:
+                return
+            eprint = _ac.arxiv_id_from_article(article)
+            doi = (article.doi or [""])[0]
+            key = article.bibcode
+            adsurl = f"https://ui.adsabs.harvard.edu/abs/{article.bibcode}"
+        else:
+            entry = self.query_one(LibraryView)._highlighted_entry
+            if entry is None:
+                return
+            eprint, doi, key, adsurl = entry.eprint, entry.doi, entry.key, entry.adsurl
+
+        if event.source == "browser":
+            self._cancel_poll()
+            self.run_worker(self._do_browser_pdf(key, doi, adsurl, ads_view), exclusive=True)
+        else:
+            self._cancel_poll()
+            source = "arxiv" if event.source == "arxiv" else "auto"
+            self._set_status(f"Downloading {key} ({event.source})…")
+            self.run_worker(
+                self._do_download_pdf(key, eprint, doi, adsurl, ads_view, source=source),
+                exclusive=True,
+            )
+
+    def _cancel_poll(self) -> None:
+        if self._poll_cancel is not None:
+            self._poll_cancel.set()
+            self._poll_cancel = None
 
     # ── Actions ───────────────────────────────────────────────────────────────
 
@@ -1074,6 +1181,11 @@ class LitbotApp(App):
 
     def action_clear_pdf(self) -> None:
         from .. import pdf as _pdf
+        if self._poll_cancel is not None:
+            self._cancel_poll()
+            self.query_one(DetailPanel).set_pdf_status("[dim]Cancelled[/dim]")
+            self._set_status("[dim]Browser download cancelled[/dim]")
+            return
         ads_view = self._active_ads_view()
         if ads_view is not None:
             article = ads_view._selected_article
@@ -1112,24 +1224,30 @@ class LitbotApp(App):
         if not eprint and not doi:
             self._set_status(f"[yellow]No arXiv ID or DOI for {key}[/yellow]")
             return
+        self._cancel_poll()
         self._set_status(f"Downloading {key}…")
         self.run_worker(self._do_download_pdf(key, eprint, doi, adsurl, ads_view), exclusive=True)
 
     async def _do_download_pdf(self, key: str, eprint: str, doi: str,
-                                adsurl: str, ads_view: "AdsView | None") -> None:
+                                adsurl: str, ads_view: "AdsView | None",
+                                source: str = "auto") -> None:
         import asyncio
         from .. import pdf
+        detail = self.query_one(DetailPanel)
         path = await asyncio.to_thread(
-            pdf.fetch, key, eprint=eprint, doi=doi, adsurl=adsurl, force=True
+            pdf.fetch, key, eprint=eprint, doi=doi, adsurl=adsurl, source=source, force=True
         )
         if path is None:
             if pdf.browser_open_url(doi=doi, adsurl=adsurl):
-                self._set_status(f"[red]No auto PDF for {key}[/red]  [dim]→ press B for browser download[/dim]")
+                self._set_status(f"[red]No auto PDF for {key}[/red]  [dim]→ press B or click browser ↓[/dim]")
+                detail.set_pdf_status("[red]✗ not found — try browser ↓[/red]")
             else:
                 self._set_status(f"[red]No PDF found for {key}[/red]")
+                detail.set_pdf_status("[red]✗ no PDF available[/red]")
         else:
             sz = path.stat().st_size // 1024
             self._set_status(f"[green]Downloaded {key}  ({sz} KB)[/green]")
+            detail.set_pdf_status(f"[green]✓ {sz} KB[/green]")
             if ads_view is not None:
                 ads_view.refresh_pdf_status()
             else:
@@ -1170,16 +1288,20 @@ class LitbotApp(App):
                             adsurl: str, ads_view: "AdsView | None") -> None:
         import asyncio
         from .. import pdf
+        detail = self.query_one(DetailPanel)
         opened = await asyncio.to_thread(
             pdf.open_pdf, key, eprint=eprint, doi=doi, adsurl=adsurl
         )
         if not opened:
             if pdf.browser_open_url(doi=doi, adsurl=adsurl):
-                self._set_status(f"[red]No auto PDF for {key}[/red]  [dim]→ press B for browser download[/dim]")
+                self._set_status(f"[red]No auto PDF for {key}[/red]  [dim]→ press B or click browser ↓[/dim]")
+                detail.set_pdf_status("[red]✗ not found — try browser ↓[/red]")
             else:
                 self._set_status(f"[red]No open-access PDF found for {key}[/red]")
+                detail.set_pdf_status("[red]✗ no PDF available[/red]")
         else:
             self._set_status(f"[green]Opened {key}[/green]")
+            detail.set_pdf_status("[green]✓ opened[/green]")
             if ads_view is not None:
                 ads_view.refresh_pdf_status()
             else:
@@ -1204,6 +1326,7 @@ class LitbotApp(App):
         if not pdf.browser_open_url(doi=doi, adsurl=adsurl):
             self._set_status(f"[yellow]No DOI or ADS URL for {key}[/yellow]")
             return
+        self._cancel_poll()
         self.run_worker(self._do_browser_pdf(key, doi, adsurl, ads_view), exclusive=True)
 
     async def _do_browser_pdf(self, key: str, doi: str, adsurl: str,
@@ -1213,12 +1336,23 @@ class LitbotApp(App):
         url = pdf.browser_open_url(doi=doi, adsurl=adsurl)
         before = pdf.downloads_snapshot()
         pdf.browser_open(url)
+        cancel = threading.Event()
+        self._poll_cancel = cancel
+        detail = self.query_one(DetailPanel)
+        detail.set_pdf_status("[yellow]⏳ Waiting for download…  [dim](X to cancel)[/dim][/yellow]")
         self._set_status(f"[yellow]Browser opened — waiting for PDF in ~/Downloads (60s)…[/yellow]")
-        path = await asyncio.to_thread(pdf.poll_downloads, key, before, 60)
+        path = await asyncio.to_thread(pdf.poll_downloads, key, before, 60, cancel)
+        self._poll_cancel = None
         if path is None:
-            self._set_status(f"[red]No PDF appeared in ~/Downloads within 60s[/red]")
+            if cancel.is_set():
+                detail.set_pdf_status("[dim]Cancelled[/dim]")
+                self._set_status("[dim]Browser download cancelled[/dim]")
+            else:
+                detail.set_pdf_status("[red]✗ Timed out (60s)[/red]")
+                self._set_status(f"[red]No PDF appeared in ~/Downloads within 60s[/red]")
         else:
             sz = path.stat().st_size // 1024
+            detail.set_pdf_status(f"[green]✓ {sz} KB[/green]")
             self._set_status(f"[green]Downloaded {key}  ({sz} KB)[/green]")
             if ads_view is not None:
                 ads_view.refresh_pdf_status()
@@ -1297,6 +1431,8 @@ class LitbotApp(App):
             return False
 
         if action == "clear_pdf":
+            if self._poll_cancel is not None:
+                return True
             if on_library:
                 entry = self.query_one(LibraryView)._highlighted_entry
                 return entry is not None and _pdf.is_cached(entry.key)
@@ -1393,17 +1529,3 @@ def _quota_str() -> str:
     return f" · ADS [{color}]{remaining}/{limit}[/{color}]"
 
 
-def _append_pdf_sources(text, *, eprint: str, doi: str) -> None:
-    """Append a compact PDF source availability line to a Rich Text object."""
-    parts = []
-    if eprint:
-        parts.append(("arXiv", "cyan"))
-    if doi:
-        parts.append(("browser", "yellow"))
-    if not parts:
-        text.append("no PDF source", style="dim")
-        return
-    for i, (label, style) in enumerate(parts):
-        if i:
-            text.append("  ", style="dim")
-        text.append(label, style=style)
