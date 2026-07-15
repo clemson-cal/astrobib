@@ -1,12 +1,16 @@
 """Ephemeral PDF management: fetch on demand, cache locally.
 
-Fetch chain (auto): cached → Unpaywall OA → arXiv → None.
-Fetch chain (journal): cached → Unpaywall OA → Playwright browser → None.
+Sources:
+  auto    — Unpaywall OA → arXiv (fully automatic)
+  arxiv   — arXiv only
+  browser — open system browser, watch ~/Downloads for new PDF
 """
 from __future__ import annotations
 
+import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import httpx
@@ -15,9 +19,9 @@ from .state import PDF_CACHE_DIR, get_email
 
 _UNPAYWALL_EMAIL_FALLBACK = "litbot@example.com"
 
-PLAYWRIGHT_HINT = (
-    "pip install playwright && playwright install chromium"
-)
+SOURCE_AUTO = "auto"
+SOURCE_ARXIV = "arxiv"
+SOURCE_BROWSER = "browser"
 
 
 def _unpaywall_email() -> str:
@@ -32,69 +36,10 @@ def is_cached(citekey: str) -> bool:
     return cache_path(citekey).exists()
 
 
-def playwright_ready() -> bool:
-    """Return True if playwright package and Chromium browser are both available."""
-    try:
-        from playwright.sync_api import sync_playwright
-        import os
-        with sync_playwright() as p:
-            return os.path.exists(p.chromium.executable_path)
-    except Exception:
-        return False
-
-
-def _playwright_fetch(path: Path, url: str) -> Path | None:
-    """Navigate to url with headless Chromium and intercept the PDF response.
-
-    Raises RuntimeError with install instructions if playwright or browser
-    are not set up — caller should surface this to the user.
-    """
-    try:
-        from playwright.sync_api import sync_playwright
-    except ImportError:
-        raise RuntimeError(
-            f"Publisher PDFs require a browser — install with:\n  {PLAYWRIGHT_HINT}"
-        )
-
-    pdf_url: list[str | None] = [None]
-
-    def on_response(response) -> None:
-        if pdf_url[0]:
-            return
-        if "pdf" in response.headers.get("content-type", ""):
-            pdf_url[0] = response.url
-
-    try:
-        with sync_playwright() as p:
-            try:
-                browser = p.chromium.launch(headless=True)
-            except Exception as e:
-                raise RuntimeError(
-                    f"Chromium not installed — run: playwright install chromium"
-                ) from e
-            page = browser.new_page()
-            page.on("response", on_response)
-            try:
-                page.goto(url, wait_until="networkidle", timeout=30_000)
-            except Exception:
-                pass  # timeout is fine if we already captured the PDF URL
-            browser.close()
-    except RuntimeError:
-        raise
-    except Exception:
-        return None
-
-    return _download_url(path, pdf_url[0]) if pdf_url[0] else None
-
-
-def _bibcode_from_adsurl(adsurl: str) -> str | None:
-    if not adsurl:
-        return None
-    return adsurl.rstrip("/").rsplit("/", 1)[-1] or None
-
+# ── Unpaywall ─────────────────────────────────────────────────────────────────
 
 def oa_url_with_detail(doi: str) -> tuple[str | None, dict | None]:
-    """Like oa_url but also returns the raw Unpaywall response dict."""
+    """Return (direct_pdf_url, raw_response) from Unpaywall."""
     if not doi:
         return None, None
     try:
@@ -119,34 +64,65 @@ def oa_url_with_detail(doi: str) -> tuple[str | None, dict | None]:
 
 
 def oa_url(doi: str) -> str | None:
-    """Return a direct PDF URL from Unpaywall, or None if unavailable."""
-    if not doi:
-        return None
-    try:
-        resp = httpx.get(
-            f"https://api.unpaywall.org/v2/{doi}",
-            params={"email": _unpaywall_email()},
-            timeout=10,
-            follow_redirects=True,
-        )
-        if resp.status_code != 200:
-            return None
-        data = resp.json()
-        best = data.get("best_oa_location") or {}
-        if best.get("url_for_pdf"):
-            return best["url_for_pdf"]
-        for loc in data.get("oa_locations") or []:
-            if loc.get("url_for_pdf"):
-                return loc["url_for_pdf"]
-        return None
-    except Exception:
-        return None
+    url, _ = oa_url_with_detail(doi)
+    return url
 
 
-SOURCE_AUTO = "auto"
-SOURCE_ARXIV = "arxiv"
-SOURCE_JOURNAL = "journal"
+# ── Browser download helpers ──────────────────────────────────────────────────
 
+def browser_open_url(*, doi: str | None = None, adsurl: str | None = None) -> str | None:
+    """Return the URL to open in the system browser for manual PDF download."""
+    if adsurl:
+        bibcode = adsurl.rstrip("/").rsplit("/", 1)[-1]
+        if bibcode:
+            return f"https://ui.adsabs.harvard.edu/link_gateway/{bibcode}/PUB_PDF"
+    if doi:
+        return f"https://doi.org/{doi}"
+    return None
+
+
+def browser_open(url: str) -> None:
+    """Open url in the system browser."""
+    if sys.platform == "darwin":
+        subprocess.run(["open", url], check=False)
+    elif sys.platform.startswith("linux"):
+        subprocess.run(["xdg-open", url], check=False)
+    else:
+        subprocess.run(["start", url], shell=True, check=False)
+
+
+def downloads_snapshot() -> set[Path]:
+    """Current set of PDF files in ~/Downloads."""
+    d = Path.home() / "Downloads"
+    return {f for f in d.glob("*.pdf")} if d.exists() else set()
+
+
+def poll_downloads(citekey: str, before: set[Path], timeout: int = 60) -> Path | None:
+    """Watch ~/Downloads for a new PDF not in before; move it to cache on arrival.
+
+    Uses a two-poll size-stability check so we don't grab a partial Chrome download.
+    """
+    deadline = time.monotonic() + timeout
+    prev_sizes: dict[Path, int] = {}
+    while time.monotonic() < deadline:
+        time.sleep(1)
+        d = Path.home() / "Downloads"
+        current = {f for f in d.glob("*.pdf")} if d.exists() else set()
+        for f in current - before:
+            try:
+                size = f.stat().st_size
+            except OSError:
+                continue
+            if prev_sizes.get(f) == size and size > 0:
+                dest = cache_path(citekey)
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                shutil.move(str(f), str(dest))
+                return dest
+            prev_sizes[f] = size
+    return None
+
+
+# ── HTTP download ─────────────────────────────────────────────────────────────
 
 def _download_url(path: Path, url: str) -> Path | None:
     try:
@@ -164,18 +140,17 @@ def _download_url(path: Path, url: str) -> Path | None:
         return None
 
 
+# ── Public API ────────────────────────────────────────────────────────────────
+
 def fetch(citekey: str, *, eprint: str | None = None, doi: str | None = None,
           adsurl: str | None = None, source: str = SOURCE_AUTO,
           force: bool = False) -> Path | None:
     """Return cached PDF path, downloading if needed.
 
-    source: 'auto'    — Unpaywall then arXiv fallback (no browser)
-            'journal' — Unpaywall then Playwright browser fallback
-            'arxiv'   — arXiv only
+    source='auto'    — Unpaywall then arXiv fallback
+    source='arxiv'   — arXiv only
+    source='browser' — open system browser, poll ~/Downloads (blocks until found or timeout)
     force=True re-downloads even if cached.
-
-    Raises RuntimeError (with install instructions) when source='journal'
-    or source='auto' and playwright would be needed but isn't installed.
     """
     path = cache_path(citekey)
     if path.exists() and not force:
@@ -188,23 +163,15 @@ def fetch(citekey: str, *, eprint: str | None = None, doi: str | None = None,
             return None
         return _download_url(path, f"https://arxiv.org/pdf/{eprint.strip()}")
 
-    if source == SOURCE_JOURNAL:
-        if not doi:
+    if source == SOURCE_BROWSER:
+        url = browser_open_url(doi=doi, adsurl=adsurl)
+        if not url:
             return None
-        url = oa_url(doi)
-        if url:
-            result = _download_url(path, url)
-            if result:
-                return result
-        # Playwright fallback: navigate via ADS link gateway or DOI redirect
-        bibcode = _bibcode_from_adsurl(adsurl)
-        nav_url = (
-            f"https://ui.adsabs.harvard.edu/link_gateway/{bibcode}/PUB_PDF"
-            if bibcode else f"https://doi.org/{doi}"
-        )
-        return _playwright_fetch(path, nav_url)  # raises if not installed
+        before = downloads_snapshot()
+        browser_open(url)
+        return poll_downloads(citekey, before)
 
-    # auto: Unpaywall → arXiv (no Playwright, arXiv is reliable)
+    # auto: Unpaywall → arXiv
     if doi:
         url = oa_url(doi)
         if url:

@@ -257,10 +257,10 @@ def show_cmd(key: str):
 
 # ── pdf ───────────────────────────────────────────────────────────────────────
 
-_SOURCE = click.Choice(["auto", "arxiv", "journal"])
+_SOURCE = click.Choice(["auto", "arxiv", "browser"])
 _SOURCE_OPT = click.option(
     "--source", "-s", type=_SOURCE, default="auto", show_default=True,
-    help="auto: journal then arXiv fallback; journal: Unpaywall only; arxiv: arXiv only.",
+    help="auto: Unpaywall then arXiv; arxiv: arXiv only; browser: open browser + watch Downloads.",
 )
 
 
@@ -307,39 +307,50 @@ def pdf_check(citekey_or_bibcode: str):
     entry = lib.get(key)
     display = (entry.short_key or key) if entry else key
     suffix = f"  [dim]({key})[/dim]" if display != key else ""
-    console.print(f"\n[bold]{display}[/bold]{suffix}")
+    console.print(f"\n[bold]{display}[/bold]{suffix}\n")
+
+    # cached
     if cached_path.exists():
         sz = cached_path.stat().st_size // 1024
         console.print(f"  [green]cached[/green]     {cached_path}  ({sz} KB)")
     else:
         console.print(f"  [dim]cached     —[/dim]")
+
+    # arXiv
     if eprint:
-        console.print(f"  [cyan]arXiv[/cyan]      {eprint}")
-        console.print(f"             → https://arxiv.org/pdf/{eprint}")
+        console.print(f"  [cyan]arXiv[/cyan]      {eprint}  [green]✓ auto[/green]")
+        console.print(f"  [dim]           → https://arxiv.org/pdf/{eprint}[/dim]")
     else:
         console.print(f"  [dim]arXiv      —[/dim]")
+
+    # Unpaywall
     if doi:
-        console.print(f"  [dim]checking Unpaywall for {doi}…[/dim]")
         oa, detail = pdf.oa_url_with_detail(doi)
         if oa:
-            console.print(f"  [cyan]Unpaywall[/cyan]  {doi}")
-            console.print(f"             → {oa}")
+            oa_display = oa if len(oa) <= 63 else oa[:60] + "…"
+            console.print(f"  [cyan]Unpaywall[/cyan]  {doi}  [green]✓ auto[/green]")
+            console.print(f"  [dim]           → {oa_display}[/dim]")
         else:
-            console.print(f"  [dim]Unpaywall  {doi}  (no direct PDF)[/dim]")
+            console.print(f"  [dim]Unpaywall  {doi}  ✗ no direct PDF[/dim]")
             if detail:
                 best = detail.get("best_oa_location") or {}
-                if best.get("url"):
-                    console.print(f"  [dim]           landing page: {best['url']}[/dim]")
                 n = len(detail.get("oa_locations") or [])
+                if best.get("url"):
+                    console.print(f"  [dim]           landing: {best['url']}[/dim]")
                 if n:
                     console.print(f"  [dim]           {n} OA location(s), none with direct PDF[/dim]")
                 elif not detail.get("is_oa"):
-                    console.print(f"  [dim]           Unpaywall reports paper is not OA[/dim]")
-            if not pdf.playwright_ready():
-                console.print(f"  [yellow]  → browser fallback available:[/yellow]"
-                              f"  [cyan]{pdf.PLAYWRIGHT_HINT}[/cyan]")
+                    console.print(f"  [dim]           not OA[/dim]")
     else:
         console.print(f"  [dim]Unpaywall  —[/dim]")
+
+    # browser
+    browser_url = pdf.browser_open_url(doi=doi, adsurl=adsurl)
+    if browser_url:
+        console.print(f"  [yellow]browser[/yellow]    requires action"
+                      f"  [dim]→ litbot pdf download {display} --source browser[/dim]")
+    else:
+        console.print(f"  [dim]browser    — (no DOI or ADS URL)[/dim]")
 
 
 @pdf_group.command("download")
@@ -349,17 +360,37 @@ def pdf_download(citekey_or_bibcode: str, source: str):
     """Download PDF, replacing any cached copy."""
     from . import pdf
     key, eprint, doi, adsurl = _resolve(citekey_or_bibcode)
+    lib = Library(root=get_library_path())
+    entry = lib.get(key)
+    display = (entry.short_key or key) if entry else key
+
+    if source == "browser":
+        url = pdf.browser_open_url(doi=doi, adsurl=adsurl)
+        if not url:
+            console.print(f"[red]No DOI or ADS URL for {key}.[/red]")
+            raise SystemExit(1)
+        before = pdf.downloads_snapshot()
+        console.print(f"Opening browser: {url}")
+        pdf.browser_open(url)
+        console.print(f"[dim]Watching ~/Downloads for a new PDF (up to 60s)…[/dim]")
+        path = pdf.poll_downloads(key, before, timeout=60)
+        if path is None:
+            console.print(f"[red]No PDF appeared in ~/Downloads within 60s.[/red]")
+            raise SystemExit(1)
+        sz = path.stat().st_size // 1024
+        console.print(f"[green]Saved {path}  ({sz} KB)[/green]")
+        return
+
     if not eprint and not doi:
         console.print(f"[red]No arXiv ID or DOI for {key}.[/red]")
         raise SystemExit(1)
-    console.print(f"Downloading {key} (source={source})…")
-    try:
-        path = pdf.fetch(key, eprint=eprint, doi=doi, adsurl=adsurl, source=source, force=True)
-    except RuntimeError as e:
-        console.print(f"[yellow]{e}[/yellow]")
-        raise SystemExit(1)
+    console.print(f"Downloading {display} (source={source})…")
+    path = pdf.fetch(key, eprint=eprint, doi=doi, adsurl=adsurl, source=source, force=True)
     if path is None:
         console.print(f"[red]No PDF found via source={source}.[/red]")
+        browser_url = pdf.browser_open_url(doi=doi, adsurl=adsurl)
+        if browser_url and source == "auto":
+            console.print(f"[dim]→ try: litbot pdf download {display} --source browser[/dim]")
         raise SystemExit(1)
     sz = path.stat().st_size // 1024
     console.print(f"[green]Saved {path}  ({sz} KB)[/green]")
@@ -367,28 +398,31 @@ def pdf_download(citekey_or_bibcode: str, source: str):
 
 @pdf_group.command("open")
 @click.argument("citekey_or_bibcode")
-@_SOURCE_OPT
+@click.option("--source", "-s", type=click.Choice(["auto", "arxiv"]), default="auto",
+              show_default=True, help="auto: Unpaywall then arXiv; arxiv: arXiv only.")
 def pdf_open(citekey_or_bibcode: str, source: str):
-    """Open PDF, downloading if not cached (force re-download if --source given)."""
+    """Open PDF, downloading if not cached."""
     from . import pdf
     key, eprint, doi, adsurl = _resolve(citekey_or_bibcode)
+    lib = Library(root=get_library_path())
+    entry = lib.get(key)
+    display = (entry.short_key or key) if entry else key
     if not eprint and not doi:
         console.print(f"[red]No arXiv ID or DOI for {key}.[/red]")
         raise SystemExit(1)
     force = source != "auto"
     if pdf.is_cached(key) and not force:
-        console.print(f"Opening cached {key}…")
+        console.print(f"Opening cached {display}…")
     elif doi and source != "arxiv":
-        console.print(f"Fetching {key} via Unpaywall…")
+        console.print(f"Fetching {display} via Unpaywall…")
     else:
-        console.print(f"Fetching {key} from arXiv…")
-    try:
-        ok = pdf.open_pdf(key, eprint=eprint, doi=doi, adsurl=adsurl, source=source, force=force)
-    except RuntimeError as e:
-        console.print(f"[yellow]{e}[/yellow]")
-        raise SystemExit(1)
+        console.print(f"Fetching {display} from arXiv…")
+    ok = pdf.open_pdf(key, eprint=eprint, doi=doi, adsurl=adsurl, source=source, force=force)
     if not ok:
         console.print(f"[red]No PDF found via source={source}.[/red]")
+        browser_url = pdf.browser_open_url(doi=doi, adsurl=adsurl)
+        if browser_url:
+            console.print(f"[dim]→ try: litbot pdf download {display} --source browser[/dim]")
         raise SystemExit(1)
 
 

@@ -114,6 +114,8 @@ class DetailPanel(VerticalScroll):
         foot.append(short, style="cyan")
         if short != entry.key:
             foot.append(f"  [{entry.key}]", style="dim")
+        foot.append("\n")
+        _append_pdf_sources(foot, eprint=entry.eprint, doi=entry.doi)
         footer.update(foot)
 
     def show_ads_article(self, article, entry: Entry | None = None) -> None:
@@ -155,8 +157,13 @@ class DetailPanel(VerticalScroll):
             foot.append(short, style="cyan")
             if short != entry.key:
                 foot.append(f"  [{entry.key}]", style="dim")
-        elif article.bibcode:
-            foot.append(article.bibcode, style="dim")
+            foot.append("\n")
+            _append_pdf_sources(foot, eprint=entry.eprint, doi=entry.doi)
+        else:
+            if article.bibcode:
+                foot.append(article.bibcode, style="dim")
+            foot.append("\n")
+            _append_pdf_sources(foot, eprint=eprint, doi=doi)
         footer.update(foot)
 
     def show_concept(self, concept: Concept | None, uat: UAT) -> None:
@@ -670,6 +677,7 @@ class LitbotApp(App):
         Binding("a", "add_paper", "Add"),
         Binding("d", "remove_paper", "Remove"),
         Binding("p", "download_pdf", "DL PDF"),
+        Binding("B", "browser_pdf", "Browser DL"),
         Binding("o", "open_pdf", "Open PDF"),
         Binding("X", "clear_pdf", "Clear PDF"),
         Binding("/", "filter", "Filter"),
@@ -1123,15 +1131,14 @@ class LitbotApp(App):
                                 adsurl: str, ads_view: "AdsView | None") -> None:
         import asyncio
         from .. import pdf
-        try:
-            path = await asyncio.to_thread(
-                pdf.fetch, key, eprint=eprint, doi=doi, adsurl=adsurl, force=True
-            )
-        except RuntimeError as e:
-            self._set_status(f"[yellow]{e}[/yellow]")
-            return
+        path = await asyncio.to_thread(
+            pdf.fetch, key, eprint=eprint, doi=doi, adsurl=adsurl, force=True
+        )
         if path is None:
-            self._set_status(f"[red]No PDF found for {key}[/red]")
+            if pdf.browser_open_url(doi=doi, adsurl=adsurl):
+                self._set_status(f"[red]No auto PDF for {key}[/red]  [dim]→ press B for browser download[/dim]")
+            else:
+                self._set_status(f"[red]No PDF found for {key}[/red]")
         else:
             sz = path.stat().st_size // 1024
             self._set_status(f"[green]Downloaded {key}  ({sz} KB)[/green]")
@@ -1175,17 +1182,56 @@ class LitbotApp(App):
                             adsurl: str, ads_view: "AdsView | None") -> None:
         import asyncio
         from .. import pdf
-        try:
-            opened = await asyncio.to_thread(
-                pdf.open_pdf, key, eprint=eprint, doi=doi, adsurl=adsurl
-            )
-        except RuntimeError as e:
-            self._set_status(f"[yellow]{e}[/yellow]")
-            return
+        opened = await asyncio.to_thread(
+            pdf.open_pdf, key, eprint=eprint, doi=doi, adsurl=adsurl
+        )
         if not opened:
-            self._set_status(f"[red]No open-access PDF found for {key}[/red]")
+            if pdf.browser_open_url(doi=doi, adsurl=adsurl):
+                self._set_status(f"[red]No auto PDF for {key}[/red]  [dim]→ press B for browser download[/dim]")
+            else:
+                self._set_status(f"[red]No open-access PDF found for {key}[/red]")
         else:
             self._set_status(f"[green]Opened {key}[/green]")
+            if ads_view is not None:
+                ads_view.refresh_pdf_status()
+            else:
+                self.query_one(LibraryView).refresh_pdf_status()
+            self.refresh_bindings()
+
+    def action_browser_pdf(self) -> None:
+        from .. import pdf, ads_client as _ac
+        ads_view = self._active_ads_view()
+        if ads_view is not None:
+            article = ads_view._selected_article
+            if article is None:
+                return
+            doi = (article.doi or [""])[0]
+            key = article.bibcode
+            adsurl = f"https://ui.adsabs.harvard.edu/abs/{article.bibcode}"
+        else:
+            entry = self.query_one(LibraryView)._highlighted_entry
+            if entry is None:
+                return
+            doi, key, adsurl = entry.doi, entry.key, entry.adsurl
+        if not pdf.browser_open_url(doi=doi, adsurl=adsurl):
+            self._set_status(f"[yellow]No DOI or ADS URL for {key}[/yellow]")
+            return
+        self.run_worker(self._do_browser_pdf(key, doi, adsurl, ads_view), exclusive=True)
+
+    async def _do_browser_pdf(self, key: str, doi: str, adsurl: str,
+                               ads_view: "AdsView | None") -> None:
+        import asyncio
+        from .. import pdf
+        url = pdf.browser_open_url(doi=doi, adsurl=adsurl)
+        before = pdf.downloads_snapshot()
+        pdf.browser_open(url)
+        self._set_status(f"[yellow]Browser opened — waiting for PDF in ~/Downloads (60s)…[/yellow]")
+        path = await asyncio.to_thread(pdf.poll_downloads, key, before, 60)
+        if path is None:
+            self._set_status(f"[red]No PDF appeared in ~/Downloads within 60s[/red]")
+        else:
+            sz = path.stat().st_size // 1024
+            self._set_status(f"[green]Downloaded {key}  ({sz} KB)[/green]")
             if ads_view is not None:
                 ads_view.refresh_pdf_status()
             else:
@@ -1281,6 +1327,15 @@ class LitbotApp(App):
                 )
             return False
 
+        if action == "browser_pdf":
+            if on_library:
+                entry = self.query_one(LibraryView)._highlighted_entry
+                return entry is not None and bool(entry.doi or entry.adsurl)
+            if ads_view:
+                a = ads_view._selected_article
+                return a is not None and bool((a.doi and a.doi[0]) or a.bibcode)
+            return False
+
         if action == "add_paper":
             if on_library:
                 return False
@@ -1348,3 +1403,21 @@ def _quota_str() -> str:
     limit = quota["limit"]
     color = "green" if remaining > limit * 0.2 else "yellow" if remaining > 0 else "red"
     return f" · ADS [{color}]{remaining}/{limit}[/{color}]"
+
+
+def _append_pdf_sources(text, *, eprint: str, doi: str) -> None:
+    """Append a compact PDF source availability line to a Rich Text object."""
+    from rich.text import Text
+    parts = []
+    if eprint:
+        parts.append(("arXiv", "cyan"))
+    if doi:
+        parts.append(("OA?", "dim"))
+        parts.append(("browser", "yellow"))
+    if not parts:
+        text.append("no PDF source", style="dim")
+        return
+    for i, (label, style) in enumerate(parts):
+        if i:
+            text.append("  ", style="dim")
+        text.append(label, style=style)
