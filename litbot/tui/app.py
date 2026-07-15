@@ -25,7 +25,7 @@ from textual.widgets import (
 from ..library import Entry, Library
 from ..state import (
     UAT_CACHE, PDF_CACHE_DIR, STATE_FILE,
-    get_library_path, get_token, set_token, get_email, set_email,
+    get_library_path, get_token, set_token,
 )
 from ..uat import UAT, Concept, get_uat
 from . import tabs_state
@@ -230,14 +230,10 @@ class ConfigModal(ModalScreen):
             with Horizontal(classes="cfg-row"):
                 yield Label("ADS token", classes="cfg-label")
                 yield Input(placeholder="paste ADS token…", id="cfg-token")
-            with Horizontal(classes="cfg-row"):
-                yield Label("Unpaywall email", classes="cfg-label")
-                yield Input(placeholder="your@email.com", id="cfg-email")
             yield Static("", id="cfg-info")
 
     def on_mount(self) -> None:
         self.query_one("#cfg-token", Input).value = get_token() or ""
-        self.query_one("#cfg-email", Input).value = get_email() or ""
         self._refresh_info()
         self.query_one("#cfg-token", Input).focus()
 
@@ -266,14 +262,6 @@ class ConfigModal(ModalScreen):
         if value:
             set_token(value)
             self.app._set_status("[green]ADS token saved.[/green]")
-        self.query_one("#cfg-email", Input).focus()
-
-    @on(Input.Submitted, "#cfg-email")
-    def _save_email(self, event: Input.Submitted) -> None:
-        value = event.value.strip()
-        if value:
-            set_email(value)
-            self.app._set_status(f"[green]Email saved: {value}[/green]")
         self.dismiss()
 
     def on_key(self, event) -> None:
@@ -1173,7 +1161,7 @@ class LitbotApp(App):
         if pdf.is_cached(key):
             self._set_status(f"Opening {key}…")
         elif doi:
-            self._set_status(f"Fetching {key} via Unpaywall…")
+            self._set_status(f"Fetching {key} via ADS OA resolver…")
         else:
             self._set_status(f"Fetching {key} from arXiv:{eprint}…")
         self.run_worker(self._do_open_pdf(key, eprint, doi, adsurl, ads_view), exclusive=True)
@@ -1407,12 +1395,10 @@ def _quota_str() -> str:
 
 def _append_pdf_sources(text, *, eprint: str, doi: str) -> None:
     """Append a compact PDF source availability line to a Rich Text object."""
-    from rich.text import Text
     parts = []
     if eprint:
         parts.append(("arXiv", "cyan"))
     if doi:
-        parts.append(("OA?", "dim"))
         parts.append(("browser", "yellow"))
     if not parts:
         text.append("no PDF source", style="dim")

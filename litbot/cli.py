@@ -11,7 +11,7 @@ from rich.table import Table
 from rich.text import Text
 
 from .state import (
-    get_token, set_token, get_email, set_email,
+    get_token, set_token,
     get_library_path, STATE_FILE, PDF_CACHE_DIR, UAT_CACHE,
 )
 from .library import Library
@@ -43,7 +43,6 @@ def config_group(ctx: click.Context):
 
 def _show_config() -> None:
     token = get_token()
-    email = get_email()
     table = Table(box=None, show_header=False, padding=(0, 2, 0, 0))
     table.add_column("key", style="dim", width=16)
     table.add_column("value")
@@ -54,11 +53,6 @@ def _show_config() -> None:
         table.add_row("ads_token", Text(masked, style="cyan"), _source("ADS_API_TOKEN", token))
     else:
         table.add_row("ads_token", Text("not set", style="yellow"), "")
-
-    if email:
-        table.add_row("email", Text(email, style="cyan"), _source("LITBOT_EMAIL", email))
-    else:
-        table.add_row("email", Text("not set", style="yellow"), "")
 
     table.add_row("library", Text(str(get_library_path()), style="dim"), "")
     table.add_row("state_file", Text(str(STATE_FILE), style="dim"), "")
@@ -91,26 +85,6 @@ def config_token(value: str | None):
         console.print("Get one at: https://ui.adsabs.harvard.edu/user/settings/token")
         set_token(click.prompt("ADS token", hide_input=True))
         console.print("[green]ADS token saved.[/green]")
-
-
-@config_group.command("email")
-@click.argument("address", required=False)
-def config_email(address: str | None):
-    """Get or set the email address used for Unpaywall PDF lookups."""
-    if address:
-        set_email(address)
-        console.print(f"[green]Email saved: {address}[/green]")
-        return
-    current = get_email()
-    if current:
-        console.print(f"email: [cyan]{current}[/cyan]")
-        if click.confirm("Replace?", default=False):
-            set_email(click.prompt("New email"))
-            console.print("[green]Email saved.[/green]")
-    else:
-        console.print("[yellow]No email set — Unpaywall PDF lookups will fail.[/yellow]")
-        set_email(click.prompt("Email address"))
-        console.print("[green]Email saved.[/green]")
 
 
 # ── add ───────────────────────────────────────────────────────────────────────
@@ -260,7 +234,7 @@ def show_cmd(key: str):
 _SOURCE = click.Choice(["auto", "arxiv", "browser"])
 _SOURCE_OPT = click.option(
     "--source", "-s", type=_SOURCE, default="auto", show_default=True,
-    help="auto: Unpaywall then arXiv; arxiv: arXiv only; browser: open browser + watch Downloads.",
+    help="auto: ADS OA then arXiv; arxiv: arXiv only; browser: open browser + watch Downloads.",
 )
 
 
@@ -323,26 +297,21 @@ def pdf_check(citekey_or_bibcode: str):
     else:
         console.print(f"  [dim]arXiv      —[/dim]")
 
-    # Unpaywall
-    if doi:
-        oa, detail = pdf.oa_url_with_detail(doi)
-        if oa:
-            oa_display = oa if len(oa) <= 63 else oa[:60] + "…"
-            console.print(f"  [cyan]Unpaywall[/cyan]  {doi}  [green]✓ auto[/green]")
-            console.print(f"  [dim]           → {oa_display}[/dim]")
+    # ADS OA resolver
+    bibcode = adsurl.rstrip("/").rsplit("/", 1)[-1] if adsurl else None
+    if bibcode:
+        if not get_token():
+            console.print(f"  [dim]ADS OA     — (no token)[/dim]")
         else:
-            console.print(f"  [dim]Unpaywall  {doi}  ✗ no direct PDF[/dim]")
-            if detail:
-                best = detail.get("best_oa_location") or {}
-                n = len(detail.get("oa_locations") or [])
-                if best.get("url"):
-                    console.print(f"  [dim]           landing: {best['url']}[/dim]")
-                if n:
-                    console.print(f"  [dim]           {n} OA location(s), none with direct PDF[/dim]")
-                elif not detail.get("is_oa"):
-                    console.print(f"  [dim]           not OA[/dim]")
+            oa = ads_client.resolve_pdf_url(bibcode, "OA_PDF")
+            if oa:
+                oa_display = oa if len(oa) <= 63 else oa[:60] + "…"
+                console.print(f"  [cyan]ADS OA[/cyan]     {bibcode}  [green]✓ auto[/green]")
+                console.print(f"  [dim]           → {oa_display}[/dim]")
+            else:
+                console.print(f"  [dim]ADS OA     {bibcode}  ✗ no OA PDF[/dim]")
     else:
-        console.print(f"  [dim]Unpaywall  —[/dim]")
+        console.print(f"  [dim]ADS OA     —[/dim]")
 
     # browser
     browser_url = pdf.browser_open_url(doi=doi, adsurl=adsurl)
@@ -399,7 +368,7 @@ def pdf_download(citekey_or_bibcode: str, source: str):
 @pdf_group.command("open")
 @click.argument("citekey_or_bibcode")
 @click.option("--source", "-s", type=click.Choice(["auto", "arxiv"]), default="auto",
-              show_default=True, help="auto: Unpaywall then arXiv; arxiv: arXiv only.")
+              show_default=True, help="auto: ADS OA then arXiv; arxiv: arXiv only.")
 def pdf_open(citekey_or_bibcode: str, source: str):
     """Open PDF, downloading if not cached."""
     from . import pdf
@@ -414,7 +383,7 @@ def pdf_open(citekey_or_bibcode: str, source: str):
     if pdf.is_cached(key) and not force:
         console.print(f"Opening cached {display}…")
     elif doi and source != "arxiv":
-        console.print(f"Fetching {display} via Unpaywall…")
+        console.print(f"Fetching {display} via ADS OA resolver…")
     else:
         console.print(f"Fetching {display} from arXiv…")
     ok = pdf.open_pdf(key, eprint=eprint, doi=doi, adsurl=adsurl, source=source, force=force)

@@ -110,6 +110,30 @@ def fetch_bibtex_bulk(bibcodes: list[str]) -> list[dict]:
     return _parse_bibtex_string_multi(raw)
 
 
+def resolve_pdf_url(bibcode: str, link_type: str = "OA_PDF") -> str | None:
+    """Query the ADS link resolver and return the direct URL, or None.
+
+    link_type: OA_PDF, EPRINT_PDF, PUB_PDF, ADS_PDF, AUTHOR_PDF
+    Returns None if no token, bibcode unknown, or link type unavailable.
+    """
+    token = get_token()
+    if not token:
+        return None
+    try:
+        resp = httpx.get(
+            f"https://api.adsabs.harvard.edu/v1/resolver/{bibcode}/{link_type}",
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=10,
+            follow_redirects=False,
+        )
+        if resp.status_code != 200:
+            return None
+        data = resp.json()
+        return data.get("link") or None
+    except Exception:
+        return None
+
+
 def arxiv_id_from_article(article: _ads.search.Article) -> str | None:
     for ident in article.identifier or []:
         if ident.startswith("arXiv:"):

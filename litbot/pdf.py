@@ -1,8 +1,8 @@
 """Ephemeral PDF management: fetch on demand, cache locally.
 
 Sources:
-  auto    — Unpaywall OA → arXiv (fully automatic)
-  arxiv   — arXiv only
+  auto    — ADS OA_PDF resolver → arXiv direct (fully automatic)
+  arxiv   — arXiv direct download only
   browser — open system browser, watch ~/Downloads for new PDF
 """
 from __future__ import annotations
@@ -15,17 +15,11 @@ from pathlib import Path
 
 import httpx
 
-from .state import PDF_CACHE_DIR, get_email
-
-_UNPAYWALL_EMAIL_FALLBACK = "litbot@example.com"
+from .state import PDF_CACHE_DIR
 
 SOURCE_AUTO = "auto"
 SOURCE_ARXIV = "arxiv"
 SOURCE_BROWSER = "browser"
-
-
-def _unpaywall_email() -> str:
-    return get_email() or _UNPAYWALL_EMAIL_FALLBACK
 
 
 def cache_path(citekey: str) -> Path:
@@ -36,46 +30,19 @@ def is_cached(citekey: str) -> bool:
     return cache_path(citekey).exists()
 
 
-# ── Unpaywall ─────────────────────────────────────────────────────────────────
-
-def oa_url_with_detail(doi: str) -> tuple[str | None, dict | None]:
-    """Return (direct_pdf_url, raw_response) from Unpaywall."""
-    if not doi:
-        return None, None
-    try:
-        resp = httpx.get(
-            f"https://api.unpaywall.org/v2/{doi}",
-            params={"email": _unpaywall_email()},
-            timeout=10,
-            follow_redirects=True,
-        )
-        if resp.status_code != 200:
-            return None, None
-        data = resp.json()
-        best = data.get("best_oa_location") or {}
-        if best.get("url_for_pdf"):
-            return best["url_for_pdf"], data
-        for loc in data.get("oa_locations") or []:
-            if loc.get("url_for_pdf"):
-                return loc["url_for_pdf"], data
-        return None, data
-    except Exception:
-        return None, None
-
-
-def oa_url(doi: str) -> str | None:
-    url, _ = oa_url_with_detail(doi)
-    return url
+def _bibcode_from_adsurl(adsurl: str | None) -> str | None:
+    if not adsurl:
+        return None
+    return adsurl.rstrip("/").rsplit("/", 1)[-1] or None
 
 
 # ── Browser download helpers ──────────────────────────────────────────────────
 
 def browser_open_url(*, doi: str | None = None, adsurl: str | None = None) -> str | None:
     """Return the URL to open in the system browser for manual PDF download."""
-    if adsurl:
-        bibcode = adsurl.rstrip("/").rsplit("/", 1)[-1]
-        if bibcode:
-            return f"https://ui.adsabs.harvard.edu/link_gateway/{bibcode}/PUB_PDF"
+    bibcode = _bibcode_from_adsurl(adsurl)
+    if bibcode:
+        return f"https://ui.adsabs.harvard.edu/link_gateway/{bibcode}/PUB_PDF"
     if doi:
         return f"https://doi.org/{doi}"
     return None
@@ -98,10 +65,7 @@ def downloads_snapshot() -> set[Path]:
 
 
 def poll_downloads(citekey: str, before: set[Path], timeout: int = 60) -> Path | None:
-    """Watch ~/Downloads for a new PDF not in before; move it to cache on arrival.
-
-    Uses a two-poll size-stability check so we don't grab a partial Chrome download.
-    """
+    """Watch ~/Downloads for a new PDF not in before; move it to cache on arrival."""
     deadline = time.monotonic() + timeout
     prev_sizes: dict[Path, int] = {}
     while time.monotonic() < deadline:
@@ -147,9 +111,9 @@ def fetch(citekey: str, *, eprint: str | None = None, doi: str | None = None,
           force: bool = False) -> Path | None:
     """Return cached PDF path, downloading if needed.
 
-    source='auto'    — Unpaywall then arXiv fallback
+    source='auto'    — ADS OA_PDF resolver then arXiv fallback
     source='arxiv'   — arXiv only
-    source='browser' — open system browser, poll ~/Downloads (blocks until found or timeout)
+    source='browser' — open system browser, poll ~/Downloads
     force=True re-downloads even if cached.
     """
     path = cache_path(citekey)
@@ -171,9 +135,11 @@ def fetch(citekey: str, *, eprint: str | None = None, doi: str | None = None,
         browser_open(url)
         return poll_downloads(citekey, before)
 
-    # auto: Unpaywall → arXiv
-    if doi:
-        url = oa_url(doi)
+    # auto: ADS OA_PDF → arXiv
+    bibcode = _bibcode_from_adsurl(adsurl)
+    if bibcode:
+        from . import ads_client
+        url = ads_client.resolve_pdf_url(bibcode, "OA_PDF")
         if url:
             result = _download_url(path, url)
             if result:
