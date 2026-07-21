@@ -733,7 +733,7 @@ class LitbotApp(App):
 
     BINDINGS = [
         Binding("q", "quit", "Quit"),
-        Binding("a", "add_paper", "Add"),
+        Binding("i", "add_paper", "Import"),
         Binding("d", "remove_paper", "Remove"),
         Binding("p", "download_pdf", "DL PDF"),
         Binding("B", "browser_pdf", "Browser DL"),
@@ -743,6 +743,8 @@ class LitbotApp(App):
         Binding("S", "ads_search", "ADS search"),
         Binding("C", "config", "Config"),
         Binding("r", "refresh_tab", "Refresh"),
+        Binding("right", "more_results", show=False),
+        Binding("left", "fewer_results", show=False),
         Binding("ctrl+w", "close_tab", "Close tab", show=True),
         Binding("[", "prev_tab", "Prev tab", show=False),
         Binding("]", "next_tab", "Next tab", show=False),
@@ -831,11 +833,12 @@ class LitbotApp(App):
         import asyncio
         def _is_active() -> bool:
             return self._active_ads_view() is ads_view
+        limit = tab_data.get("limit", 20)
         if _is_active():
-            self._set_status(f"Searching ADS for '{ads_view.query}'…")
+            self._set_status(f"Searching ADS for '{ads_view.query}' (n={limit})…")
         try:
             from .. import ads_client
-            articles = await asyncio.to_thread(ads_client.search, ads_view.query, 20)
+            articles = await asyncio.to_thread(ads_client.search, ads_view.query, limit)
             ads_view.load_articles(articles, self._library)
             tab_data["bibcodes"] = [a.bibcode for a in articles]
             tab_data["refreshed"] = int(time.time())
@@ -843,10 +846,7 @@ class LitbotApp(App):
             ads_client.refresh_quota()
             n = len(articles)
             if _is_active():
-                self._set_status(
-                    f"[yellow]{n} result(s) for '{ads_view.query}'[/yellow]"
-                    f"  [dim]a: add · d: remove · r: refresh · Ctrl+W: close{_quota_str()}[/dim]"
-                )
+                self._set_status(_ads_tab_status(ads_view.query, n, limit))
         except RuntimeError as e:
             if _is_active():
                 self._set_status(f"[red]{e}[/red]")
@@ -881,16 +881,15 @@ class LitbotApp(App):
                     detail.show_ads_article(article, entry=entry)
                 else:
                     detail.show_entry(None)
+                tab_data = next((t for t in self._tab_states if t["id"] == ads_view.tab_id), {})
+                limit = tab_data.get("limit", 20)
                 if not ads_view._articles:
                     self._set_status(
                         f"[dim]'{ads_view.query}' — press [bold]r[/bold] to load results[/dim]"
                     )
                 else:
                     n = len(ads_view._articles)
-                    self._set_status(
-                        f"[yellow]{n} result(s) for '{ads_view.query}'[/yellow]"
-                        f"  [dim]r: refresh · Ctrl+W: close{_quota_str()}[/dim]"
-                    )
+                    self._set_status(_ads_tab_status(ads_view.query, n, limit))
 
     # ── Message handlers ──────────────────────────────────────────────────────
 
@@ -909,6 +908,14 @@ class LitbotApp(App):
         entry = self._library.get_by_bibcode(event.article.bibcode) if self._library else None
         self.query_one(DetailPanel).show_ads_article(event.article, entry=entry)
         self.refresh_bindings()
+        ads_view = self._ads_views.get(event.tab_id)
+        if ads_view:
+            tab_data = next((t for t in self._tab_states if t["id"] == event.tab_id), {})
+            limit = tab_data.get("limit", 20)
+            status = _ads_tab_status(ads_view.query, len(ads_view._articles), limit)
+            if entry is None:
+                status += "  [dim]⏎ Import[/dim]"
+            self._set_status(status)
 
     @on(PdfButton.Clicked)
     def _on_pdf_button_clicked(self, event: PdfButton.Clicked) -> None:
@@ -933,7 +940,7 @@ class LitbotApp(App):
             self.run_worker(self._do_browser_pdf(key, doi, adsurl, ads_view), exclusive=True)
         else:
             self._cancel_poll()
-            source = "arxiv" if event.source == "arxiv" else "auto"
+            source = event.source if event.source in ("arxiv", "oa") else "auto"
             self._set_status(f"Downloading {key} ({event.source})…")
             self.run_worker(
                 self._do_download_pdf(key, eprint, doi, adsurl, ads_view, source=source),
@@ -1056,6 +1063,25 @@ class LitbotApp(App):
         tab_data = next((t for t in self._tab_states if t["id"] == ads_view.tab_id), None)
         if tab_data:
             await self._do_refresh(ads_view, tab_data)
+
+    def action_more_results(self) -> None:
+        self._step_tab_limit(+1)
+
+    def action_fewer_results(self) -> None:
+        self._step_tab_limit(-1)
+
+    def _step_tab_limit(self, direction: int) -> None:
+        ads_view = self._active_ads_view()
+        if ads_view is None:
+            return
+        tab_data = next((t for t in self._tab_states if t["id"] == ads_view.tab_id), None)
+        if tab_data is None:
+            return
+        new_limit = tabs_state.step_limit(tab_data, direction)
+        tabs_state.save(self._tab_states)
+        n = len(ads_view._articles)
+        self._set_status(_ads_tab_status(ads_view.query, n, new_limit)
+                         + "  [dim]· r to reload[/dim]")
 
     def action_add_paper(self) -> None:
         ads_view = self._active_ads_view()
@@ -1255,8 +1281,22 @@ class LitbotApp(App):
             self.refresh_bindings()
 
     def action_open_pdf(self) -> None:
+        import subprocess
+        import sys
         from .. import pdf, ads_client as _ac
         ads_view = self._active_ads_view()
+        if ads_view is not None and ads_view._selected_bibcodes:
+            paths = [str(pdf.cache_path(bc)) for bc in ads_view._selected_bibcodes]
+            if sys.platform == "darwin":
+                subprocess.run(["open"] + paths, check=False)
+            elif sys.platform.startswith("linux"):
+                for p in paths:
+                    subprocess.run(["xdg-open", p], check=False)
+            else:
+                for p in paths:
+                    subprocess.run(["start", p], shell=True, check=False)
+            self._set_status(f"[green]Opened {len(paths)} PDFs[/green]")
+            return
         if ads_view is not None:
             article = ads_view._selected_article
             if article is None:
@@ -1407,7 +1447,7 @@ class LitbotApp(App):
         ads_view = self._active_ads_view()
 
         # Actions only valid on ADS tabs
-        if action in ("refresh_tab", "close_tab"):
+        if action in ("refresh_tab", "close_tab", "more_results", "fewer_results"):
             return not on_library
 
         # Actions only valid on Library tab
@@ -1437,7 +1477,9 @@ class LitbotApp(App):
                 entry = self.query_one(LibraryView)._highlighted_entry
                 return entry is not None and _pdf.is_cached(entry.key)
             if ads_view and ads_view._selected_article:
-                return _pdf.is_cached(ads_view._selected_article.bibcode)
+                a = ads_view._selected_article
+                return (self._library is not None and self._library.has_bibcode(a.bibcode)
+                        and _pdf.is_cached(a.bibcode))
             return False
 
         if action in ("open_pdf", "download_pdf"):
@@ -1445,10 +1487,14 @@ class LitbotApp(App):
                 entry = self.query_one(LibraryView)._highlighted_entry
                 return entry is not None and bool(entry.eprint or entry.doi)
             if ads_view:
+                if ads_view._selected_bibcodes:
+                    if action == "open_pdf":
+                        return all(_pdf.is_cached(bc) for bc in ads_view._selected_bibcodes)
+                    return False
                 a = ads_view._selected_article
-                return a is not None and bool(
-                    a.identifier or (a.doi and a.doi[0])
-                )
+                if a is None or not (self._library and self._library.has_bibcode(a.bibcode)):
+                    return False
+                return bool(a.identifier or (a.doi and a.doi[0]))
             return False
 
         if action == "browser_pdf":
@@ -1457,7 +1503,9 @@ class LitbotApp(App):
                 return entry is not None and bool(entry.doi or entry.adsurl)
             if ads_view:
                 a = ads_view._selected_article
-                return a is not None and bool((a.doi and a.doi[0]) or a.bibcode)
+                if a is None or not (self._library and self._library.has_bibcode(a.bibcode)):
+                    return False
+                return bool((a.doi and a.doi[0]) or a.bibcode)
             return False
 
         if action == "add_paper":
@@ -1491,6 +1539,10 @@ class LitbotApp(App):
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
+
+
+def _ads_tab_status(query: str, n: int, limit: int) -> str:
+    return f"[bold]{query}[/bold]  {n} results  [dim]n={limit} (← →)[/dim]"
 
 
 def _format_authors(raw: str, max_count: int = 5) -> str:

@@ -34,12 +34,28 @@ def save(tabs: list[dict]) -> None:
         pass
 
 
+_LIMIT_STEPS = [20, 50, 100, 200]
+
+
 def make_tab(query: str) -> dict:
     return {
         "id": uuid.uuid4().hex[:8],
         "query": query,
         "label": query[:22],
+        "limit": _LIMIT_STEPS[0],
         "created": int(time.time()),
         "refreshed": None,
         "bibcodes": [],
     }
+
+
+def step_limit(tab_data: dict, direction: int) -> int:
+    """Cycle limit through _LIMIT_STEPS by direction (+1 or -1). Returns new limit."""
+    current = tab_data.get("limit", _LIMIT_STEPS[0])
+    try:
+        idx = _LIMIT_STEPS.index(current)
+    except ValueError:
+        idx = 0
+    idx = max(0, min(len(_LIMIT_STEPS) - 1, idx + direction))
+    tab_data["limit"] = _LIMIT_STEPS[idx]
+    return tab_data["limit"]

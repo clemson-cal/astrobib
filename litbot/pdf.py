@@ -19,6 +19,7 @@ from .state import PDF_CACHE_DIR
 
 SOURCE_AUTO = "auto"
 SOURCE_ARXIV = "arxiv"
+SOURCE_OA = "oa"
 SOURCE_BROWSER = "browser"
 
 
@@ -86,7 +87,7 @@ def poll_downloads(citekey: str, before: set[Path], timeout: int = 60,
                 continue
             if prev_sizes.get(f) == size and size > 0:
                 try:
-                    if f.read_bytes(4)[:4] != b"%PDF":
+                    if f.read_bytes()[:4] != b"%PDF":
                         continue
                 except OSError:
                     continue
@@ -138,6 +139,16 @@ def fetch(citekey: str, *, eprint: str | None = None, doi: str | None = None,
         if not eprint:
             return None
         return _download_url(path, f"https://arxiv.org/pdf/{eprint.strip()}")
+
+    if source == SOURCE_OA:
+        bibcode = _bibcode_from_adsurl(adsurl)
+        if not bibcode:
+            return None
+        from . import ads_client
+        url = ads_client.resolve_pdf_url(bibcode, "OA_PDF")
+        if not url:
+            return None
+        return _download_url(path, url)
 
     if source == SOURCE_BROWSER:
         url = browser_open_url(doi=doi, adsurl=adsurl)
