@@ -1482,14 +1482,23 @@ class LitbotApp(App):
                         and _pdf.is_cached(a.bibcode))
             return False
 
-        if action in ("open_pdf", "download_pdf"):
+        if action == "open_pdf":
+            if on_library:
+                entry = self.query_one(LibraryView)._highlighted_entry
+                return entry is not None and _pdf.is_cached(entry.key)
+            if ads_view:
+                if ads_view._selected_bibcodes:
+                    return all(_pdf.is_cached(bc) for bc in ads_view._selected_bibcodes)
+                a = ads_view._selected_article
+                return a is not None and _pdf.is_cached(a.bibcode)
+            return False
+
+        if action == "download_pdf":
             if on_library:
                 entry = self.query_one(LibraryView)._highlighted_entry
                 return entry is not None and bool(entry.eprint or entry.doi)
             if ads_view:
                 if ads_view._selected_bibcodes:
-                    if action == "open_pdf":
-                        return all(_pdf.is_cached(bc) for bc in ads_view._selected_bibcodes)
                     return False
                 a = ads_view._selected_article
                 if a is None or not (self._library and self._library.has_bibcode(a.bibcode)):
