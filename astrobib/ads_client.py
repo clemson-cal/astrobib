@@ -163,6 +163,7 @@ def _clean_abstract(text: str) -> str:
 
 def _parse_bibtex_string(raw: str) -> dict | None:
     parser = BibTexParser(common_strings=True)
+    parser.ignore_nonstandard_types = False
     parser.customization = convert_to_unicode
     bib = bibtexparser.loads(raw, parser=parser)
     if not bib.entries:
@@ -172,6 +173,7 @@ def _parse_bibtex_string(raw: str) -> dict | None:
 
 def _parse_bibtex_string_multi(raw: str) -> list[dict]:
     parser = BibTexParser(common_strings=True)
+    parser.ignore_nonstandard_types = False
     parser.customization = convert_to_unicode
     bib = bibtexparser.loads(raw, parser=parser)
     return bib.entries

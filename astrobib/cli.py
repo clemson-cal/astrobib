@@ -235,6 +235,7 @@ def import_cmd(file: Path, personal_only: bool, ms_only: bool, verify: bool):
     cite keys in your .tex files.
     """
     parser = BibTexParser(common_strings=True)
+    parser.ignore_nonstandard_types = False
     parser.customization = convert_to_unicode
     with open(file) as f:
         bib = bibtexparser.load(f, parser=parser)

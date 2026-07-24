@@ -313,6 +313,7 @@ class MergedLibrary:
 def _parse_bib_file(path: Path) -> Entry | None:
     with open(path) as f:
         parser = BibTexParser(common_strings=True)
+        parser.ignore_nonstandard_types = False
         parser.customization = convert_to_unicode
         bib = bibtexparser.load(f, parser=parser)
     if not bib.entries:
