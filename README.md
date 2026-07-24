@@ -136,7 +136,12 @@ keys found in the `.tex` sources and entries in `bib/`, color-coded:
 | red `✗` | cited but found nowhere — fix the key, or `S` to search ADS (pre-filled) |
 | cyan `·` | in `bib/` but cited by nothing — press `m` to remove |
 
-The tab watches the `.tex` files and `bib/` (2 s poll) and refreshes
+If `main.tex` exists it is the sole root document — other top-level
+`.tex` files (old drafts, notes) are ignored; otherwise every top-level
+`.tex` file is a root. Roots are expanded recursively through
+`\input`/`\include`, so multi-file papers are fully scanned.
+
+The tab watches the `.tex` sources and `bib/` (2 s poll) and refreshes
 itself as you write. `refs.bib` is regenerated automatically from the
 cited entries in `bib/` whenever its content would change. Nothing is
 copied or removed automatically — membership changes always go through

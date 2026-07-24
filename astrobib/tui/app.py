@@ -1084,8 +1084,8 @@ class AstrobibApp(App):
         """Watch the manuscript's .tex files and bib/ for changes (2 s interval)."""
         if self._ms_root is None or self._library is None:
             return
-        from ..export import scan_tex_files
-        files = sorted(self._ms_root.glob("*.tex"))
+        from ..export import manuscript_tex_files, scan_tex_files
+        files = manuscript_tex_files(self._ms_root)
         tex_mtimes: dict[str, float] = {}
         for f in files:
             try:

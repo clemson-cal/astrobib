@@ -303,8 +303,10 @@ def import_cmd(file: Path, personal_only: bool, ms_only: bool, verify: bool):
 @click.option("--list-missing", is_flag=True)
 def export_cmd(tex_files: tuple[Path, ...], output: Path, list_missing: bool):
     """Generate refs.bib by scanning TeX source for cite keys."""
+    from .export import expand_tex_sources
     library = _open_merged()
-    paths = list(tex_files) or sorted(Path.cwd().glob("*.tex"))
+    paths = expand_tex_sources(
+        list(tex_files) or sorted(Path.cwd().glob("*.tex")), Path.cwd())
     if not paths:
         console.print("[red]No .tex files found.[/red]")
         raise SystemExit(1)
@@ -336,7 +338,7 @@ def refs_cmd(tex_files: tuple[Path, ...], output: Path, prune: bool):
     the personal library; keys found nowhere are reported. refs.bib is
     generated from the manuscript database only.
     """
-    from .export import scan_tex_files
+    from .export import expand_tex_sources, manuscript_tex_files, scan_tex_files
     from .library import MergedLibrary
     from .state import find_manuscript_db
 
@@ -349,7 +351,8 @@ def refs_cmd(tex_files: tuple[Path, ...], output: Path, prune: bool):
                            manuscript=Library(root=ms_root))
     ms = merged.manuscript
 
-    paths = list(tex_files) or sorted(ms_root.glob("*.tex"))
+    paths = (expand_tex_sources(list(tex_files), ms_root) if tex_files
+             else manuscript_tex_files(ms_root))
     if not paths:
         console.print(f"[red]No .tex files found in {ms_root}.[/red]")
         raise SystemExit(1)

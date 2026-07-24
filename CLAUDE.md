@@ -43,7 +43,7 @@ There are no tests. Verify changes by importing the affected modules and running
 - `astrobib/keys.py` — deterministic cite key generation (`AuthorYYYY` + 5-char hash of arXiv ID/bibcode)
 - `astrobib/ads_client.py` — ADS search and BibTeX export via the `ads` package; `refresh_quota()` and `resolve_pdf_url()` use httpx directly
 - `astrobib/uat.py` — UAT loader and hierarchy traversal; cached at `UAT_CACHE`
-- `astrobib/export.py` — scans `.tex` files for cite keys, writes `refs.bib`
+- `astrobib/export.py` — scans `.tex` files for cite keys, writes `refs.bib`; `manuscript_tex_files()`: `main.tex` is the sole root when present (else all top-level `.tex`), expanded recursively via `\input`/`\include`
 - `astrobib/pdf.py` — ephemeral PDF cache at `PDF_CACHE_DIR`
 - `astrobib/cli.py` — Click commands: `add`, `import`, `export`, `refs`, `search`, `show`, `list`, `keywords`, `quota`, plus `config`, `pdf`, `uat` groups
 - `astrobib/tui/app.py` — Textual TUI: library tab, ADS search tab (via `S`), UAT browser panel (via `u`)
