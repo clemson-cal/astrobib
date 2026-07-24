@@ -1,8 +1,8 @@
-# litbot
+# astrobib
 
 Personal astrophysics literature manager. Connects to the
 [NASA/Harvard ADS](https://ui.adsabs.harvard.edu) to search and fetch papers,
-stores BibTeX in `~/.local/share/litbot/library/`, and generates `refs.bib`
+stores BibTeX in `~/.local/share/astrobib/library/`, and generates `refs.bib`
 files for LaTeX manuscripts by scanning for cite keys.
 
 Keywords follow the
@@ -15,13 +15,13 @@ controlled vocabulary used by AAS journals.
 
 ```bash
 # Download the UAT concept hierarchy (one-time, ~2 MB)
-litbot uat update
+astrobib uat update
 
 # Launch the TUI
-litbot
+astrobib
 
 # Set your ADS API token (https://ui.adsabs.harvard.edu/user/settings/token)
-litbot token
+astrobib token
 ```
 
 ---
@@ -55,7 +55,7 @@ in the current context (wrong tab, no PDF cached, already imported, …).
 | `M` | Toggle manuscript-only view (hide personal-library-only papers) |
 | `R` | Browse references of highlighted paper (opens ADS tab) |
 | `c` | Browse citations of highlighted paper (opens ADS tab) |
-| `e` | Export selected papers to `litbot-export.bib` |
+| `e` | Export selected papers to `astrobib-export.bib` |
 | `B` | Download PDF via system browser (watches `~/Downloads`) |
 | `X` | Clear cached PDF (or cancel a browser download) |
 | `u` | Open UAT concept browser |
@@ -108,10 +108,10 @@ useful(abs:"pulsar timing")                    methods/tools papers cited by thi
 
 A manuscript can carry its own bib database: a `bib/` directory inside the
 manuscript's git repo, holding one `.bib` file per cited paper. There is no
-registration step — launching litbot from inside the repo (any directory
+registration step — launching astrobib from inside the repo (any directory
 with `bib/` alongside `.git`) activates it, shown as `ms: <name>` in the
 header. Coauthors who clone the repo get the same database automatically;
-coauthors without litbot just use the committed `refs.bib`.
+coauthors without astrobib just use the committed `refs.bib`.
 
 While a manuscript db is active:
 
@@ -121,7 +121,7 @@ While a manuscript db is active:
   the manuscript db
 - `m` toggles manuscript membership for existing library entries
 
-litbot never runs git on the manuscript repo — bib files ride along in
+astrobib never runs git on the manuscript repo — bib files ride along in
 your normal paper commits.
 
 ### The Manuscript tab
@@ -140,16 +140,16 @@ The tab watches the `.tex` files and `bib/` (2 s poll) and refreshes
 itself as you write. `refs.bib` is regenerated automatically from the
 cited entries in `bib/` whenever its content would change. Nothing is
 copied or removed automatically — membership changes always go through
-`m` (or `litbot refs` / `--prune` on the command line). The status bar
+`m` (or `astrobib refs` / `--prune` on the command line). The status bar
 summarizes health: `42 cited · 2 missing · 5 uncited`.
 
 Keep the database in sync with what the paper actually cites:
 
 ```bash
 cd ~/Work/Papers/my-paper
-litbot refs             # scan .tex, pull cited entries in from personal
+astrobib refs             # scan .tex, pull cited entries in from personal
                         # library, report unknowns, write refs.bib
-litbot refs --prune     # also drop entries nothing cites anymore
+astrobib refs --prune     # also drop entries nothing cites anymore
 ```
 
 ---
@@ -160,22 +160,22 @@ litbot refs --prune     # also drop entries nothing cites anymore
 
 ```bash
 # Search ADS
-litbot search --ads "magnetohydrodynamical simulations"
+astrobib search --ads "magnetohydrodynamical simulations"
 
 # Add by ADS bibcode
-litbot add 2020ApJ...900...12S
+astrobib add 2020ApJ...900...12S
 
 # Add with extra keywords
-litbot add 2020ApJ...900...12S --keywords "Magnetohydrodynamical simulations"
+astrobib add 2020ApJ...900...12S --keywords "Magnetohydrodynamical simulations"
 ```
 
 ### Sharing papers
 
 Export selected papers from the TUI (`Space` to select, `e` to export) and
-share the resulting `litbot-export.bib` file. The recipient can import it:
+share the resulting `astrobib-export.bib` file. The recipient can import it:
 
 ```bash
-litbot import shared-papers.bib
+astrobib import shared-papers.bib
 ```
 
 Collision-resistant cite keys (`AuthorYYYYhhhh`) are deterministic from the
@@ -183,14 +183,14 @@ arXiv ID, so the same paper always gets the same key regardless of who added it.
 
 ### Importing a foreign .bib file
 
-`litbot import` accepts any `.bib` file — e.g. the bibliography of another
+`astrobib import` accepts any `.bib` file — e.g. the bibliography of another
 paper with arbitrary cite keys. Every entry is resolved against ADS (by
 arXiv ID, DOI, or exact title + first author + year) and imported with
-canonical ADS BibTeX and a regenerated litbot cite key. Entries that
+canonical ADS BibTeX and a regenerated astrobib cite key. Entries that
 cannot be resolved to exactly one ADS record are skipped with a warning.
 Entries already present are kept as-is (pass `--verify` to be prompted
 to replace them).
-After importing, litbot prints copy-pasteable `perl -pi -e` commands that
+After importing, astrobib prints copy-pasteable `perl -pi -e` commands that
 rewrite the old cite keys to the new ones in your `.tex` files.
 
 Inside a manuscript repo, `add` and `import` write to both the personal
@@ -198,9 +198,9 @@ library and the manuscript database (matching the TUI); use a flag to
 restrict:
 
 ```bash
-litbot import other-paper.bib                  # personal + manuscript db
-litbot import --personal-only other-paper.bib  # personal library only
-litbot import --ms-only other-paper.bib        # manuscript db only
+astrobib import other-paper.bib                  # personal + manuscript db
+astrobib import --personal-only other-paper.bib  # personal library only
+astrobib import --ms-only other-paper.bib        # manuscript db only
 ```
 
 CLI read commands (`list`, `show`, `search`, `export`, `pdf`) see the
@@ -212,9 +212,9 @@ indicators: `↓` PDF cached, `◆` in manuscript db, `★` starred.
 Run this from inside the manuscript directory:
 
 ```bash
-litbot export                  # scans all .tex files in cwd
-litbot export paper.tex        # explicit file
-litbot export -o refs.bib      # explicit output path
+astrobib export                  # scans all .tex files in cwd
+astrobib export paper.tex        # explicit file
+astrobib export -o refs.bib      # explicit output path
 ```
 
 The tool scans for `\cite`, `\citep`, `\citet`, and related commands,
@@ -224,9 +224,9 @@ the entries that are actually cited.
 ### ADS token
 
 ```bash
-litbot token                   # show current token or prompt to enter one
-litbot token <your-token>      # set token directly
-litbot quota                   # check ADS API rate limit usage
+astrobib token                   # show current token or prompt to enter one
+astrobib token <your-token>      # set token directly
+astrobib quota                   # check ADS API rate limit usage
 ```
 
 The token can also be set via the `ADS_API_TOKEN` environment variable.
@@ -234,27 +234,27 @@ The token can also be set via the `ADS_API_TOKEN` environment variable.
 ### UAT commands
 
 ```bash
-litbot uat update              # download / refresh UAT cache
-litbot uat search hydrodynamics
-litbot uat show "Hydrodynamics"
-litbot uat browse              # standalone TUI browser
+astrobib uat update              # download / refresh UAT cache
+astrobib uat search hydrodynamics
+astrobib uat show "Hydrodynamics"
+astrobib uat browse              # standalone TUI browser
 ```
 
 ### Other commands
 
 ```bash
-litbot show <key>              # print BibTeX entry
-litbot open <key>              # open PDF (fetched from arXiv if needed)
-litbot list                    # list all papers
-litbot list --keyword "Compact objects"
-litbot keywords                # list all keywords in the library
+astrobib show <key>              # print BibTeX entry
+astrobib open <key>              # open PDF (fetched from arXiv if needed)
+astrobib list                    # list all papers
+astrobib list --keyword "Compact objects"
+astrobib keywords                # list all keywords in the library
 ```
 
 ---
 
 ## Library layout
 
-Papers are stored in `~/.local/share/litbot/library/bib/`, one `.bib` file
+Papers are stored in `~/.local/share/astrobib/library/bib/`, one `.bib` file
 per paper. The directory is created automatically on first use.
 
 Cite keys have the form `AuthorYYYYhhhh` where `hhhh` is the first 5 hex
@@ -267,9 +267,9 @@ arXiv→journal publishing transition.
 ## PDF handling
 
 PDFs are ephemeral — never stored in the library. When you open a paper
-(`o` in the TUI or `litbot open <key>`), litbot:
+(`o` in the TUI or `astrobib open <key>`), astrobib:
 
-1. Checks `~/.cache/litbot/pdfs/<key>.pdf`
+1. Checks `~/.cache/astrobib/pdfs/<key>.pdf`
 2. If absent, fetches from `https://arxiv.org/pdf/<eprint>`
 3. Caches and opens in the system PDF viewer
 

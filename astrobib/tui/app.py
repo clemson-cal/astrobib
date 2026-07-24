@@ -907,8 +907,8 @@ class TokenModal(ModalScreen[str]):
 
 # ── Main app ──────────────────────────────────────────────────────────────────
 
-class LitbotApp(App):
-    TITLE = "litbot"
+class AstrobibApp(App):
+    TITLE = "astrobib"
     CSS = """
     Screen { layout: vertical; }
     #body { layout: horizontal; height: 1fr; }
@@ -1385,7 +1385,7 @@ class LitbotApp(App):
         if not keys:
             self._set_status("[yellow]No papers selected — use Space to select rows.[/yellow]")
             return
-        output = Path.cwd() / "litbot-export.bib"
+        output = Path.cwd() / "astrobib-export.bib"
         blocks = []
         for key in keys:
             entry = self._library.get(key) if self._library else None
@@ -1947,7 +1947,7 @@ class LitbotApp(App):
 
     def action_uat_browser(self) -> None:
         if self._uat is None:
-            self._set_status("[yellow]UAT not cached — run: litbot uat update[/yellow]")
+            self._set_status("[yellow]UAT not cached — run: astrobib uat update[/yellow]")
             return
         from .uat_browser import UATBrowserScreen
         self.push_screen(UATBrowserScreen(self._uat))

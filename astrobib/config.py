@@ -4,10 +4,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 
-CONFIG_FILE = Path.home() / ".config" / "litbot" / "config.toml"
-DEFAULT_DB_DIR = Path.home() / ".local" / "share" / "litbot" / "databases"
-UAT_CACHE = Path.home() / ".cache" / "litbot" / "uat.json"
-PDF_CACHE_DIR = Path.home() / ".cache" / "litbot" / "pdfs"
+CONFIG_FILE = Path.home() / ".config" / "astrobib" / "config.toml"
+DEFAULT_DB_DIR = Path.home() / ".local" / "share" / "astrobib" / "databases"
+UAT_CACHE = Path.home() / ".cache" / "astrobib" / "uat.json"
+PDF_CACHE_DIR = Path.home() / ".cache" / "astrobib" / "pdfs"
 
 
 @dataclass
@@ -50,7 +50,7 @@ def _load_config() -> Config:
     default_database = ""
 
     # Env var override for a single database
-    if env := os.environ.get("LITBOT_DB"):
+    if env := os.environ.get("ASTROBIB_DB"):
         p = Path(env).expanduser().resolve()
         databases["default"] = p
         default_database = "default"
@@ -89,9 +89,9 @@ def _load_config() -> Config:
     if not databases:
         raise RuntimeError(
             "No bib database configured.\n"
-            "Clone an existing one:  litbot db clone <git-url>\n"
-            "Create a new one:       litbot db init <path>\n"
-            "Or set:                 LITBOT_DB=/path/to/database"
+            "Clone an existing one:  astrobib db clone <git-url>\n"
+            "Create a new one:       astrobib db init <path>\n"
+            "Or set:                 ASTROBIB_DB=/path/to/database"
         )
 
     return Config(

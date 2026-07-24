@@ -9,7 +9,7 @@ from textual.widgets import Footer, Markdown
 
 
 def _load_help() -> str:
-    return importlib.resources.files("litbot").joinpath("help.md").read_text()
+    return importlib.resources.files("astrobib").joinpath("help.md").read_text()
 
 
 class HelpScreen(ModalScreen):

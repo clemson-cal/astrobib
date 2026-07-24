@@ -25,10 +25,10 @@ console = Console()
 @click.group(invoke_without_command=True)
 @click.pass_context
 def main(ctx: click.Context):
-    """litbot — astrophysics literature manager."""
+    """astrobib — astrophysics literature manager."""
     if ctx.invoked_subcommand is None:
-        from .tui.app import LitbotApp
-        LitbotApp().run()
+        from .tui.app import AstrobibApp
+        AstrobibApp().run()
 
 
 # ── config ────────────────────────────────────────────────────────────────────
@@ -36,7 +36,7 @@ def main(ctx: click.Context):
 @main.group("config", invoke_without_command=True)
 @click.pass_context
 def config_group(ctx: click.Context):
-    """Show or edit litbot configuration."""
+    """Show or edit astrobib configuration."""
     if ctx.invoked_subcommand is None:
         _show_config()
 
@@ -523,7 +523,7 @@ def pdf_check(citekey_or_bibcode: str):
     browser_url = pdf.browser_open_url(doi=doi, adsurl=adsurl)
     if browser_url:
         console.print(f"  [yellow]browser[/yellow]    requires action"
-                      f"  [dim]→ litbot pdf download {display} --source browser[/dim]")
+                      f"  [dim]→ astrobib pdf download {display} --source browser[/dim]")
     else:
         console.print(f"  [dim]browser    — (no DOI or ADS URL)[/dim]")
 
@@ -565,7 +565,7 @@ def pdf_download(citekey_or_bibcode: str, source: str):
         console.print(f"[red]No PDF found via source={source}.[/red]")
         browser_url = pdf.browser_open_url(doi=doi, adsurl=adsurl)
         if browser_url and source == "auto":
-            console.print(f"[dim]→ try: litbot pdf download {display} --source browser[/dim]")
+            console.print(f"[dim]→ try: astrobib pdf download {display} --source browser[/dim]")
         raise SystemExit(1)
     sz = path.stat().st_size // 1024
     console.print(f"[green]Saved {path}  ({sz} KB)[/green]")
@@ -597,7 +597,7 @@ def pdf_open(citekey_or_bibcode: str, source: str):
         console.print(f"[red]No PDF found via source={source}.[/red]")
         browser_url = pdf.browser_open_url(doi=doi, adsurl=adsurl)
         if browser_url:
-            console.print(f"[dim]→ try: litbot pdf download {display} --source browser[/dim]")
+            console.print(f"[dim]→ try: astrobib pdf download {display} --source browser[/dim]")
         raise SystemExit(1)
 
 
@@ -692,7 +692,7 @@ def uat_browse():
     from .tui.uat_browser import UATBrowserApp
     uat = get_uat(UAT_CACHE)
     if uat is None:
-        console.print("[red]UAT not cached. Run: litbot uat update[/red]")
+        console.print("[red]UAT not cached. Run: astrobib uat update[/red]")
         raise SystemExit(1)
     UATBrowserApp(uat).run()
 
@@ -719,7 +719,7 @@ def uat_search(query: str, limit: int):
     from .uat import get_uat
     uat = get_uat(UAT_CACHE)
     if uat is None:
-        console.print("[red]UAT not cached. Run: litbot uat update[/red]")
+        console.print("[red]UAT not cached. Run: astrobib uat update[/red]")
         raise SystemExit(1)
     results = uat.search(query, limit=limit)
     if not results:
@@ -738,7 +738,7 @@ def uat_show(label: str):
     from .uat import get_uat
     uat = get_uat(UAT_CACHE)
     if uat is None:
-        console.print("[red]UAT not cached. Run: litbot uat update[/red]")
+        console.print("[red]UAT not cached. Run: astrobib uat update[/red]")
         raise SystemExit(1)
     concept = uat.by_label(label)
     if concept is None:
@@ -789,7 +789,7 @@ def _search_ads(query: str, limit: int):
             title[:70] + ("…" if len(title) > 70 else ""),
         )
     console.print(table)
-    console.print(f"\n{len(articles)} result(s) — use [cyan]litbot add <bibcode>[/cyan] to add")
+    console.print(f"\n{len(articles)} result(s) — use [cyan]astrobib add <bibcode>[/cyan] to add")
 
 
 def _print_entry_table(entries: list, library=None):

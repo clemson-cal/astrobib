@@ -72,7 +72,7 @@ def _set_token():
     if not token:
         raise RuntimeError(
             "No ADS API token.\n"
-            "Run: litbot token\n"
+            "Run: astrobib token\n"
             "Get one at: https://ui.adsabs.harvard.edu/user/settings/token"
         )
     _ads.config.token = token

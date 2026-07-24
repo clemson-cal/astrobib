@@ -5,12 +5,12 @@ import json
 import os
 from pathlib import Path
 
-_BASE = Path(os.environ.get("LITBOT_STATE_DIR", Path.home() / ".local" / "share" / "litbot"))
+_BASE = Path(os.environ.get("ASTROBIB_STATE_DIR", Path.home() / ".local" / "share" / "astrobib"))
 
 LIBRARY_DIR = _BASE / "library"
 STATE_FILE = _BASE / "state.json"
-UAT_CACHE = Path.home() / ".cache" / "litbot" / "uat.json"
-PDF_CACHE_DIR = Path.home() / ".cache" / "litbot" / "pdfs"
+UAT_CACHE = Path.home() / ".cache" / "astrobib" / "uat.json"
+PDF_CACHE_DIR = Path.home() / ".cache" / "astrobib" / "pdfs"
 
 SCHEMA_VERSION = 1
 

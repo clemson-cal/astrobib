@@ -27,7 +27,7 @@ FIELD_ORDER = [
     "adsnote",
     "keywords",
     "abstract",
-    "litbot_starred",
+    "astrobib_starred",
 ]
 
 
@@ -76,7 +76,7 @@ class Entry:
 
     @property
     def starred(self) -> bool:
-        return self.data.get("litbot_starred", "").strip().lower() == "true"
+        return self.data.get("astrobib_starred", "").strip().lower() == "true"
 
     @property
     def first_author_last(self) -> str:
@@ -181,9 +181,9 @@ class Library:
         if entry is None:
             return
         if starred:
-            entry.data["litbot_starred"] = "true"
+            entry.data["astrobib_starred"] = "true"
         else:
-            entry.data.pop("litbot_starred", None)
+            entry.data.pop("astrobib_starred", None)
         entry.path.write_text(format_bib_entry(entry.data))
 
     def remove_entry(self, key: str) -> None:
@@ -209,7 +209,7 @@ class MergedLibrary:
     """Personal library merged with an optional manuscript database.
 
     Reads span both; the personal entry wins when a key exists in both
-    (it may carry personal fields like litbot_starred). Imports write to
+    (it may carry personal fields like astrobib_starred). Imports write to
     both. Manuscript membership is toggled explicitly.
     """
     personal: Library
@@ -295,7 +295,7 @@ class MergedLibrary:
         if entry is None:
             return False
         data = dict(entry.data)
-        data.pop("litbot_starred", None)
+        data.pop("astrobib_starred", None)
         path = self.manuscript.root / "bib" / f"{key}.bib"
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(format_bib_entry(data))
