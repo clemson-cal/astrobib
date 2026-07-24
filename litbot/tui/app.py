@@ -759,27 +759,29 @@ class LitbotApp(App):
     """
 
     BINDINGS = [
-        Binding("q", "quit", "Quit"),
+        # Footer-visible core set: fixed positions, greyed out when unavailable
         Binding("i", "add_paper", "Import"),
         Binding("d", "remove_paper", "Remove"),
         Binding("p", "download_pdf", "DL PDF"),
-        Binding("B", "browser_pdf", "Browser DL"),
         Binding("o", "open_pdf", "Open PDF"),
-        Binding("X", "clear_pdf", "Clear PDF"),
         Binding("/", "filter", "Filter"),
         Binding("S", "ads_search", "ADS search"),
-        Binding("C", "config", "Config"),
         Binding("r", "refresh_tab", "Refresh"),
+        Binding("question_mark", "help", "Help"),
+        Binding("q", "quit", "Quit"),
+        # Hidden bindings: fully functional, documented in help (?)
+        Binding("B", "browser_pdf", "Browser DL", show=False),
+        Binding("X", "clear_pdf", "Clear PDF", show=False),
+        Binding("C", "config", "Config", show=False),
+        Binding("e", "export_selected", "Export", show=False),
+        Binding("u", "uat_browser", "UAT", show=False),
+        Binding("ctrl+w", "close_tab", "Close tab", show=False),
         Binding("right", "more_results", show=False),
         Binding("left", "fewer_results", show=False),
-        Binding("ctrl+w", "close_tab", "Close tab", show=True),
         Binding("[", "prev_tab", "Prev tab", show=False),
         Binding("]", "next_tab", "Next tab", show=False),
         Binding("space", "toggle_select", "Select", show=False),
         Binding("s", "star", "Star", show=False),
-        Binding("e", "export_selected", "Export"),
-        Binding("u", "uat_browser", "UAT"),
-        Binding("question_mark", "help", "Help"),
         Binding("escape", "clear_filter", "Clear", show=False),
         Binding("z", "zoom", "Zoom", show=False),
     ]
@@ -874,9 +876,9 @@ class LitbotApp(App):
             n = len(articles)
             if _is_active():
                 self._set_status(_ads_tab_status(ads_view.query, n, limit))
-        except RuntimeError as e:
+        except Exception as e:
             if _is_active():
-                self._set_status(f"[red]{e}[/red]")
+                self._set_status(f"[red]ADS search failed: {e}[/red]")
 
     def _reload_library(self) -> None:
         self._library = Library(root=get_library_path())
@@ -1078,6 +1080,15 @@ class LitbotApp(App):
         async def handle(query: str) -> None:
             if not query:
                 return
+            from .. import ads_client
+            bibcode = ads_client.bibcode_from_url(query)
+            if bibcode:
+                if self._library and self._library.has_bibcode(bibcode):
+                    self._set_status(f"[yellow]{bibcode} already in library.[/yellow]")
+                    return
+                self._set_status(f"Importing {bibcode}…")
+                self.run_worker(self._fetch_and_add(bibcode, None), exclusive=True)
+                return
             tab_data = tabs_state.make_tab(query)
             self._tab_states.append(tab_data)
             await self._create_ads_tab(tab_data, fetch=True)
@@ -1160,7 +1171,7 @@ class LitbotApp(App):
                     self._set_status(f"[red]{exc}[/red]")
             self.push_screen(AddModal(), handle)
 
-    async def _fetch_and_add(self, bibcode: str, ads_view: AdsView) -> None:
+    async def _fetch_and_add(self, bibcode: str, ads_view: "AdsView | None") -> None:
         import asyncio
         import shutil
         try:
@@ -1174,7 +1185,8 @@ class LitbotApp(App):
             if bibcode_pdf.exists() and not _pdf.cache_path(entry.key).exists():
                 shutil.copy2(str(bibcode_pdf), str(_pdf.cache_path(entry.key)))
             self._reload_library()
-            ads_view.update_lib_status(self._library)
+            if ads_view is not None:
+                ads_view.update_lib_status(self._library)
             self.query_one(DetailPanel).show_entry(self._library.get(entry.key))
             self.refresh_bindings()
             ads_client.refresh_quota()
@@ -1422,22 +1434,29 @@ class LitbotApp(App):
             doi = (article.doi or [""])[0]
             key = article.bibcode
             adsurl = f"https://ui.adsabs.harvard.edu/abs/{article.bibcode}"
+            eprint = _ac.arxiv_id_from_article(article)
         else:
             entry = self.query_one(LibraryView)._highlighted_entry
             if entry is None:
                 return
-            doi, key, adsurl = entry.doi, entry.key, entry.adsurl
-        if not pdf.browser_open_url(doi=doi, adsurl=adsurl):
-            self._set_status(f"[yellow]No DOI or ADS URL for {key}[/yellow]")
+            doi, key, adsurl, eprint = entry.doi, entry.key, entry.adsurl, entry.eprint
+        if not pdf.browser_open_url(doi=doi, adsurl=adsurl, eprint=eprint):
+            self._set_status(f"[yellow]No DOI, ADS URL, or arXiv ID for {key}[/yellow]")
             return
         self._cancel_poll()
-        self.run_worker(self._do_browser_pdf(key, doi, adsurl, ads_view), exclusive=True)
+        self.run_worker(self._do_browser_pdf(key, doi, adsurl, eprint, ads_view), exclusive=True)
 
-    async def _do_browser_pdf(self, key: str, doi: str, adsurl: str,
+    async def _do_browser_pdf(self, key: str, doi: str, adsurl: str, eprint: str | None,
                                ads_view: "AdsView | None") -> None:
         import asyncio
         from .. import pdf
-        url = pdf.browser_open_url(doi=doi, adsurl=adsurl)
+        self._set_status(f"Resolving browser source for {key}…")
+        url = await asyncio.to_thread(
+            lambda: pdf.browser_resolve_url(doi=doi, adsurl=adsurl, eprint=eprint)
+        )
+        if url is None:
+            self._set_status(f"[red]No browser source found for {key}[/red]")
+            return
         before = pdf.downloads_snapshot()
         pdf.browser_open(url)
         cancel = threading.Event()
@@ -1510,12 +1529,16 @@ class LitbotApp(App):
         on_library = pane_id == "pane-library"
         ads_view = self._active_ads_view()
 
-        # Actions only valid on ADS tabs
-        if action in ("refresh_tab", "close_tab", "more_results", "fewer_results"):
+        # Actions only valid on ADS tabs (refresh_tab is footer-visible: grey on library)
+        if action == "refresh_tab":
+            return True if not on_library else None
+        if action in ("close_tab", "more_results", "fewer_results"):
             return not on_library
 
-        # Actions only valid on Library tab
-        if action in ("filter", "export_selected"):
+        # Actions only valid on Library tab (filter is footer-visible: grey on ADS)
+        if action == "filter":
+            return True if on_library else None
+        if action == "export_selected":
             return on_library
 
         if action == "toggle_select":
@@ -1550,28 +1573,28 @@ class LitbotApp(App):
             if on_library:
                 lib_view = self.query_one(LibraryView)
                 if lib_view._selected_keys:
-                    return all(_pdf.is_cached(k) for k in lib_view._selected_keys)
+                    return all(_pdf.is_cached(k) for k in lib_view._selected_keys) or None
                 entry = lib_view._highlighted_entry
-                return entry is not None and _pdf.is_cached(entry.key)
+                return (entry is not None and _pdf.is_cached(entry.key)) or None
             if ads_view:
                 a = ads_view._selected_article
                 cursor_cached = a is not None and _pdf.is_cached(a.bibcode)
                 selected_cached = any(_pdf.is_cached(bc) for bc in ads_view._selected_bibcodes)
-                return cursor_cached or selected_cached
-            return False
+                return (cursor_cached or selected_cached) or None
+            return None
 
         if action == "download_pdf":
             if on_library:
                 entry = self.query_one(LibraryView)._highlighted_entry
-                return entry is not None and bool(entry.eprint or entry.doi)
+                return (entry is not None and bool(entry.eprint or entry.doi)) or None
             if ads_view:
                 if ads_view._selected_bibcodes:
-                    return False
+                    return None
                 a = ads_view._selected_article
                 if a is None or not (self._library and self._library.has_bibcode(a.bibcode)):
-                    return False
-                return bool(a.identifier or (a.doi and a.doi[0]))
-            return False
+                    return None
+                return bool(a.identifier or (a.doi and a.doi[0])) or None
+            return None
 
         if action == "browser_pdf":
             if on_library:
@@ -1586,27 +1609,27 @@ class LitbotApp(App):
 
         if action == "add_paper":
             if on_library:
-                return False
+                return None
             if ads_view is not None:
                 if ads_view._selected_bibcodes:
                     return any(
                         not (self._library and self._library.has_bibcode(bc))
                         for bc in ads_view._selected_bibcodes
-                    )
+                    ) or None
                 article = ads_view._selected_article
                 if article and self._library:
-                    return self._library.get_by_bibcode(article.bibcode) is None
+                    return (self._library.get_by_bibcode(article.bibcode) is None) or None
             return True
 
         if action == "remove_paper":
             if on_library:
                 lib_view = self.query_one(LibraryView)
-                return lib_view._highlighted_entry is not None
+                return (lib_view._highlighted_entry is not None) or None
             if ads_view is not None:
                 article = ads_view._selected_article
                 if article and self._library:
-                    return self._library.get_by_bibcode(article.bibcode) is not None
-            return False
+                    return (self._library.get_by_bibcode(article.bibcode) is not None) or None
+            return None
 
         return True
 

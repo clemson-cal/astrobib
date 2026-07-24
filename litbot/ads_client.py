@@ -1,6 +1,9 @@
 """ADS API access via the official `ads` package."""
 from __future__ import annotations
 
+import re
+from urllib.parse import unquote
+
 import bibtexparser
 import httpx
 from bibtexparser.bparser import BibTexParser
@@ -26,6 +29,14 @@ SEARCH_FIELDS = [
 ]
 
 _quota: dict | None = None
+
+_ABS_URL_RE = re.compile(r"(?:https?://)?(?:ui\.)?adsabs\.harvard\.edu/abs/([^/?#\s]+)")
+
+
+def bibcode_from_url(text: str) -> str | None:
+    """Extract the bibcode from a pasted ADS abstract URL, or None."""
+    m = _ABS_URL_RE.search(text.strip())
+    return unquote(m.group(1)) if m else None
 
 
 def get_quota() -> dict | None:

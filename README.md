@@ -28,40 +28,39 @@ litbot token
 
 ## TUI key bindings
 
-### Global
+### Core actions (shown in footer)
 
 | Key | Action |
 |-----|--------|
+| `i` | Import highlighted/selected papers to library (ADS tabs) |
+| `d` | Remove highlighted paper from library |
+| `p` | Download PDF for highlighted paper |
+| `o` | Open cached PDF (all selected, or highlighted) |
+| `/` | Filter library by author, title, key, or keyword |
 | `S` | Open new ADS search tab |
-| `[` / `]` | Switch to previous / next tab |
 | `r` | Refresh current ADS tab |
-| `Ctrl+W` | Close current ADS tab |
-| `u` | Open UAT concept browser |
-| `T` | Set ADS API token |
 | `?` | Show this help |
 | `q` | Quit |
 
-### Library tab
+Footer actions keep fixed positions; a greyed-out action is unavailable
+in the current context (wrong tab, no PDF cached, already imported, …).
+
+### More keys
 
 | Key | Action |
 |-----|--------|
-| `a` | Add paper by ADS bibcode |
-| `o` | Open PDF (fetched from arXiv and cached locally) |
-| `/` | Filter by author, title, key, or keyword |
-| `Escape` | Clear filter |
 | `Space` | Toggle selection of highlighted row |
+| `s` | Star / unstar highlighted paper |
 | `e` | Export selected papers to `litbot-export.bib` |
-
-### ADS search tabs
-
-| Key | Action |
-|-----|--------|
-| `a` | Add highlighted paper to library |
-| `d` | Remove highlighted paper from library |
-| `o` | Open PDF for highlighted paper |
-
-The footer dynamically shows **Add** or **Remove** based on whether the
-highlighted paper is already in your library.
+| `B` | Download PDF via system browser (watches `~/Downloads`) |
+| `X` | Clear cached PDF (or cancel a browser download) |
+| `u` | Open UAT concept browser |
+| `C` | Configuration (ADS API token) |
+| `[` / `]` | Switch to previous / next tab |
+| `Ctrl+W` | Close current ADS tab |
+| `←` / `→` | Decrease / increase ADS result count (then `r` to reload) |
+| `Escape` | Clear filter |
+| `z` | Zoom detail panel |
 
 ---
 

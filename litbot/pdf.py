@@ -39,13 +39,38 @@ def _bibcode_from_adsurl(adsurl: str | None) -> str | None:
 
 # ── Browser download helpers ──────────────────────────────────────────────────
 
-def browser_open_url(*, doi: str | None = None, adsurl: str | None = None) -> str | None:
-    """Return the URL to open in the system browser for manual PDF download."""
+def browser_open_url(*, doi: str | None = None, adsurl: str | None = None,
+                     eprint: str | None = None) -> str | None:
+    """Cheap candidate URL for manual PDF download (no network check)."""
     bibcode = _bibcode_from_adsurl(adsurl)
     if bibcode:
         return f"https://ui.adsabs.harvard.edu/link_gateway/{bibcode}/PUB_PDF"
     if doi:
         return f"https://doi.org/{doi}"
+    if eprint:
+        return f"https://arxiv.org/abs/{eprint.strip()}"
+    return None
+
+
+def browser_resolve_url(*, doi: str | None = None, adsurl: str | None = None,
+                        eprint: str | None = None) -> str | None:
+    """Best URL for manual PDF download, verified against the ADS resolver.
+
+    The link gateway serves an error page when the record has no publisher
+    PDF, so only use it after the resolver confirms one exists; otherwise
+    fall back to the DOI landing page, then the arXiv abstract page.
+    Makes a network call — run off the UI thread.
+    """
+    bibcode = _bibcode_from_adsurl(adsurl)
+    if bibcode:
+        from . import ads_client
+        url = ads_client.resolve_pdf_url(bibcode, "PUB_PDF")
+        if url:
+            return url
+    if doi:
+        return f"https://doi.org/{doi}"
+    if eprint:
+        return f"https://arxiv.org/abs/{eprint.strip()}"
     return None
 
 
@@ -151,7 +176,7 @@ def fetch(citekey: str, *, eprint: str | None = None, doi: str | None = None,
         return _download_url(path, url)
 
     if source == SOURCE_BROWSER:
-        url = browser_open_url(doi=doi, adsurl=adsurl)
+        url = browser_resolve_url(doi=doi, adsurl=adsurl, eprint=eprint)
         if not url:
             return None
         before = downloads_snapshot()
