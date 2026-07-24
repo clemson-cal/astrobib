@@ -1502,6 +1502,18 @@ class AstrobibApp(App):
             else:
                 self._set_status(f"[yellow]{key} not found anywhere — S to search ADS[/yellow]")
                 return
+            # Move the cursor to the next row of the same state (else the
+            # previous one), so repeated m presses walk through candidates
+            # instead of following the toggled row to its new sort position.
+            rows = ms_view._rows
+            idx = next((i for i, r in enumerate(rows) if r[0] == key), None)
+            if idx is not None:
+                same = [(i, r[0]) for i, r in enumerate(rows)
+                        if r[1] == state and r[0] != key]
+                nxt = next((k for i, k in same if i > idx),
+                           same[-1][1] if same else None)
+                if nxt is not None:
+                    ms_view._highlighted_key = nxt
             self._refresh_manuscript_view()
             try:
                 self.query_one(LibraryView)._refresh_table()
