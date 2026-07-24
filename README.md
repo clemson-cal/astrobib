@@ -181,6 +181,30 @@ litbot import shared-papers.bib
 Collision-resistant cite keys (`AuthorYYYYhhhh`) are deterministic from the
 arXiv ID, so the same paper always gets the same key regardless of who added it.
 
+### Importing a foreign .bib file
+
+`litbot import` accepts any `.bib` file — e.g. the bibliography of another
+paper with arbitrary cite keys. Every entry is resolved against ADS (by
+arXiv ID, DOI, or exact title + first author + year) and imported with
+canonical ADS BibTeX and a regenerated litbot cite key. Entries that
+cannot be resolved to exactly one ADS record are skipped with a warning.
+After importing, litbot prints copy-pasteable `perl -pi -e` commands that
+rewrite the old cite keys to the new ones in your `.tex` files.
+
+Inside a manuscript repo, `add` and `import` write to both the personal
+library and the manuscript database (matching the TUI); use a flag to
+restrict:
+
+```bash
+litbot import other-paper.bib                  # personal + manuscript db
+litbot import --personal-only other-paper.bib  # personal library only
+litbot import --ms-only other-paper.bib        # manuscript db only
+```
+
+CLI read commands (`list`, `show`, `search`, `export`, `pdf`) see the
+same merged personal + manuscript view as the TUI, with the same
+indicators: `↓` PDF cached, `◆` in manuscript db, `★` starred.
+
 ### Generating refs.bib for a manuscript
 
 Run this from inside the manuscript directory:

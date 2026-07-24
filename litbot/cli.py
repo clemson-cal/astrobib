@@ -89,14 +89,52 @@ def config_token(value: str | None):
 
 # ── add ───────────────────────────────────────────────────────────────────────
 
+def _open_merged():
+    """Personal library merged with the active manuscript db (if any)."""
+    from .library import MergedLibrary
+    from .state import find_manuscript_db
+    ms_root = find_manuscript_db()
+    ms = Library(root=ms_root) if ms_root else None
+    return MergedLibrary(personal=Library(root=get_library_path()), manuscript=ms)
+
+
+def _write_targets(personal_only: bool = False, ms_only: bool = False
+                   ) -> tuple[list[Library], str]:
+    """Resolve write destinations: personal library and/or active manuscript db.
+
+    Default (no flags): personal + manuscript when inside a manuscript repo,
+    matching the TUI's import behavior.
+    """
+    from .state import find_manuscript_db
+    if personal_only and ms_only:
+        console.print("[red]--personal-only and --ms-only are mutually exclusive.[/red]")
+        raise SystemExit(1)
+    ms_root = find_manuscript_db()
+    if ms_only:
+        if ms_root is None:
+            console.print("[red]Not inside a manuscript repo (no bib/ + .git found).[/red]")
+            raise SystemExit(1)
+        return [Library(root=ms_root)], f"manuscript db ({ms_root.name})"
+    personal = Library(root=get_library_path())
+    if personal_only or ms_root is None:
+        return [personal], "personal library"
+    return ([personal, Library(root=ms_root)],
+            f"personal library + manuscript db ({ms_root.name})")
+
+
 @main.command("add")
 @click.argument("bibcode")
 @click.option("--keywords", "-k", default="", metavar="KW[,KW]",
               help="Extra UAT keyword labels to append.")
 @click.option("--force", "-f", is_flag=True, help="Overwrite existing entry without prompting.")
 def add_cmd(bibcode: str, keywords: str, force: bool):
-    """Add a paper to the library by ADS bibcode."""
-    lib = Library(root=get_library_path())
+    """Add a paper by ADS bibcode.
+
+    Inside a manuscript repo, writes to both the personal library and
+    the manuscript database (like the TUI's import).
+    """
+    targets, dest = _write_targets()
+    lib = targets[0]
 
     data = ads_client.fetch_bibtex(bibcode)
     if data is None:
@@ -122,9 +160,11 @@ def add_cmd(bibcode: str, keywords: str, force: bool):
         data["keywords"] = ", ".join(filter(None, [existing_kw, keywords]))
 
     entry = lib.save_entry(data)
+    for extra in targets[1:]:
+        extra.save_entry(dict(data))
     display = entry.short_key or entry.key
     suffix = f"  [dim]({entry.key})[/dim]" if display != entry.key else ""
-    console.print(f"[green]Added[/green] {display}{suffix}")
+    console.print(f"[green]Added[/green] {display}{suffix}  [dim]→ {dest}[/dim]")
     if entry.keywords:
         for kw in entry.keywords:
             console.print(f"  • {kw}")
@@ -134,10 +174,62 @@ def add_cmd(bibcode: str, keywords: str, force: bool):
 
 # ── import ────────────────────────────────────────────────────────────────────
 
+def _ads_lookup(data: dict) -> tuple[dict | None, str]:
+    """Resolve a foreign bib entry to a unique ADS record.
+
+    Query preference: arXiv ID, then DOI (both unique identifiers), then
+    exact title + first author + year, which must match exactly one record.
+    Returns (canonical bibtex dict, "") on success, else (None, reason).
+    """
+    import re as _re
+    eprint = (data.get("eprint") or "").strip()
+    doi = (data.get("doi") or "").strip()
+    needs_unique = False
+    if eprint:
+        ident = eprint if eprint.lower().startswith("arxiv:") else f"arXiv:{eprint}"
+        query = f'identifier:"{ident}"'
+    elif doi:
+        query = f'doi:"{doi}"'
+    else:
+        title = _re.sub(r"[{}]", "", data.get("title") or "").replace('"', "").strip()
+        last = (data.get("author") or "").split(" and ")[0].split(",")[0].strip()
+        last = _re.sub(r"[{}\\]", "", last)
+        year = (data.get("year") or "").strip()
+        if not (title and last and year):
+            return None, "not enough information for an unambiguous ADS query (need arXiv ID, DOI, or title+author+year)"
+        query = f'title:"{title}" author:"^{last}" year:{year}'
+        needs_unique = True
+    try:
+        results = ads_client.search(query, limit=2)
+    except Exception as exc:
+        return None, f"ADS lookup failed: {exc}"
+    if not results:
+        return None, f"no ADS match for {query}"
+    if needs_unique and len(results) > 1:
+        return None, f"ambiguous — multiple ADS matches for {query}"
+    fetched = ads_client.fetch_bibtex(results[0].bibcode)
+    if fetched is None:
+        return None, f"could not fetch BibTeX for {results[0].bibcode}"
+    return fetched, ""
+
+
 @main.command("import")
 @click.argument("file", type=click.Path(exists=True, path_type=Path))
-def import_cmd(file: Path):
-    """Import papers from a .bib file into the local library."""
+@click.option("--personal-only", is_flag=True,
+              help="Write only to the personal library.")
+@click.option("--ms-only", is_flag=True,
+              help="Write only to the active manuscript database.")
+def import_cmd(file: Path, personal_only: bool, ms_only: bool):
+    """Import papers from a .bib file, resolving each against ADS.
+
+    Every entry is resolved to a unique ADS record (by arXiv ID, DOI, or
+    exact title+author+year) and imported with canonical ADS BibTeX and a
+    regenerated cite key; entries that cannot be resolved unambiguously
+    are skipped with a warning. Inside a manuscript repo, entries go to
+    both the personal library and the manuscript database unless
+    restricted by a flag. Prints copy-pasteable commands to update cite
+    keys in your .tex files.
+    """
     parser = BibTexParser(common_strings=True)
     parser.customization = convert_to_unicode
     with open(file) as f:
@@ -147,26 +239,51 @@ def import_cmd(file: Path):
         console.print("[yellow]No entries found in file.[/yellow]")
         return
 
-    lib = Library(root=get_library_path())
+    targets, dest = _write_targets(personal_only, ms_only)
+    console.print(f"Importing into {dest}\n")
     added = skipped = 0
+    renames: list[tuple[str, str]] = []
 
     for data in bib.entries:
+        orig_key = data.get("ID", "?")
+        resolved, reason = _ads_lookup(data)
+        if resolved is None:
+            console.print(f"  [yellow]⚠ {orig_key} skipped — {reason}[/yellow]")
+            skipped += 1
+            continue
+        data = resolved
         key = generate_key(data)
-        if lib.has(key):
-            existing = lib.get(key)
-            console.print(f"\n[yellow]{key}[/yellow] already in library:")
+        holder = next((t for t in targets if t.has(key)), None)
+        if holder is not None:
+            existing = holder.get(key)
+            console.print(f"\n[yellow]{key}[/yellow] already present:")
             console.print(f"  Have:   {existing.title[:65]}")
             console.print(f"  Import: {data.get('title', '')[:65]}")
-            if click.confirm("  Replace?", default=False):
-                lib.save_entry(data)
-                added += 1
-            else:
+            if not click.confirm("  Replace?", default=False):
+                if orig_key != key:
+                    renames.append((orig_key, key))  # key mapping still applies
                 skipped += 1
+                continue
+        for t in targets:
+            entry = t.save_entry(dict(data))
+        if orig_key != entry.key:
+            renames.append((orig_key, entry.key))
+            console.print(f"  {orig_key} → [cyan]{entry.key}[/cyan]")
         else:
-            lib.save_entry(data)
-            added += 1
+            console.print(f"  [cyan]{entry.key}[/cyan]")
+        added += 1
 
-    console.print(f"\n[green]{added}[/green] imported, [dim]{skipped}[/dim] skipped.")
+    console.print(f"\n[green]{added}[/green] imported → {dest}, [dim]{skipped}[/dim] skipped.")
+
+    if renames:
+        from .state import find_manuscript_db
+        ms_root = find_manuscript_db()
+        tex_files = sorted(ms_root.glob("*.tex")) if ms_root else []
+        tex_arg = " ".join(f.name for f in tex_files) or "main.tex"
+        console.print("\nCite key replacements (copy/paste to update your TeX source):")
+        for old, new in renames:
+            console.print(f"  perl -pi -e 's/\\b\\Q{old}\\E\\b/{new}/g' {tex_arg}",
+                          highlight=False, markup=False)
 
 
 # ── export ────────────────────────────────────────────────────────────────────
@@ -178,7 +295,7 @@ def import_cmd(file: Path):
 @click.option("--list-missing", is_flag=True)
 def export_cmd(tex_files: tuple[Path, ...], output: Path, list_missing: bool):
     """Generate refs.bib by scanning TeX source for cite keys."""
-    library = Library(root=get_library_path())
+    library = _open_merged()
     paths = list(tex_files) or sorted(Path.cwd().glob("*.tex"))
     if not paths:
         console.print("[red]No .tex files found.[/red]")
@@ -290,7 +407,7 @@ def search_cmd(query: str, limit: int, use_ads: bool):
 @click.argument("key")
 def show_cmd(key: str):
     """Print the BibTeX entry for a cite key (full or shortened)."""
-    library = Library(root=get_library_path())
+    library = _open_merged()
     entry = library.resolve(key)
     if entry is None:
         matches = library.possible_matches(key)
@@ -301,6 +418,12 @@ def show_cmd(key: str):
         else:
             console.print(f"[red]{key} not found.[/red]")
         raise SystemExit(1)
+    locs = []
+    if library.in_personal(entry.key):
+        locs.append("personal")
+    if library.in_manuscript(entry.key):
+        locs.append(f"◆ ms: {library.manuscript_root.name}")
+    console.print(f"[dim]% in: {' · '.join(locs)}[/dim]")
     console.print(entry.path.read_text())
 
 
@@ -320,7 +443,7 @@ def pdf_group():
 
 def _resolve(key_or_bibcode: str) -> tuple[str, str, str, str]:
     """Return (full_key, eprint, doi, adsurl), querying ADS if not in library."""
-    library = Library(root=get_library_path())
+    library = _open_merged()
     entry = library.resolve(key_or_bibcode) or library.get_by_bibcode(key_or_bibcode)
     if entry:
         return entry.key, entry.eprint, entry.doi, entry.adsurl
@@ -352,7 +475,7 @@ def pdf_check(citekey_or_bibcode: str):
     from . import pdf
     key, eprint, doi, adsurl = _resolve(citekey_or_bibcode)
     cached_path = pdf.cache_path(key)
-    lib = Library(root=get_library_path())
+    lib = _open_merged()
     entry = lib.get(key)
     display = (entry.short_key or key) if entry else key
     suffix = f"  [dim]({key})[/dim]" if display != key else ""
@@ -404,7 +527,7 @@ def pdf_download(citekey_or_bibcode: str, source: str):
     """Download PDF, replacing any cached copy."""
     from . import pdf
     key, eprint, doi, adsurl = _resolve(citekey_or_bibcode)
-    lib = Library(root=get_library_path())
+    lib = _open_merged()
     entry = lib.get(key)
     display = (entry.short_key or key) if entry else key
 
@@ -448,7 +571,7 @@ def pdf_open(citekey_or_bibcode: str, source: str):
     """Open PDF, downloading if not cached."""
     from . import pdf
     key, eprint, doi, adsurl = _resolve(citekey_or_bibcode)
-    lib = Library(root=get_library_path())
+    lib = _open_merged()
     entry = lib.get(key)
     display = (entry.short_key or key) if entry else key
     if not eprint and not doi:
@@ -489,8 +612,8 @@ def pdf_clear(citekey_or_bibcode: str):
 @main.command("list")
 @click.option("--keyword", "-k", default="", help="Filter by UAT keyword label.")
 def list_cmd(keyword: str):
-    """List papers in the library."""
-    library = Library(root=get_library_path())
+    """List papers in the personal library and active manuscript db."""
+    library = _open_merged()
     if keyword:
         from .uat import get_uat
         uat = get_uat(UAT_CACHE, auto_fetch=False)
@@ -499,8 +622,12 @@ def list_cmd(keyword: str):
     else:
         entries = library.entries()
     entries = sorted(entries, key=lambda e: e.year, reverse=True)
-    _print_entry_table(entries)
-    console.print(f"\n{len(entries)} paper(s)")
+    _print_entry_table(entries, library)
+    summary = f"\n{len(entries)} paper(s)"
+    if library.manuscript is not None:
+        n_ms = sum(1 for e in entries if library.in_manuscript(e.key))
+        summary += f" · [cyan]◆ {n_ms} in ms: {library.manuscript_root.name}[/cyan]"
+    console.print(summary)
 
 
 # ── quota ─────────────────────────────────────────────────────────────────────
@@ -537,7 +664,7 @@ def quota_cmd():
 @main.command("keywords")
 def keywords_cmd():
     """List all unique keywords across the library."""
-    library = Library(root=get_library_path())
+    library = _open_merged()
     for kw in library.all_keywords():
         count = len(library.by_keyword(kw))
         console.print(f"  [cyan]{kw}[/cyan] [dim]({count})[/dim]")
@@ -625,7 +752,7 @@ def uat_show(label: str):
 # ── helpers ───────────────────────────────────────────────────────────────────
 
 def _search_local(query: str, limit: int):
-    library = Library(root=get_library_path())
+    library = _open_merged()
     q = query.lower()
     results = [
         e for e in library.entries()
@@ -633,7 +760,7 @@ def _search_local(query: str, limit: int):
         or any(q in kw.lower() for kw in e.keywords)
     ]
     results = sorted(results, key=lambda e: e.year, reverse=True)[:limit]
-    _print_entry_table(results)
+    _print_entry_table(results, library)
 
 
 def _search_ads(query: str, limit: int):
@@ -657,15 +784,25 @@ def _search_ads(query: str, limit: int):
     console.print(f"\n{len(articles)} result(s) — use [cyan]litbot add <bibcode>[/cyan] to add")
 
 
-def _print_entry_table(entries: list):
+def _print_entry_table(entries: list, library=None):
+    """Entry table with the TUI's indicator columns: ↓ cached, ◆ in
+    manuscript db, ★ starred."""
+    from . import pdf as _pdf
     if not entries:
         console.print("[dim]No results.[/dim]")
         return
-    table = Table("Key", "Year", "First Author", "Title", box=None,
+    has_ms = library is not None and getattr(library, "manuscript", None) is not None
+    cols = ["↓", "◆", "★"] if has_ms else ["↓", "★"]
+    table = Table(*cols, "Key", "Year", "First Author", "Title", box=None,
                   show_header=True, header_style="bold")
     for e in entries:
         display = e.short_key or e.key
+        row = ["↓" if _pdf.is_cached(e.key) else ""]
+        if has_ms:
+            row.append("◆" if library.in_manuscript(e.key) else "")
+        row.append("★" if e.starred else "")
         table.add_row(
+            *row,
             Text(display, style="cyan"),
             e.year,
             e.first_author_last,

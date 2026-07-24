@@ -233,6 +233,29 @@ class MergedLibrary:
     def has(self, key: str) -> bool:
         return key in self._merged()
 
+    def resolve(self, input_key: str) -> Entry | None:
+        merged = self._merged()
+        if input_key in merged:
+            return merged[input_key]
+        matches = [e for k, e in merged.items() if k.startswith(input_key)]
+        return matches[0] if len(matches) == 1 else None
+
+    def possible_matches(self, input_key: str) -> list[Entry]:
+        return [e for k, e in self._merged().items() if k.startswith(input_key)]
+
+    def by_keyword(self, label: str, descendant_labels: set[str] | None = None) -> list[Entry]:
+        match_lower = {lbl.lower() for lbl in (descendant_labels or {label})}
+        return [
+            e for e in self._merged().values()
+            if any(k.lower() in match_lower for k in e.keywords)
+        ]
+
+    def all_keywords(self) -> list[str]:
+        seen: set[str] = set()
+        for entry in self._merged().values():
+            seen.update(entry.keywords)
+        return sorted(seen)
+
     def in_manuscript(self, key: str) -> bool:
         return self.manuscript is not None and self.manuscript.has(key)
 
