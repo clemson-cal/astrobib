@@ -191,7 +191,10 @@ arXiv ID, so the same paper always gets the same key regardless of who added it.
 `astrobib import` accepts any `.bib` file — e.g. the bibliography of another
 paper with arbitrary cite keys. Every entry is resolved against ADS (by
 arXiv ID, DOI, or exact title + first author + year) and imported with
-canonical ADS BibTeX and a regenerated astrobib cite key. Entries that
+canonical ADS BibTeX and a regenerated astrobib cite key. Entries whose
+key already matches their content-derived astrobib key (i.e. bibdata
+from an astrobib export) are recognized automatically and imported
+directly, with no ADS round-trip. Entries that
 cannot be resolved to exactly one ADS record are skipped with a warning.
 Entries already present are kept as-is (pass `--verify` to be prompted
 to replace them).

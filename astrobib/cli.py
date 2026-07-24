@@ -251,12 +251,18 @@ def import_cmd(file: Path, personal_only: bool, ms_only: bool, verify: bool):
 
     for data in bib.entries:
         orig_key = data.get("ID", "?")
-        resolved, reason = _ads_lookup(data)
-        if resolved is None:
-            console.print(f"  [yellow]⚠ {orig_key} skipped — {reason}[/yellow]")
-            skipped += 1
-            continue
-        data = resolved
+        if orig_key == generate_key(data):
+            # Key is reproducible from the entry's own data — this is
+            # canonical astrobib bibdata (e.g. an astrobib export), so
+            # no ADS round-trip is needed.
+            pass
+        else:
+            resolved, reason = _ads_lookup(data)
+            if resolved is None:
+                console.print(f"  [yellow]⚠ {orig_key} skipped — {reason}[/yellow]")
+                skipped += 1
+                continue
+            data = resolved
         key = generate_key(data)
         holder = next((t for t in targets if t.has(key)), None)
         if holder is not None:
