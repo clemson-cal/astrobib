@@ -49,6 +49,8 @@ class PdfButton(Static, can_focus=True):
     PdfButton.arxiv  { color: cyan; }
     PdfButton.oa     { color: cyan; }
     PdfButton.browser { color: yellow; }
+    PdfButton.open   { color: green; }
+    PdfButton.clear  { color: $text-muted; }
     """
 
     class Clicked(Message):
@@ -117,6 +119,8 @@ class DetailPanel(VerticalScroll):
             yield PdfButton("arXiv ↓", source="arxiv", id="pdf-btn-arxiv", classes="arxiv")
             yield PdfButton("ADS OA ↓", source="oa", id="pdf-btn-oa", classes="oa")
             yield PdfButton("browser ↓", source="browser", id="pdf-btn-browser", classes="browser")
+            yield PdfButton("Open ↗", source="open", id="pdf-btn-open", classes="open")
+            yield PdfButton("Clear ✕", source="clear", id="pdf-btn-clear", classes="clear")
         yield Static("", id="pdf-status")
         yield Static("", id="detail-footer")
 
@@ -138,11 +142,14 @@ class DetailPanel(VerticalScroll):
 
         self.query_one("#detail-links").display = bool(adsurl or eprint or doi)
 
-    def _update_pdf_buttons(self, *, has_eprint: bool, has_adsurl: bool, has_doi: bool) -> None:
-        self.query_one("#pdf-btn-arxiv").display = has_eprint
-        self.query_one("#pdf-btn-oa").display = has_adsurl
-        self.query_one("#pdf-btn-browser").display = has_doi or has_adsurl
-        has_any = has_eprint or has_adsurl or has_doi
+    def _update_pdf_buttons(self, *, has_eprint: bool, has_adsurl: bool, has_doi: bool,
+                             cached: bool = False) -> None:
+        self.query_one("#pdf-btn-arxiv").display = has_eprint and not cached
+        self.query_one("#pdf-btn-oa").display = has_adsurl and not cached
+        self.query_one("#pdf-btn-browser").display = (has_doi or has_adsurl) and not cached
+        self.query_one("#pdf-btn-open").display = cached
+        self.query_one("#pdf-btn-clear").display = cached
+        has_any = has_eprint or has_adsurl or has_doi or cached
         self.query_one("#pdf-sources").display = has_any
         self.query_one("#pdf-status", Static).update("")
 
@@ -169,11 +176,13 @@ class DetailPanel(VerticalScroll):
         content.append("\n\n")
         content.append(abstract[:1000] + ("…" if len(abstract) > 1000 else ""))
         body.update(content)
+        from .. import pdf as _pdf
         self._set_links(entry.adsurl, entry.eprint, entry.doi)
         self._update_pdf_buttons(
             has_eprint=bool(entry.eprint),
             has_adsurl=bool(entry.adsurl),
             has_doi=bool(entry.doi),
+            cached=_pdf.is_cached(entry.key),
         )
         foot = Text()
         if entry.keywords:
@@ -218,10 +227,13 @@ class DetailPanel(VerticalScroll):
         )
         eff_eprint = entry.eprint if entry else eprint
         eff_doi = entry.doi if entry else doi
+        cache_key = entry.key if entry else article.bibcode
+        from .. import pdf as _pdf
         self._update_pdf_buttons(
             has_eprint=bool(eff_eprint),
             has_adsurl=bool(article.bibcode),
             has_doi=bool(eff_doi),
+            cached=_pdf.is_cached(cache_key),
         )
         foot = Text()
         if entry:
@@ -538,6 +550,12 @@ class AdsView(Static):
             self.article = article
             self.tab_id = tab_id
 
+    class ImportRequested(Message):
+        def __init__(self, article, tab_id: str) -> None:
+            super().__init__()
+            self.article = article
+            self.tab_id = tab_id
+
     def __init__(self, query: str, tab_id: str) -> None:
         super().__init__(id=f"ads-view-{tab_id}")
         self.query = query
@@ -615,14 +633,23 @@ class AdsView(Static):
                 pass
 
     @on(DataTable.RowHighlighted)
-    @on(DataTable.RowSelected)
-    def _on_row_event(self, event) -> None:
+    def _on_row_highlighted(self, event: DataTable.RowHighlighted) -> None:
         key = event.row_key.value if event.row_key else None
         if not key:
             return
         article = next((a for a in self._articles if a.bibcode == key), None)
         self._selected_article = article
         self.post_message(self.ArticleHighlighted(article, self.tab_id))
+
+    @on(DataTable.RowSelected)
+    def _on_row_selected(self, event: DataTable.RowSelected) -> None:
+        key = event.row_key.value if event.row_key else None
+        if not key:
+            return
+        article = next((a for a in self._articles if a.bibcode == key), None)
+        self._selected_article = article
+        self.post_message(self.ArticleHighlighted(article, self.tab_id))
+        self.post_message(self.ImportRequested(article, self.tab_id))
 
 
 # ── Modals ────────────────────────────────────────────────────────────────────
@@ -917,6 +944,13 @@ class LitbotApp(App):
                 status += "  [dim]⏎ Import[/dim]"
             self._set_status(status)
 
+    @on(AdsView.ImportRequested)
+    def _on_import_requested(self, event: AdsView.ImportRequested) -> None:
+        if self._active_pane_id() != f"pane-{event.tab_id}":
+            return
+        if event.article and self._library and not self._library.has_bibcode(event.article.bibcode):
+            self.action_add_paper()
+
     @on(PdfButton.Clicked)
     def _on_pdf_button_clicked(self, event: PdfButton.Clicked) -> None:
         from .. import pdf, ads_client as _ac
@@ -935,7 +969,11 @@ class LitbotApp(App):
                 return
             eprint, doi, key, adsurl = entry.eprint, entry.doi, entry.key, entry.adsurl
 
-        if event.source == "browser":
+        if event.source == "open":
+            self.action_open_pdf()
+        elif event.source == "clear":
+            self.action_clear_pdf()
+        elif event.source == "browser":
             self._cancel_poll()
             self.run_worker(self._do_browser_pdf(key, doi, adsurl, ads_view), exclusive=True)
         else:
@@ -1124,13 +1162,17 @@ class LitbotApp(App):
 
     async def _fetch_and_add(self, bibcode: str, ads_view: AdsView) -> None:
         import asyncio
+        import shutil
         try:
-            from .. import ads_client
+            from .. import ads_client, pdf as _pdf
             data = await asyncio.to_thread(ads_client.fetch_bibtex, bibcode)
             if data is None:
                 self._set_status(f"[red]Could not fetch {bibcode}[/red]")
                 return
             entry = self._library.save_entry(data)
+            bibcode_pdf = _pdf.cache_path(bibcode)
+            if bibcode_pdf.exists() and not _pdf.cache_path(entry.key).exists():
+                shutil.copy2(str(bibcode_pdf), str(_pdf.cache_path(entry.key)))
             self._reload_library()
             ads_view.update_lib_status(self._library)
             self.query_one(DetailPanel).show_entry(self._library.get(entry.key))
@@ -1142,7 +1184,8 @@ class LitbotApp(App):
 
     async def _fetch_and_add_batch(self, bibcodes: list[str], ads_view: AdsView) -> None:
         import asyncio
-        from .. import ads_client
+        import shutil
+        from .. import ads_client, pdf as _pdf
         added: list[str] = []
         skipped: list[str] = []
         total = len(bibcodes)
@@ -1159,6 +1202,9 @@ class LitbotApp(App):
                     self._set_status(f"[yellow]Could not fetch {bibcode} ({i+1}/{total})[/yellow]")
                     continue
                 entry = self._library.save_entry(data)
+                bibcode_pdf = _pdf.cache_path(bibcode)
+                if bibcode_pdf.exists() and not _pdf.cache_path(entry.key).exists():
+                    shutil.copy2(str(bibcode_pdf), str(_pdf.cache_path(entry.key)))
                 added.append(entry.key)
                 self._set_status(f"[green]Added {entry.short_key or entry.key}[/green]  [{i+1}/{total}]")
             except Exception as exc:
@@ -1285,18 +1331,23 @@ class LitbotApp(App):
         import sys
         from .. import pdf, ads_client as _ac
         ads_view = self._active_ads_view()
-        if ads_view is not None and ads_view._selected_bibcodes:
-            paths = [str(pdf.cache_path(bc)) for bc in ads_view._selected_bibcodes]
-            if sys.platform == "darwin":
-                subprocess.run(["open"] + paths, check=False)
-            elif sys.platform.startswith("linux"):
-                for p in paths:
-                    subprocess.run(["xdg-open", p], check=False)
-            else:
-                for p in paths:
-                    subprocess.run(["start", p], shell=True, check=False)
-            self._set_status(f"[green]Opened {len(paths)} PDFs[/green]")
-            return
+        if ads_view is not None:
+            bcs = {bc for bc in ads_view._selected_bibcodes if pdf.is_cached(bc)}
+            a = ads_view._selected_article
+            if a and pdf.is_cached(a.bibcode):
+                bcs.add(a.bibcode)
+            if bcs:
+                paths = [str(pdf.cache_path(bc)) for bc in bcs]
+                if sys.platform == "darwin":
+                    subprocess.run(["open"] + paths, check=False)
+                elif sys.platform.startswith("linux"):
+                    for p in paths:
+                        subprocess.run(["xdg-open", p], check=False)
+                else:
+                    for p in paths:
+                        subprocess.run(["start", p], shell=True, check=False)
+                self._set_status(f"[green]Opened {len(paths)} PDF(s)[/green]")
+                return
         if ads_view is not None:
             article = ads_view._selected_article
             if article is None:
@@ -1308,6 +1359,19 @@ class LitbotApp(App):
             adsurl = f"https://ui.adsabs.harvard.edu/abs/{article.bibcode}"
         else:
             lib_view = self.query_one(LibraryView)
+            if lib_view._selected_keys:
+                paths = [str(pdf.cache_path(k)) for k in lib_view._selected_keys if pdf.is_cached(k)]
+                if paths:
+                    if sys.platform == "darwin":
+                        subprocess.run(["open"] + paths, check=False)
+                    elif sys.platform.startswith("linux"):
+                        for p in paths:
+                            subprocess.run(["xdg-open", p], check=False)
+                    else:
+                        for p in paths:
+                            subprocess.run(["start", p], shell=True, check=False)
+                    self._set_status(f"[green]Opened {len(paths)} PDF(s)[/green]")
+                return
             entry = lib_view._highlighted_entry
             if entry is None:
                 self._set_status("[yellow]Select a paper first.[/yellow]")
@@ -1484,13 +1548,16 @@ class LitbotApp(App):
 
         if action == "open_pdf":
             if on_library:
-                entry = self.query_one(LibraryView)._highlighted_entry
+                lib_view = self.query_one(LibraryView)
+                if lib_view._selected_keys:
+                    return all(_pdf.is_cached(k) for k in lib_view._selected_keys)
+                entry = lib_view._highlighted_entry
                 return entry is not None and _pdf.is_cached(entry.key)
             if ads_view:
-                if ads_view._selected_bibcodes:
-                    return all(_pdf.is_cached(bc) for bc in ads_view._selected_bibcodes)
                 a = ads_view._selected_article
-                return a is not None and _pdf.is_cached(a.bibcode)
+                cursor_cached = a is not None and _pdf.is_cached(a.bibcode)
+                selected_cached = any(_pdf.is_cached(bc) for bc in ads_view._selected_bibcodes)
+                return cursor_cached or selected_cached
             return False
 
         if action == "download_pdf":
