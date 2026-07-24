@@ -188,6 +188,8 @@ paper with arbitrary cite keys. Every entry is resolved against ADS (by
 arXiv ID, DOI, or exact title + first author + year) and imported with
 canonical ADS BibTeX and a regenerated litbot cite key. Entries that
 cannot be resolved to exactly one ADS record are skipped with a warning.
+Entries already present are kept as-is (pass `--verify` to be prompted
+to replace them).
 After importing, litbot prints copy-pasteable `perl -pi -e` commands that
 rewrite the old cite keys to the new ones in your `.tex` files.
 

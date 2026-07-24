@@ -219,16 +219,20 @@ def _ads_lookup(data: dict) -> tuple[dict | None, str]:
               help="Write only to the personal library.")
 @click.option("--ms-only", is_flag=True,
               help="Write only to the active manuscript database.")
-def import_cmd(file: Path, personal_only: bool, ms_only: bool):
+@click.option("--verify", is_flag=True,
+              help="Prompt before replacing entries that are already present "
+                   "(default: keep the existing entry and skip).")
+def import_cmd(file: Path, personal_only: bool, ms_only: bool, verify: bool):
     """Import papers from a .bib file, resolving each against ADS.
 
     Every entry is resolved to a unique ADS record (by arXiv ID, DOI, or
     exact title+author+year) and imported with canonical ADS BibTeX and a
     regenerated cite key; entries that cannot be resolved unambiguously
-    are skipped with a warning. Inside a manuscript repo, entries go to
-    both the personal library and the manuscript database unless
-    restricted by a flag. Prints copy-pasteable commands to update cite
-    keys in your .tex files.
+    are skipped with a warning. Entries already present are skipped
+    (--verify prompts to replace instead). Inside a manuscript repo,
+    entries go to both the personal library and the manuscript database
+    unless restricted by a flag. Prints copy-pasteable commands to update
+    cite keys in your .tex files.
     """
     parser = BibTexParser(common_strings=True)
     parser.customization = convert_to_unicode
@@ -255,11 +259,15 @@ def import_cmd(file: Path, personal_only: bool, ms_only: bool):
         key = generate_key(data)
         holder = next((t for t in targets if t.has(key)), None)
         if holder is not None:
-            existing = holder.get(key)
-            console.print(f"\n[yellow]{key}[/yellow] already present:")
-            console.print(f"  Have:   {existing.title[:65]}")
-            console.print(f"  Import: {data.get('title', '')[:65]}")
-            if not click.confirm("  Replace?", default=False):
+            replace = False
+            if verify:
+                existing = holder.get(key)
+                console.print(f"\n[yellow]{key}[/yellow] already present:")
+                console.print(f"  Have:   {existing.title[:65]}")
+                console.print(f"  Import: {data.get('title', '')[:65]}")
+                replace = click.confirm("  Replace?", default=False)
+            if not replace:
+                console.print(f"  [dim]{orig_key} → {key}  (already present — kept existing)[/dim]")
                 if orig_key != key:
                     renames.append((orig_key, key))  # key mapping still applies
                 skipped += 1
