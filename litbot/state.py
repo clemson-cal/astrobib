@@ -57,3 +57,17 @@ def get_library_path() -> Path:
     path = LIBRARY_DIR
     (path / "bib").mkdir(parents=True, exist_ok=True)
     return path
+
+
+def find_manuscript_db(start: Path | None = None) -> Path | None:
+    """Walk up from start (default cwd) to find a manuscript database.
+
+    A manuscript database is any directory containing bib/ alongside .git —
+    typically the manuscript's own repo. Returns None if not inside one.
+    """
+    path = (start or Path.cwd()).resolve()
+    while path != path.parent:
+        if (path / "bib").is_dir() and (path / ".git").exists() and path != LIBRARY_DIR:
+            return path
+        path = path.parent
+    return None

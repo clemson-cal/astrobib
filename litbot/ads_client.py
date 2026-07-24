@@ -26,6 +26,7 @@ SEARCH_FIELDS = [
     "doi",
     "esources",
     "arxiv_class",
+    "citation_count",
 ]
 
 _quota: dict | None = None

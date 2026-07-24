@@ -23,10 +23,10 @@ from textual.widgets import (
     Tabs,
 )
 
-from ..library import Entry, Library
+from ..library import Entry, Library, MergedLibrary
 from ..state import (
     UAT_CACHE, PDF_CACHE_DIR, STATE_FILE,
-    get_library_path, get_token, set_token,
+    find_manuscript_db, get_library_path, get_token, set_token,
 )
 from ..uat import UAT, Concept, get_uat
 from . import tabs_state
@@ -216,6 +216,10 @@ class DetailPanel(VerticalScroll):
         content.append(author_str, style="dim")
         content.append("   ·   ", style="dim")
         content.append(str(article.year or ""), style="green")
+        cites = getattr(article, "_raw", {}).get("citation_count")
+        if cites:
+            content.append("   ·   ", style="dim")
+            content.append(f"cited by {cites}", style="dim")
         if abstract:
             content.append("\n\n")
             content.append(abstract[:1000] + ("…" if len(abstract) > 1000 else ""))
@@ -247,6 +251,19 @@ class DetailPanel(VerticalScroll):
         elif article.bibcode:
             foot.append(article.bibcode, style="dim")
         footer.update(foot)
+
+    def show_missing_key(self, key: str) -> None:
+        body = self.query_one("#detail-body", Static)
+        footer = self.query_one("#detail-footer", Static)
+        body.update(
+            f"[bold red]{key}[/bold red]\n\n"
+            "[dim]Unknown cite key — not in the manuscript database or your "
+            "personal library.\n\nFix the key in the .tex source, or press "
+            "[bold]S[/bold] to search ADS and import the paper.[/dim]"
+        )
+        footer.update("")
+        self._set_links("", "", "")
+        self._update_pdf_buttons(has_eprint=False, has_adsurl=False, has_doi=False)
 
     def show_concept(self, concept: Concept | None, uat: UAT) -> None:
         body = self.query_one("#detail-body", Static)
@@ -388,6 +405,8 @@ class LibraryView(Static):
         self._sort_reverse: bool = True
         self._selected_keys: set[str] = set()
         self._highlighted_entry: Entry | None = None
+        self._library: MergedLibrary | None = None
+        self._ms_only: bool = False
 
     def compose(self) -> ComposeResult:
         yield Input(placeholder="Filter by author, title, key, or keyword…", id="lib-filter")
@@ -397,18 +416,25 @@ class LibraryView(Static):
         t = self.query_one("#lib-table", DataTable)
         t.add_column(" ", key="sel", width=2)
         t.add_column("↓", key="pdf", width=2)
-        t.add_column("●", key="lib", width=2)
+        t.add_column("◆", key="lib", width=2)
         t.add_column("★", key="star", width=2)
         t.add_column("Year", key="year", width=6)
         t.add_column("Author", key="author", width=20)
         t.add_column("Title", key="title")
         t.add_column("Keywords", key="keywords", width=28)
 
-    def load(self, library: Library | None) -> None:
+    def load(self, library: MergedLibrary | None) -> None:
+        self._library = library
         self._all_entries = library.entries() if library else []
         self._selected_keys.clear()
         filter_val = self.query_one("#lib-filter", Input).value
         self._apply_filter(filter_val)
+
+    def toggle_ms_only(self) -> bool:
+        """Toggle hiding entries that are not in the manuscript db."""
+        self._ms_only = not self._ms_only
+        self._apply_filter(self.query_one("#lib-filter", Input).value)
+        return self._ms_only
 
     def focus_filter(self) -> None:
         inp = self.query_one("#lib-filter", Input)
@@ -441,16 +467,19 @@ class LibraryView(Static):
 
     def _apply_filter(self, text: str) -> None:
         q = text.lower().strip()
+        pool = self._all_entries
+        if self._ms_only and self._library is not None:
+            pool = [e for e in pool if self._library.in_manuscript(e.key)]
         if q:
             self._filtered = [
-                e for e in self._all_entries
+                e for e in pool
                 if q in e.title.lower()
                 or q in e.author.lower()
                 or q in e.key.lower()
                 or any(q in kw.lower() for kw in e.keywords)
             ]
         else:
-            self._filtered = list(self._all_entries)
+            self._filtered = list(pool)
         self._refresh_table()
 
     def _sort_key(self, e: Entry) -> str:
@@ -470,12 +499,13 @@ class LibraryView(Static):
         for e in entries:
             sel = "✓" if e.key in self._selected_keys else ""
             cached = "↓" if _pdf.is_cached(e.key) else ""
+            in_ms = "◆" if self._library and self._library.in_manuscript(e.key) else ""
             star = "★" if e.starred else ""
             kws = ", ".join(e.keywords[:3])
             if len(e.keywords) > 3:
                 kws += "…"
             title = e.title[:52] + "…" if len(e.title) > 52 else e.title
-            t.add_row(sel, cached, "●", star, e.year, e.first_author_last, title, kws, key=e.key)
+            t.add_row(sel, cached, in_ms, star, e.year, e.first_author_last, title, kws, key=e.key)
         first = entries[0] if entries else None
         self._highlighted_entry = first
         self.post_message(self.EntryHighlighted(first))
@@ -528,6 +558,122 @@ class LibraryView(Static):
             self._sort_col = col
             self._sort_reverse = (col == "year")
         self._refresh_table()
+
+
+# ── Manuscript view ───────────────────────────────────────────────────────────
+
+class ManuscriptView(Vertical):
+    """Health dashboard for the active manuscript database.
+
+    Rows are the union of cite keys found in the manuscript's .tex files
+    and entries in its bib/ directory:
+      ok       — cited and in bib/
+      library  — cited, not in bib/, but in the personal library (m to add)
+      missing  — cited, found nowhere
+      uncited  — in bib/ but cited by nothing
+    """
+
+    DEFAULT_CSS = """
+    ManuscriptView { height: 100%; }
+    ManuscriptView DataTable { height: 100%; }
+    """
+
+    class KeyHighlighted(Message):
+        def __init__(self, key: str | None, entry: Entry | None, state: str) -> None:
+            super().__init__()
+            self.key = key
+            self.entry = entry
+            self.state = state
+
+    _STATE_ORDER = {"missing": 0, "library": 1, "uncited": 2, "ok": 3}
+    _STATE_STYLE = {"missing": "red", "library": "yellow", "uncited": "cyan", "ok": ""}
+    _STATE_LABEL = {"missing": "missing", "library": "in library", "uncited": "uncited", "ok": ""}
+    _STATE_ICON = {"missing": "✗", "library": "○", "uncited": "·", "ok": "◆"}
+
+    def __init__(self) -> None:
+        super().__init__(id="manuscript-view")
+        self._rows: list[tuple[str, str, Entry | None]] = []
+        self._highlighted_key: str | None = None
+        self._highlighted_state: str = "ok"
+
+    def compose(self) -> ComposeResult:
+        yield DataTable(id="ms-table", cursor_type="row")
+
+    def on_mount(self) -> None:
+        t = self.query_one("#ms-table", DataTable)
+        t.add_column(" ", key="state", width=2)
+        t.add_column("Status", key="status", width=10)
+        t.add_column("Key", key="key", width=24)
+        t.add_column("Year", key="year", width=6)
+        t.add_column("Author", key="author", width=20)
+        t.add_column("Title", key="title")
+
+    def load(self, library: MergedLibrary | None, cited_keys: set[str]) -> None:
+        ms = library.manuscript if library else None
+        rows: list[tuple[str, str, Entry | None]] = []
+        for key in cited_keys:
+            entry = library.get(key) if library else None
+            if ms is not None and ms.has(key):
+                state = "ok"
+            elif entry is not None:
+                state = "library"
+            else:
+                state = "missing"
+            rows.append((key, state, entry))
+        if ms is not None:
+            for e in ms.entries():
+                if e.key not in cited_keys:
+                    rows.append((e.key, "uncited", (library.get(e.key) if library else e)))
+        rows.sort(key=lambda r: (self._STATE_ORDER[r[1]], r[0].lower()))
+        self._rows = rows
+        self._refresh_table()
+
+    def counts(self) -> dict[str, int]:
+        c = {"ok": 0, "library": 0, "missing": 0, "uncited": 0}
+        for _, state, _ in self._rows:
+            c[state] += 1
+        return c
+
+    def _refresh_table(self) -> None:
+        from rich.text import Text
+        t = self.query_one("#ms-table", DataTable)
+        prev_key = self._highlighted_key
+        t.clear()
+        for key, state, entry in self._rows:
+            style = self._STATE_STYLE[state]
+            cell = (lambda s, _st=style: Text(s, style=_st) if _st else Text(s))
+            title = entry.title if entry else ""
+            title = title[:52] + "…" if len(title) > 52 else title
+            t.add_row(
+                cell(self._STATE_ICON[state]), cell(self._STATE_LABEL[state]),
+                cell(key), cell(entry.year if entry else ""),
+                cell(entry.first_author_last if entry else ""), cell(title),
+                key=key,
+            )
+        row = None
+        if prev_key is not None:
+            row = next((r for r in self._rows if r[0] == prev_key), None)
+            if row is not None:
+                try:
+                    t.move_cursor(row=t.get_row_index(prev_key))
+                except Exception:
+                    row = None
+        if row is None:
+            row = self._rows[0] if self._rows else (None, "ok", None)
+        self._highlighted_key, self._highlighted_state = row[0], row[1]
+        self.post_message(self.KeyHighlighted(row[0], row[2], row[1]))
+
+    @on(DataTable.RowHighlighted, "#ms-table")
+    @on(DataTable.RowSelected, "#ms-table")
+    def _on_row_event(self, event) -> None:
+        key = event.row_key.value if event.row_key else None
+        if not key:
+            return
+        row = next((r for r in self._rows if r[0] == key), None)
+        if row is None:
+            return
+        self._highlighted_key, self._highlighted_state = row[0], row[1]
+        self.post_message(self.KeyHighlighted(row[0], row[2], row[1]))
 
 
 # ── ADS results view ──────────────────────────────────────────────────────────
@@ -654,29 +800,49 @@ class AdsView(Static):
 
 # ── Modals ────────────────────────────────────────────────────────────────────
 
-class AdsSearchModal(ModalScreen[str]):
+class AdsSearchModal(ModalScreen["tuple[str, int] | None"]):
     DEFAULT_CSS = """
     AdsSearchModal { align: center middle; }
     AdsSearchModal Vertical {
         width: 64; height: auto;
         border: round $accent; padding: 1 2; background: $surface;
     }
+    AdsSearchModal Horizontal { height: auto; margin-top: 1; }
+    AdsSearchModal .count-label { padding: 1 1 0 0; color: $text-muted; }
+    AdsSearchModal #ads-count { width: 10; }
     """
+
+    def __init__(self, initial: str = "", title: str = "New ADS search",
+                 limit: int = tabs_state.DEFAULT_LIMIT) -> None:
+        super().__init__()
+        self._initial = initial
+        self._title = title
+        self._limit = limit
 
     def compose(self) -> ComposeResult:
         with Vertical():
-            yield Label("New ADS search  [dim](Enter / Escape)[/dim]")
-            yield Input(placeholder="author, title, or topic…", id="ads-input")
+            yield Label(f"{self._title}  [dim](Enter / Escape)[/dim]")
+            yield Input(value=self._initial,
+                        placeholder="author, title, or topic…", id="ads-input")
+            with Horizontal():
+                yield Label("Results:", classes="count-label")
+                yield Input(value=str(self._limit), type="integer", id="ads-count")
 
     def on_mount(self) -> None:
-        self.query_one(Input).focus()
+        self.query_one("#ads-input", Input).focus()
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
-        self.dismiss(event.value.strip())
+        query = self.query_one("#ads-input", Input).value.strip()
+        try:
+            limit = int(self.query_one("#ads-count", Input).value)
+        except ValueError:
+            limit = tabs_state.DEFAULT_LIMIT
+        limit = max(1, min(2000, limit))
+        self.dismiss((query, limit))
 
     def on_key(self, event) -> None:
         if event.key == "escape":
-            self.dismiss("")
+            self.dismiss(None)
 
 
 class AddModal(ModalScreen[tuple[str, str] | None]):
@@ -764,7 +930,7 @@ class LitbotApp(App):
         Binding("d", "remove_paper", "Remove"),
         Binding("p", "download_pdf", "DL PDF"),
         Binding("o", "open_pdf", "Open PDF"),
-        Binding("/", "filter", "Filter"),
+        Binding("/", "filter", "Filter/Query"),
         Binding("S", "ads_search", "ADS search"),
         Binding("r", "refresh_tab", "Refresh"),
         Binding("question_mark", "help", "Help"),
@@ -776,19 +942,27 @@ class LitbotApp(App):
         Binding("e", "export_selected", "Export", show=False),
         Binding("u", "uat_browser", "UAT", show=False),
         Binding("ctrl+w", "close_tab", "Close tab", show=False),
-        Binding("right", "more_results", show=False),
-        Binding("left", "fewer_results", show=False),
+        Binding("plus,equals_sign", "more_results", show=False),
+        Binding("minus", "fewer_results", show=False),
         Binding("[", "prev_tab", "Prev tab", show=False),
         Binding("]", "next_tab", "Next tab", show=False),
         Binding("space", "toggle_select", "Select", show=False),
         Binding("s", "star", "Star", show=False),
+        Binding("R", "references", "References", show=False),
+        Binding("c", "citations", "Citations", show=False),
+        Binding("m", "toggle_manuscript", "Manuscript ±", show=False),
+        Binding("M", "toggle_ms_only", "Ms-only view", show=False),
         Binding("escape", "clear_filter", "Clear", show=False),
         Binding("z", "zoom", "Zoom", show=False),
     ]
 
     def __init__(self) -> None:
         super().__init__()
-        self._library: Library | None = None
+        self._library: MergedLibrary | None = None
+        self._ms_root: "Path | None" = find_manuscript_db()
+        self._cited_keys: set[str] = set()
+        self._ms_tex_mtimes: dict[str, float] = {}
+        self._ms_bib_mtime: float = 0.0
         self._uat: UAT | None = None
         self._tab_states: list[dict] = []
         self._ads_views: dict[str, AdsView] = {}
@@ -801,15 +975,31 @@ class LitbotApp(App):
             with TabbedContent(id="tabs"):
                 with TabPane("Library", id="pane-library"):
                     yield LibraryView()
+                if self._ms_root:
+                    with TabPane("Manuscript", id="pane-manuscript"):
+                        yield ManuscriptView()
             yield DetailPanel(id="detail")
         yield Static("", id="status-bar")
         yield Footer()
 
+    def _make_library(self) -> MergedLibrary:
+        personal = Library(root=get_library_path())
+        ms = Library(root=self._ms_root) if self._ms_root else None
+        return MergedLibrary(personal=personal, manuscript=ms)
+
     async def on_mount(self) -> None:
         self._uat = get_uat(UAT_CACHE, auto_fetch=False)
 
-        self._library = Library(root=get_library_path())
+        if self._ms_root:
+            self.sub_title = f"ms: {self._ms_root.name}"
+        self._library = self._make_library()
         self.query_one(LibraryView).load(self._library)
+
+        if self._ms_root:
+            bib_dir = self._ms_root / "bib"
+            self._ms_bib_mtime = bib_dir.stat().st_mtime if bib_dir.exists() else 0.0
+            self._poll_manuscript()
+            self.set_interval(2.0, self._poll_manuscript)
 
         self._tab_states = tabs_state.load()
         for tab_data in self._tab_states:
@@ -819,7 +1009,8 @@ class LitbotApp(App):
         n = len(self._library.entries())
         uat_note = f" · UAT ({len(self._uat)})" if self._uat else ""
         token_note = "" if get_token() else "  [yellow]T: set ADS token[/yellow]"
-        self._set_status(f"{n} papers{uat_note}{token_note}")
+        ms_note = f" · [cyan]ms: {self._ms_root.name}[/cyan]" if self._ms_root else ""
+        self._set_status(f"{n} papers{ms_note}{uat_note}{token_note}")
 
         # Restore ADS results in background after the app is displayed
         if get_token() and self._tab_states:
@@ -862,7 +1053,7 @@ class LitbotApp(App):
         import asyncio
         def _is_active() -> bool:
             return self._active_ads_view() is ads_view
-        limit = tab_data.get("limit", 20)
+        limit = tab_data.get("limit", tabs_state.DEFAULT_LIMIT)
         if _is_active():
             self._set_status(f"Searching ADS for '{ads_view.query}' (n={limit})…")
         try:
@@ -881,10 +1072,86 @@ class LitbotApp(App):
                 self._set_status(f"[red]ADS search failed: {e}[/red]")
 
     def _reload_library(self) -> None:
-        self._library = Library(root=get_library_path())
+        self._library = self._make_library()
         self.query_one(LibraryView).load(self._library)
         for av in self._ads_views.values():
             av.update_lib_status(self._library)
+        self._refresh_manuscript_view()
+
+    # ── Manuscript watching ───────────────────────────────────────────────────
+
+    def _poll_manuscript(self) -> None:
+        """Watch the manuscript's .tex files and bib/ for changes (2 s interval)."""
+        if self._ms_root is None or self._library is None:
+            return
+        from ..export import scan_tex_files
+        files = sorted(self._ms_root.glob("*.tex"))
+        tex_mtimes: dict[str, float] = {}
+        for f in files:
+            try:
+                tex_mtimes[str(f)] = f.stat().st_mtime
+            except OSError:
+                pass
+        bib_dir = self._ms_root / "bib"
+        bib_mtime = bib_dir.stat().st_mtime if bib_dir.exists() else 0.0
+        tex_changed = tex_mtimes != self._ms_tex_mtimes
+        bib_changed = bib_mtime != self._ms_bib_mtime
+        if not tex_changed and not bib_changed:
+            return
+        self._ms_tex_mtimes = tex_mtimes
+        self._ms_bib_mtime = bib_mtime
+        if tex_changed:
+            self._cited_keys = scan_tex_files(files)
+        if bib_changed:
+            self._reload_library()  # refreshes the manuscript view too
+        else:
+            self._refresh_manuscript_view()
+
+    def _refresh_manuscript_view(self) -> None:
+        if self._ms_root is None:
+            return
+        try:
+            ms_view = self.query_one(ManuscriptView)
+        except Exception:
+            return
+        ms_view.load(self._library, self._cited_keys)
+        self._write_refs_bib()
+        if self._active_pane_id() == "pane-manuscript":
+            self._set_status(self._manuscript_status(ms_view))
+        self.refresh_bindings()
+
+    def _manuscript_status(self, ms_view: ManuscriptView) -> str:
+        c = ms_view.counts()
+        cited = c["ok"] + c["library"] + c["missing"]
+        parts = [f"{cited} cited"]
+        if c["missing"]:
+            parts.append(f"[red]{c['missing']} missing[/red]")
+        if c["library"]:
+            parts.append(f"[yellow]{c['library']} in library — m to add[/yellow]")
+        if c["uncited"]:
+            parts.append(f"[cyan]{c['uncited']} uncited[/cyan]")
+        return " · ".join(parts) + f"  [dim]· ms: {self._ms_root.name}[/dim]"
+
+    def _write_refs_bib(self) -> None:
+        """Regenerate refs.bib from cited manuscript entries, only on change."""
+        ms = self._library.manuscript if self._library else None
+        if ms is None or self._ms_root is None:
+            return
+        blocks: list[str] = []
+        for key in sorted(self._cited_keys):
+            e = ms.get(key)
+            if e is not None:
+                try:
+                    blocks.append(e.path.read_text())
+                except OSError:
+                    pass
+        content = "\n".join(blocks)
+        out = self._ms_root / "refs.bib"
+        try:
+            if not out.exists() or out.read_text() != content:
+                out.write_text(content)
+        except OSError:
+            pass
 
     # ── Tab events ────────────────────────────────────────────────────────────
 
@@ -900,6 +1167,17 @@ class LitbotApp(App):
             total = len(lib_view._all_entries)
             shown = f" · {n} shown" if n != total else ""
             self._set_status(f"{total} papers{shown}  [dim]/ filter · Space select · e export[/dim]")
+        elif pane_id == "pane-manuscript":
+            ms_view = self.query_one(ManuscriptView)
+            key = ms_view._highlighted_key
+            entry = self._library.get(key) if (key and self._library) else None
+            if entry is not None:
+                detail.show_entry(entry)
+            elif key:
+                detail.show_missing_key(key)
+            else:
+                detail.show_entry(None)
+            self._set_status(self._manuscript_status(ms_view))
         elif pane_id:
             tab_id = pane_id.removeprefix("pane-")
             ads_view = self._ads_views.get(tab_id)
@@ -911,7 +1189,7 @@ class LitbotApp(App):
                 else:
                     detail.show_entry(None)
                 tab_data = next((t for t in self._tab_states if t["id"] == ads_view.tab_id), {})
-                limit = tab_data.get("limit", 20)
+                limit = tab_data.get("limit", tabs_state.DEFAULT_LIMIT)
                 if not ads_view._articles:
                     self._set_status(
                         f"[dim]'{ads_view.query}' — press [bold]r[/bold] to load results[/dim]"
@@ -928,6 +1206,19 @@ class LitbotApp(App):
             self.query_one(DetailPanel).show_entry(event.entry)
             self.refresh_bindings()
 
+    @on(ManuscriptView.KeyHighlighted)
+    def _on_ms_key_highlighted(self, event: ManuscriptView.KeyHighlighted) -> None:
+        if self._active_pane_id() != "pane-manuscript":
+            return
+        detail = self.query_one(DetailPanel)
+        if event.entry is not None:
+            detail.show_entry(event.entry)
+        elif event.key:
+            detail.show_missing_key(event.key)
+        else:
+            detail.show_entry(None)
+        self.refresh_bindings()
+
     @on(AdsView.ArticleHighlighted)
     def _on_article_highlighted(self, event: AdsView.ArticleHighlighted) -> None:
         if event.article is None:
@@ -940,7 +1231,7 @@ class LitbotApp(App):
         ads_view = self._ads_views.get(event.tab_id)
         if ads_view:
             tab_data = next((t for t in self._tab_states if t["id"] == event.tab_id), {})
-            limit = tab_data.get("limit", 20)
+            limit = tab_data.get("limit", tabs_state.DEFAULT_LIMIT)
             status = _ads_tab_status(ads_view.query, len(ads_view._articles), limit)
             if entry is None:
                 status += "  [dim]⏎ Import[/dim]"
@@ -1021,6 +1312,11 @@ class LitbotApp(App):
                 self.query_one(LibraryView).query_one(DataTable).focus()
             except Exception:
                 pass
+        elif pane_id == "pane-manuscript":
+            try:
+                self.query_one(ManuscriptView).query_one(DataTable).focus()
+            except Exception:
+                pass
         elif pane_id:
             tab_id = pane_id.removeprefix("pane-")
             ads_view = self._ads_views.get(tab_id)
@@ -1031,8 +1327,38 @@ class LitbotApp(App):
                     pass
 
     def action_filter(self) -> None:
+        ads_view = self._active_ads_view()
+        if ads_view is not None:
+            self._edit_tab_query(ads_view)
+            return
         if self._active_pane_id() == "pane-library":
             self.query_one(LibraryView).focus_filter()
+
+    def _edit_tab_query(self, ads_view: AdsView) -> None:
+        tab_data = next((t for t in self._tab_states if t["id"] == ads_view.tab_id), None)
+        if tab_data is None:
+            return
+
+        async def handle(result: "tuple[str, int] | None") -> None:
+            if not result or not result[0]:
+                return
+            query, limit = result
+            if query == tab_data["query"] and limit == tab_data.get("limit"):
+                return
+            if query != tab_data["query"]:
+                tab_data["label"] = tabs_state.short_label(query)
+                self.query_one(TabbedContent).get_tab(f"pane-{ads_view.tab_id}").label = tab_data["label"]
+            tab_data["query"] = query
+            tab_data["limit"] = limit
+            ads_view.query = query
+            tabs_state.save(self._tab_states)
+            await self._do_refresh(ads_view, tab_data)
+
+        self.push_screen(
+            AdsSearchModal(initial=tab_data["query"], title="Edit ADS query",
+                           limit=tab_data.get("limit", tabs_state.DEFAULT_LIMIT)),
+            handle,
+        )
 
     def action_clear_filter(self) -> None:
         if self._active_pane_id() == "pane-library":
@@ -1077,9 +1403,10 @@ class LitbotApp(App):
             self._set_status("[yellow]Set your ADS token, then press S to search.[/yellow]")
             return
 
-        async def handle(query: str) -> None:
-            if not query:
+        async def handle(result: "tuple[str, int] | None") -> None:
+            if not result or not result[0]:
                 return
+            query, limit = result
             from .. import ads_client
             bibcode = ads_client.bibcode_from_url(query)
             if bibcode:
@@ -1089,11 +1416,16 @@ class LitbotApp(App):
                 self._set_status(f"Importing {bibcode}…")
                 self.run_worker(self._fetch_and_add(bibcode, None), exclusive=True)
                 return
-            tab_data = tabs_state.make_tab(query)
+            tab_data = tabs_state.make_tab(query, limit=limit)
             self._tab_states.append(tab_data)
             await self._create_ads_tab(tab_data, fetch=True)
 
-        self.push_screen(AdsSearchModal(), handle)
+        initial = ""
+        if self._active_pane_id() == "pane-manuscript":
+            ms_view = self.query_one(ManuscriptView)
+            if ms_view._highlighted_state == "missing" and ms_view._highlighted_key:
+                initial = ms_view._highlighted_key
+        self.push_screen(AdsSearchModal(initial=initial), handle)
 
     async def action_close_tab(self) -> None:
         pane_id = self._active_pane_id()
@@ -1112,6 +1444,107 @@ class LitbotApp(App):
         tab_data = next((t for t in self._tab_states if t["id"] == ads_view.tab_id), None)
         if tab_data:
             await self._do_refresh(ads_view, tab_data)
+
+    async def action_references(self) -> None:
+        await self._open_linked_tab("references")
+
+    async def action_citations(self) -> None:
+        await self._open_linked_tab("citations")
+
+    async def _open_linked_tab(self, kind: str) -> None:
+        """Open a new ADS tab listing the references of / citations to the
+        highlighted paper, using ADS's references()/citations() operators."""
+        from .. import pdf as _pdf
+        if not get_token():
+            self.push_screen(ConfigModal())
+            self._set_status("[yellow]Set your ADS token first.[/yellow]")
+            return
+        ads_view = self._active_ads_view()
+        if ads_view is not None:
+            a = ads_view._selected_article
+            if a is None:
+                self._set_status("[yellow]Select an article first.[/yellow]")
+                return
+            bibcode = a.bibcode
+            surname = (a.author[0].split(",")[0] if a.author else "").replace(" ", "")
+            label_key = f"{surname}{a.year or ''}" or bibcode
+        else:
+            entry = self.query_one(LibraryView)._highlighted_entry
+            if entry is None:
+                self._set_status("[yellow]Select a paper first.[/yellow]")
+                return
+            bibcode = _pdf._bibcode_from_adsurl(entry.adsurl)
+            if not bibcode:
+                self._set_status(f"[yellow]No ADS URL for {entry.key}[/yellow]")
+                return
+            label_key = entry.short_key or entry.key
+        prefix, arrow = ("refs", "←") if kind == "references" else ("cites", "→")
+        query = f'{kind}(bibcode:"{bibcode}")'
+        tab_data = tabs_state.make_tab(query, label=f"{prefix}{arrow}{label_key}")
+        self._tab_states.append(tab_data)
+        await self._create_ads_tab(tab_data, fetch=True)
+
+    def action_toggle_manuscript(self) -> None:
+        """Toggle manuscript-db membership for selected (or highlighted) entries."""
+        if self._library is None or self._library.manuscript is None:
+            return
+        if self._active_pane_id() == "pane-manuscript":
+            ms_view = self.query_one(ManuscriptView)
+            key, state = ms_view._highlighted_key, ms_view._highlighted_state
+            if not key:
+                return
+            if state == "library":
+                self._library.add_to_manuscript(key)
+                self._set_status(f"[green]Added {key} to manuscript db[/green]")
+            elif state in ("ok", "uncited"):
+                self._library.remove_from_manuscript(key)
+                self._set_status(f"Removed {key} from manuscript db")
+            else:
+                self._set_status(f"[yellow]{key} not found anywhere — S to search ADS[/yellow]")
+                return
+            self._refresh_manuscript_view()
+            try:
+                self.query_one(LibraryView)._refresh_table()
+            except Exception:
+                pass
+            return
+        lib_view = self.query_one(LibraryView)
+        keys = lib_view.get_selected_keys()
+        if not keys and lib_view._highlighted_entry is not None:
+            keys = [lib_view._highlighted_entry.key]
+        if not keys:
+            return
+        # If any selected entry is missing from the manuscript, add all;
+        # otherwise (all present) remove all.
+        missing = [k for k in keys if not self._library.in_manuscript(k)]
+        t = lib_view.query_one("#lib-table", DataTable)
+        if missing:
+            for k in missing:
+                self._library.add_to_manuscript(k)
+            val, n = "◆", len(missing)
+            self._set_status(f"[green]Added {n} paper(s) to manuscript db[/green]")
+            changed = missing
+        else:
+            for k in keys:
+                self._library.remove_from_manuscript(k)
+            val, n = "", len(keys)
+            self._set_status(f"Removed {n} paper(s) from manuscript db")
+            changed = keys
+        for k in changed:
+            try:
+                t.update_cell(k, "lib", val)
+            except Exception:
+                lib_view._refresh_table()
+                break
+        self._refresh_manuscript_view()
+        self.refresh_bindings()
+
+    def action_toggle_ms_only(self) -> None:
+        lib_view = self.query_one(LibraryView)
+        on = lib_view.toggle_ms_only()
+        name = self._ms_root.name if self._ms_root else "manuscript"
+        self._set_status(f"Showing [cyan]{name}[/cyan] entries only  [dim](M to show all)[/dim]"
+                         if on else "Showing all entries")
 
     def action_more_results(self) -> None:
         self._step_tab_limit(+1)
@@ -1535,15 +1968,35 @@ class LitbotApp(App):
         if action in ("close_tab", "more_results", "fewer_results"):
             return not on_library
 
-        # Actions only valid on Library tab (filter is footer-visible: grey on ADS)
+        # Filter on library, edit query on ADS tabs — valid on both
         if action == "filter":
-            return True if on_library else None
+            return True if (on_library or ads_view) else None
         if action == "export_selected":
             return on_library
 
         if action == "toggle_select":
             if on_library:
                 return True
+            if ads_view:
+                return ads_view._selected_article is not None
+            return False
+
+        if action in ("toggle_manuscript", "toggle_ms_only"):
+            has_ms = bool(self._library and self._library.manuscript)
+            on_manuscript = pane_id == "pane-manuscript"
+            if action == "toggle_ms_only":
+                return on_library and has_ms
+            if on_library and has_ms:
+                lib_view = self.query_one(LibraryView)
+                return bool(lib_view._selected_keys or lib_view._highlighted_entry)
+            if on_manuscript and has_ms:
+                return self.query_one(ManuscriptView)._highlighted_key is not None
+            return False
+
+        if action in ("references", "citations"):
+            if on_library:
+                entry = self.query_one(LibraryView)._highlighted_entry
+                return entry is not None and bool(entry.adsurl)
             if ads_view:
                 return ads_view._selected_article is not None
             return False
@@ -1641,7 +2094,7 @@ class LitbotApp(App):
 
 
 def _ads_tab_status(query: str, n: int, limit: int) -> str:
-    return f"[bold]{query}[/bold]  {n} results  [dim]n={limit} (← →)[/dim]"
+    return f"[bold]{query}[/bold]  {n} results  [dim]n={limit} (+ -)[/dim]"
 
 
 def _format_authors(raw: str, max_count: int = 5) -> str:

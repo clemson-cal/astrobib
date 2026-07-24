@@ -30,6 +30,16 @@ It is not:
 
 Features like "mark as read", "add a note", "reading list" are personal and social, not bibliographic. They belong in personal tools outside the shared database, not in litbot.
 
+## Manuscript databases
+
+A manuscript database is a `bib/` directory inside a manuscript's git repo. It uses exactly the standard database format — flat `.bib` files, nothing else — and is therefore indistinguishable from any other bib database. Rules:
+
+- Discovery is by directory walk-up (cwd ancestor containing `bib/` and `.git`), never by registration in config. At most one manuscript database is active per session.
+- litbot never runs git on a manuscript repo. Versioning rides along in the user's own paper commits.
+- Copies, not links: an entry added to a manuscript database is a self-contained copy of the `.bib` file, so the repo stands alone for coauthors. Identical content yields identical keys, so copies agree across databases.
+- Personal fields (`litbot_starred`) are stripped from manuscript copies. The manuscript database is shared; stars are personal.
+- The sync flow (`litbot refs`) may add cited entries and, only with an explicit flag, remove uncited ones. It never modifies the personal library.
+
 ## Persistent searches are user-local
 
 Saved ADS query tabs live in user-local app state (e.g., `~/.local/share/litbot/`), not in the bib database. They are not synced to other group members. Each user maintains their own set of active searches.

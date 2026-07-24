@@ -34,34 +34,28 @@ There are no tests. Verify changes by importing the affected modules and running
 
 ## Architecture
 
-**Tool vs. data separation.** litbot is a pip-installable tool. Bib databases are separate git repositories registered in `~/.config/litbot/config.toml`. The tool never stores data inside its own package directory.
+**Tool vs. data separation.** litbot is a pip-installable tool. The personal library lives at `~/.local/share/litbot/library/` (override root with `LITBOT_STATE_DIR`); manuscript databases live inside manuscript repos. The tool never stores data inside its own package directory.
 
 **Package layout:**
 
-- `litbot/config.py` — config loading, `UAT_CACHE`, `PDF_CACHE_DIR`, `DEFAULT_DB_DIR` constants
+- `litbot/state.py` — user-local app state: library path, ADS token, cache constants, `find_manuscript_db()`
 - `litbot/library.py` — `Entry`, `Library`, `MergedLibrary`; reads `bib/*.bib` files
-- `litbot/db.py` — git subprocess wrapper: `clone`, `init_empty`, `commit_entry`, `pull`, `push`, `publish`
-- `litbot/ads_client.py` — ADS search and BibTeX export via the `ads` package; `refresh_quota()` uses httpx directly
+- `litbot/keys.py` — deterministic cite key generation (`AuthorYYYY` + 5-char hash of arXiv ID/bibcode)
+- `litbot/ads_client.py` — ADS search and BibTeX export via the `ads` package; `refresh_quota()` and `resolve_pdf_url()` use httpx directly
 - `litbot/uat.py` — UAT loader and hierarchy traversal; cached at `UAT_CACHE`
 - `litbot/export.py` — scans `.tex` files for cite keys, writes `refs.bib`
 - `litbot/pdf.py` — ephemeral PDF cache at `PDF_CACHE_DIR`
-- `litbot/cli.py` — Click command group: `db`, `uat`, `add`, `search`, `export`, `show`, `open`, `list`, `keywords`, `quota`
+- `litbot/cli.py` — Click commands: `add`, `import`, `export`, `refs`, `search`, `show`, `list`, `keywords`, `quota`, plus `config`, `pdf`, `uat` groups
 - `litbot/tui/app.py` — Textual TUI: library tab, ADS search tab (via `S`), UAT browser panel (via `u`)
+- `litbot/tui/tabs_state.py` — persistent ADS query tabs (`tabs.json`), tab labels, result limits
 - `litbot/tui/uat_browser.py` — standalone UAT browser app and screen
 - `litbot/tui/help_screen.py` — modal help screen; content loaded from `litbot/help.md` (symlink to `../README.md`)
 
-**Multi-database reads.** All configured databases are merged transparently into a `MergedLibrary` for browsing, search, and export. Writes go to `default_database`.
+Note: `litbot/config.py` and `litbot/db.py` are dead code from an earlier multi-database design — nothing imports them.
 
-**`litbot add` auto-commits.** After saving `bib/<key>.bib`, it runs `git add` + `git commit` on the target database. The user then runs `db push` to share.
+**Manuscript databases.** A `bib/` directory inside a manuscript's git repo, discovered by walk-up from cwd (`bib/` + `.git`), at most one active per session. `MergedLibrary` merges it with the personal library for reads; imports write to both; `m` toggles membership; `litbot refs` syncs it against `.tex` cite keys and writes `refs.bib`. The TUI adds a Manuscript tab (`ManuscriptView`) that polls `.tex` mtimes and `bib/` (2 s `set_interval`), classifies each key as ok/library/missing/uncited, and auto-regenerates `refs.bib` on content change — but never auto-copies or auto-prunes entries; membership changes go through `m`. litbot never runs git on the manuscript repo. See DESIGN.md.
 
 **UAT.** The Unified Astronomy Thesaurus JSON is a plain recursive tree (not SKOS). Cached at `~/.cache/litbot/uat.json`. The TUI keyword tree groups library entries by top-level UAT ancestor of their keywords.
-
-**DB commands (git-analogous):**
-- `db clone <url>` — git clone + register
-- `db init [path]` — git init empty db + register (or register existing)
-- `db pull` — git pull
-- `db push` — git push only (assumes already committed)
-- `db publish -m msg` — git add -A + commit + push
 
 ---
 

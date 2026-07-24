@@ -36,7 +36,7 @@ litbot token
 | `d` | Remove highlighted paper from library |
 | `p` | Download PDF for highlighted paper |
 | `o` | Open cached PDF (all selected, or highlighted) |
-| `/` | Filter library by author, title, key, or keyword |
+| `/` | Library: filter by author, title, key, or keyword. ADS tab: view/edit the tab's query |
 | `S` | Open new ADS search tab |
 | `r` | Refresh current ADS tab |
 | `?` | Show this help |
@@ -51,6 +51,10 @@ in the current context (wrong tab, no PDF cached, already imported, …).
 |-----|--------|
 | `Space` | Toggle selection of highlighted row |
 | `s` | Star / unstar highlighted paper |
+| `m` | Add/remove highlighted or selected papers in the manuscript db |
+| `M` | Toggle manuscript-only view (hide personal-library-only papers) |
+| `R` | Browse references of highlighted paper (opens ADS tab) |
+| `c` | Browse citations of highlighted paper (opens ADS tab) |
 | `e` | Export selected papers to `litbot-export.bib` |
 | `B` | Download PDF via system browser (watches `~/Downloads`) |
 | `X` | Clear cached PDF (or cancel a browser download) |
@@ -58,9 +62,95 @@ in the current context (wrong tab, no PDF cached, already imported, …).
 | `C` | Configuration (ADS API token) |
 | `[` / `]` | Switch to previous / next tab |
 | `Ctrl+W` | Close current ADS tab |
-| `←` / `→` | Decrease / increase ADS result count (then `r` to reload) |
+| `+` / `-` | Increase / decrease ADS result count (then `r` to reload) |
 | `Escape` | Clear filter |
 | `z` | Zoom detail panel |
+
+---
+
+## ADS query syntax
+
+The search box (`S`) passes your query straight to the
+[ADS search API](https://ui.adsabs.harvard.edu/help/search/search-syntax),
+so the full ADS/Solr query language is available. Pasting an ADS abstract
+URL imports that paper directly instead of searching. Examples:
+
+```
+relativistic jets                              plain text — searches everything
+author:"zrake"                                 papers by an author
+author:"^zrake"                                first-author papers only
+author:"spitkovsky" author:"sironi"            both authors on the same paper
+abs:"fast radio burst"                         phrase in abstract, title, or keywords
+title:"magnetar"                               word in title only
+year:2024                                      single year
+year:2015-2020                                 year range
+bibstem:ApJL                                   one journal (ApJ, MNRAS, PRL, arXiv, …)
+arxiv_class:astro-ph.HE                        arXiv category
+object:"SN 2023ixf"                            papers about a named object (via SIMBAD)
+citation_count:[100 TO *]                      highly cited papers
+property:refereed                              refereed only
+
+author:"^zrake" year:2019-2024 bibstem:ApJ     terms combine with implicit AND
+abs:"kilonova" NOT abs:"neutrino"              exclude a term
+(abs:"jet" OR abs:"outflow") year:2023         boolean grouping
+
+references(bibcode:"2020ApJ...900...12S")      papers this one cites (or press R)
+citations(bibcode:"2020ApJ...900...12S")       papers citing this one (or press c)
+citations(author:"^zrake")                     everything citing your first-author papers
+similar(bibcode:"2020ApJ...900...12S")         textually similar papers
+trending(abs:"gravitational waves")            what readers of this topic read now
+useful(abs:"pulsar timing")                    methods/tools papers cited by this field
+```
+
+---
+
+## Manuscript databases
+
+A manuscript can carry its own bib database: a `bib/` directory inside the
+manuscript's git repo, holding one `.bib` file per cited paper. There is no
+registration step — launching litbot from inside the repo (any directory
+with `bib/` alongside `.git`) activates it, shown as `ms: <name>` in the
+header. Coauthors who clone the repo get the same database automatically;
+coauthors without litbot just use the committed `refs.bib`.
+
+While a manuscript db is active:
+
+- The library view merges your personal library with the manuscript db;
+  the `◆` column marks manuscript members (`M` hides everything else)
+- Importing from ADS (`i`) writes to **both** the personal library and
+  the manuscript db
+- `m` toggles manuscript membership for existing library entries
+
+litbot never runs git on the manuscript repo — bib files ride along in
+your normal paper commits.
+
+### The Manuscript tab
+
+A **Manuscript** tab appears next to Library, showing the union of cite
+keys found in the `.tex` sources and entries in `bib/`, color-coded:
+
+| State | Meaning |
+|-------|---------|
+| normal `◆` | cited and in `bib/` — healthy |
+| yellow `○` | cited, in your personal library but not `bib/` — press `m` to add |
+| red `✗` | cited but found nowhere — fix the key, or `S` to search ADS (pre-filled) |
+| cyan `·` | in `bib/` but cited by nothing — press `m` to remove |
+
+The tab watches the `.tex` files and `bib/` (2 s poll) and refreshes
+itself as you write. `refs.bib` is regenerated automatically from the
+cited entries in `bib/` whenever its content would change. Nothing is
+copied or removed automatically — membership changes always go through
+`m` (or `litbot refs` / `--prune` on the command line). The status bar
+summarizes health: `42 cited · 2 missing · 5 uncited`.
+
+Keep the database in sync with what the paper actually cites:
+
+```bash
+cd ~/Work/Papers/my-paper
+litbot refs             # scan .tex, pull cited entries in from personal
+                        # library, report unknowns, write refs.bib
+litbot refs --prune     # also drop entries nothing cites anymore
+```
 
 ---
 

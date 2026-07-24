@@ -204,6 +204,89 @@ class Library:
         return sorted(result)
 
 
+@dataclass
+class MergedLibrary:
+    """Personal library merged with an optional manuscript database.
+
+    Reads span both; the personal entry wins when a key exists in both
+    (it may carry personal fields like litbot_starred). Imports write to
+    both. Manuscript membership is toggled explicitly.
+    """
+    personal: Library
+    manuscript: Library | None = None
+
+    @property
+    def manuscript_root(self) -> Path | None:
+        return self.manuscript.root if self.manuscript else None
+
+    def _merged(self) -> dict[str, Entry]:
+        merged = dict(self.manuscript._entries) if self.manuscript else {}
+        merged.update(self.personal._entries)
+        return merged
+
+    def entries(self) -> list[Entry]:
+        return list(self._merged().values())
+
+    def get(self, key: str) -> Entry | None:
+        return self._merged().get(key)
+
+    def has(self, key: str) -> bool:
+        return key in self._merged()
+
+    def in_manuscript(self, key: str) -> bool:
+        return self.manuscript is not None and self.manuscript.has(key)
+
+    def in_personal(self, key: str) -> bool:
+        return self.personal.has(key)
+
+    def has_bibcode(self, bibcode: str) -> bool:
+        return self.personal.has_bibcode(bibcode) or (
+            self.manuscript is not None and self.manuscript.has_bibcode(bibcode)
+        )
+
+    def get_by_bibcode(self, bibcode: str) -> Entry | None:
+        return self.personal.get_by_bibcode(bibcode) or (
+            self.manuscript.get_by_bibcode(bibcode) if self.manuscript else None
+        )
+
+    def save_entry(self, data: dict) -> Entry:
+        """Import: write to the personal library and the manuscript db (if any)."""
+        entry = self.personal.save_entry(data)
+        if self.manuscript is not None:
+            self.manuscript.save_entry(dict(data))
+        return entry
+
+    def remove_entry(self, key: str) -> None:
+        self.personal.remove_entry(key)
+        if self.manuscript is not None:
+            self.manuscript.remove_entry(key)
+
+    def set_starred(self, key: str, starred: bool) -> None:
+        """Stars are personal — never written into the manuscript db."""
+        self.personal.set_starred(key, starred)
+
+    def add_to_manuscript(self, key: str) -> bool:
+        if self.manuscript is None or self.manuscript.has(key):
+            return False
+        entry = self.get(key)
+        if entry is None:
+            return False
+        data = dict(entry.data)
+        data.pop("litbot_starred", None)
+        path = self.manuscript.root / "bib" / f"{key}.bib"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(format_bib_entry(data))
+        self.manuscript._entries[key] = Entry(data=data, path=path)
+        self.manuscript._compute_short_keys()
+        return True
+
+    def remove_from_manuscript(self, key: str) -> bool:
+        if self.manuscript is None or not self.manuscript.has(key):
+            return False
+        self.manuscript.remove_entry(key)
+        return True
+
+
 def _parse_bib_file(path: Path) -> Entry | None:
     with open(path) as f:
         parser = BibTexParser(common_strings=True)

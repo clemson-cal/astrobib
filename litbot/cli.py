@@ -195,6 +195,81 @@ def export_cmd(tex_files: tuple[Path, ...], output: Path, list_missing: bool):
             raise SystemExit(1)
 
 
+# ── refs (manuscript sync) ────────────────────────────────────────────────────
+
+@main.command("refs")
+@click.argument("tex_files", nargs=-1, type=click.Path(exists=True, path_type=Path))
+@click.option("--output", "-o", default="refs.bib", show_default=True,
+              type=click.Path(path_type=Path))
+@click.option("--prune", is_flag=True,
+              help="Remove uncited entries from the manuscript database.")
+def refs_cmd(tex_files: tuple[Path, ...], output: Path, prune: bool):
+    """Sync the manuscript database with cited keys, then write refs.bib.
+
+    Run inside a manuscript repo (a directory containing bib/ and .git).
+    Cited keys missing from the manuscript database are copied in from
+    the personal library; keys found nowhere are reported. refs.bib is
+    generated from the manuscript database only.
+    """
+    from .export import scan_tex_files
+    from .library import MergedLibrary
+    from .state import find_manuscript_db
+
+    ms_root = find_manuscript_db()
+    if ms_root is None:
+        console.print("[red]Not inside a manuscript repo (no bib/ + .git found).[/red]")
+        raise SystemExit(1)
+
+    merged = MergedLibrary(personal=Library(root=get_library_path()),
+                           manuscript=Library(root=ms_root))
+    ms = merged.manuscript
+
+    paths = list(tex_files) or sorted(ms_root.glob("*.tex"))
+    if not paths:
+        console.print(f"[red]No .tex files found in {ms_root}.[/red]")
+        raise SystemExit(1)
+
+    console.print(f"Manuscript db: [cyan]{ms_root}[/cyan]")
+    console.print(f"Scanning {len(paths)} file(s)…")
+    keys = scan_tex_files(paths)
+
+    copied: list[str] = []
+    missing: list[str] = []
+    for key in sorted(keys):
+        if ms.has(key):
+            continue
+        if merged.personal.has(key):
+            merged.add_to_manuscript(key)
+            copied.append(key)
+        else:
+            missing.append(key)
+
+    uncited = sorted(e.key for e in ms.entries() if e.key not in keys)
+    if prune and uncited:
+        for key in uncited:
+            ms.remove_entry(key)
+        console.print(f"[yellow]Pruned {len(uncited)} uncited entr{'y' if len(uncited)==1 else 'ies'}.[/yellow]")
+        uncited = []
+
+    output_path = output if output.is_absolute() else ms_root / output
+    found, _ = export_refs(paths, output_path, ms)
+
+    if copied:
+        console.print(f"[green]Copied {len(copied)} entr{'y' if len(copied)==1 else 'ies'} from personal library:[/green]")
+        for key in copied:
+            console.print(f"  [green]{key}[/green]")
+    console.print(f"[green]Wrote {len(found)} entr{'y' if len(found)==1 else 'ies'} → {output_path}[/green]")
+    if uncited:
+        console.print(f"[dim]{len(uncited)} uncited entr{'y' if len(uncited)==1 else 'ies'} in bib/ (use --prune to remove):[/dim]")
+        for key in uncited:
+            console.print(f"  [dim]{key}[/dim]")
+    if missing:
+        console.print(f"[yellow]Missing {len(missing)} key(s) (not in any database):[/yellow]")
+        for key in missing:
+            console.print(f"  [yellow]{key}[/yellow]")
+        raise SystemExit(1)
+
+
 # ── search ────────────────────────────────────────────────────────────────────
 
 @main.command("search")
