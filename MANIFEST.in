@@ -1,0 +1,3 @@
+include DESIGN.md
+prune scripts
+exclude .python-version
