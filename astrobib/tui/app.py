@@ -647,6 +647,18 @@ class ManuscriptView(Vertical):
             c[state] += 1
         return c
 
+    def _key_cell(self, key_str: str, entry: Entry | None, style: str):
+        """Render a key with the portion beyond the shortest unambiguous
+        prefix dimmed — the bright part is all a citation needs."""
+        from rich.text import Text
+        if entry is not None:
+            short = entry.short_key or entry.key
+            if key_str.startswith(short) and len(key_str) > len(short):
+                t = Text(key_str[:len(short)], style=style or "")
+                t.append(key_str[len(short):], style=f"dim {style}".strip())
+                return t
+        return Text(key_str, style=style) if style else Text(key_str)
+
     def _refresh_table(self) -> None:
         from rich.text import Text
         t = self.query_one("#ms-table", DataTable)
@@ -659,7 +671,7 @@ class ManuscriptView(Vertical):
             title = title[:52] + "…" if len(title) > 52 else title
             t.add_row(
                 cell(self._STATE_ICON[state]), cell(self._STATE_LABEL[state]),
-                cell(key), cell(entry.year if entry else ""),
+                self._key_cell(key, entry, style), cell(entry.year if entry else ""),
                 cell(entry.first_author_last if entry else ""), cell(title),
                 key=key,
             )
