@@ -50,7 +50,8 @@ in the current context (wrong tab, no PDF cached, already imported, …).
 | Key | Action |
 |-----|--------|
 | `Space` | Toggle selection of highlighted row |
-| `y` | Copy highlighted/selected cite key(s) to the clipboard |
+| `y` | Copy highlighted/selected cite key(s), shortest unambiguous form |
+| `Y` | Copy highlighted/selected cite key(s), full form with hash |
 | `s` | Star / unstar highlighted paper |
 | `m` | Add/remove highlighted or selected papers in the manuscript db |
 | `M` | Toggle manuscript-only view (hide personal-library-only papers) |

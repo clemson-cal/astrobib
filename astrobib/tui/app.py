@@ -68,8 +68,10 @@ class PdfButton(Static, can_focus=True):
 
 # ── Detail panel ──────────────────────────────────────────────────────────────
 
-# Style for the trailing hash portion of a cite key that citations don't need
-_HASH_STYLE = "grey35"
+# Style for the trailing hash portion of a cite key that citations don't
+# need. The dim attribute survives the DataTable cursor row's color
+# override, so the suffix stays faded even on the highlighted row.
+_HASH_STYLE = "dim grey35"
 
 
 def _append_key(text, entry: Entry) -> None:
@@ -985,7 +987,8 @@ class AstrobibApp(App):
         Binding("c", "citations", "Citations", show=False),
         Binding("m", "toggle_manuscript", "Manuscript ±", show=False),
         Binding("M", "toggle_ms_only", "Ms-only view", show=False),
-        Binding("y", "copy_key", "Copy key", show=False),
+        Binding("y", "copy_key(False)", "Copy key", show=False),
+        Binding("Y", "copy_key(True)", "Copy full key", show=False),
         Binding("escape", "clear_filter", "Clear", show=False),
         Binding("z", "zoom", "Zoom", show=False),
     ]
@@ -1627,8 +1630,14 @@ class AstrobibApp(App):
         except Exception:
             return False
 
-    def action_copy_key(self) -> None:
-        """Copy the highlighted (or selected) cite key(s) to the clipboard."""
+    def action_copy_key(self, full: bool = False) -> None:
+        """Copy the highlighted (or selected) cite key(s) to the clipboard.
+
+        y copies the shortest unambiguous form; Y copies full keys.
+        """
+        def pick(e: Entry) -> str:
+            return e.key if full else (e.short_key or e.key)
+
         pane_id = self._active_pane_id()
         ads_view = self._active_ads_view()
         text = None
@@ -1637,21 +1646,20 @@ class AstrobibApp(App):
             keys = lib_view.get_selected_keys()
             if keys and self._library:
                 entries = [self._library.get(k) for k in keys]
-                text = ", ".join((e.short_key or e.key) for e in entries if e)
+                text = ", ".join(pick(e) for e in entries if e)
             elif lib_view._highlighted_entry is not None:
-                e = lib_view._highlighted_entry
-                text = e.short_key or e.key
+                text = pick(lib_view._highlighted_entry)
         elif pane_id == "pane-manuscript":
             ms_view = self.query_one(ManuscriptView)
             e = ms_view._highlighted_entry
             if e is not None:
-                text = e.short_key or e.key
+                text = pick(e)
             else:
                 text = ms_view._highlighted_key
         elif ads_view is not None:
             def _key_for(bibcode: str) -> str:
                 entry = self._library.get_by_bibcode(bibcode) if self._library else None
-                return (entry.short_key or entry.key) if entry else bibcode
+                return pick(entry) if entry else bibcode
             if ads_view._selected_bibcodes:
                 text = ", ".join(_key_for(a.bibcode) for a in ads_view._articles
                                  if a.bibcode in ads_view._selected_bibcodes)
