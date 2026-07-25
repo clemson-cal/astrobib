@@ -76,7 +76,7 @@
 6. **Upload to PyPI**:
 
    ```bash
-   ~/.venvs/pkg/bin/twine upload dist/*
+   ~/.venvs/pkg/bin/twine upload --repository astrobib dist/*   # section name in ~/.pypirc
    ```
 
 7. **Tag the release** and push:
