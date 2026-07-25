@@ -32,6 +32,26 @@ There are no tests. Verify changes by importing the affected modules and running
 
 ---
 
+## Releasing
+
+Releases go to PyPI via `scripts/release.py` (details in PUBLISHING.md; credentials live in the `[astrobib]` section of `~/.pypirc`):
+
+```bash
+# 1. Write a "## X.Y.Z" entry in CHANGELOG.md (may stay uncommitted; the
+#    script commits it with the version bump). Patch = fixes only,
+#    minor = features.
+# 2. Rehearse — validates branch/tree/changelog/tag, builds, twine-checks,
+#    then reverts everything:
+.venv/bin/python scripts/release.py X.Y.Z --dry-run
+# 3. Release — bumps astrobib/__init__.py, commits "Release X.Y.Z",
+#    uploads to PyPI, tags vX.Y.Z, pushes main + tag:
+.venv/bin/python scripts/release.py X.Y.Z
+```
+
+Nothing is committed, uploaded, tagged, or pushed until the build and twine check pass; the tag and push happen only after a successful upload. Do not run the release script without the user's explicit request.
+
+---
+
 ## Architecture
 
 **Tool vs. data separation.** astrobib is a pip-installable tool. The personal library lives at `~/.local/share/astrobib/library/` (override root with `ASTROBIB_STATE_DIR`); manuscript databases live inside manuscript repos. The tool never stores data inside its own package directory.
