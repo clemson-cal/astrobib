@@ -1025,6 +1025,7 @@ class AstrobibApp(App):
         Binding("Y", "copy_key(True)", "Copy full key", show=False),
         Binding("escape", "clear_filter", "Clear", show=False),
         Binding("z", "zoom", "Zoom", show=False),
+        Binding("D", "toggle_detail", "Show/hide card", show=False),
     ]
 
     def __init__(self) -> None:
@@ -1390,8 +1391,18 @@ class AstrobibApp(App):
     _PANEL_WIDTHS = [48, 64, 80, 32]
 
     def action_zoom(self) -> None:
+        detail = self.query_one(DetailPanel)
+        if not detail.display:
+            detail.display = True  # zooming a hidden card shows it
+            return
         self._split_idx = (self._split_idx + 1) % len(self._PANEL_WIDTHS)
-        self.query_one(DetailPanel).styles.width = self._PANEL_WIDTHS[self._split_idx]
+        detail.styles.width = self._PANEL_WIDTHS[self._split_idx]
+
+    def action_toggle_detail(self) -> None:
+        detail = self.query_one(DetailPanel)
+        detail.display = not detail.display
+        if not detail.display:
+            self._set_status("Pub card hidden  [dim](D or z to show)[/dim]")
 
     def _switch_tab(self, direction: int) -> None:
         tabs = self.query_one(Tabs)

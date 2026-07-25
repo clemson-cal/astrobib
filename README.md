@@ -67,7 +67,8 @@ Footer actions keep fixed positions; a greyed-out action is unavailable in the c
 - `Ctrl+W` — Close current ADS tab
 - `+` / `-` — Increase / decrease ADS result count (then `r` to reload)
 - `Escape` — Clear filter
-- `z` — Zoom detail panel
+- `z` — Cycle pub card width (shows it if hidden)
+- `D` — Show/hide the pub card
 
 ### Copying text from the TUI
 Terminal applications such as astrobib enable *mouse reporting*, so drag-selection is captured by the application rather than the terminal, which is why ⌘C often copies nothing. There are two workarounds:
