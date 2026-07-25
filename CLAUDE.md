@@ -66,7 +66,7 @@ Nothing is committed, uploaded, tagged, or pushed until the build and twine chec
 - `astrobib/uat.py` — UAT loader and hierarchy traversal; cached at `UAT_CACHE`
 - `astrobib/export.py` — scans `.tex` files for cite keys, writes `refs.bib`; `manuscript_tex_files()`: `main.tex` is the sole root when present (else all top-level `.tex`), expanded recursively via `\input`/`\include`
 - `astrobib/pdf.py` — ephemeral PDF cache at `PDF_CACHE_DIR`
-- `astrobib/cli.py` — Click commands: `add`, `import`, `update`, `export`, `refs`, `search`, `show`, `list`, `keywords`, `quota`, plus `config`, `pdf`, `uat` groups
+- `astrobib/cli.py` — Click commands: `add`, `import`, `update`, `convert`, `export`, `refs`, `search`, `show`, `list`, `keywords`, `quota`, plus `config`, `pdf`, `uat` groups
 - `astrobib/tui/app.py` — Textual TUI: library tab, ADS search tab (via `S`), UAT browser panel (via `u`)
 - `astrobib/tui/tabs_state.py` — persistent ADS query tabs (`tabs.json`, keyed per manuscript context), tab labels, result limits
 - `astrobib/tui/uat_browser.py` — standalone UAT browser app and screen
@@ -74,7 +74,7 @@ Nothing is committed, uploaded, tagged, or pushed until the build and twine chec
 
 Note: `astrobib/config.py` and `astrobib/db.py` are dead code from an earlier multi-database design — nothing imports them.
 
-**Manuscript databases.** A `bib/` directory inside a manuscript's git repo, discovered by walk-up from cwd (`bib/` + `.git`), at most one active per session. `MergedLibrary` merges it with the personal library for reads; imports write to both; `m` toggles membership; `astrobib refs` syncs it against `.tex` cite keys and writes `refs.bib`. Manuscripts may cite any unambiguous prefix of a key (`MergedLibrary.resolve_citation`); `refs.bib` entries are keyed by the cited string, so hash suffixes stay out of the `.tex`. The TUI adds a Manuscript tab (`ManuscriptView`) that polls `.tex` mtimes and `bib/` (2 s `set_interval`), classifies each key as ok/library/missing/uncited, and auto-regenerates `refs.bib` on content change — but never auto-copies or auto-prunes entries; membership changes go through `m`. astrobib never runs git on the manuscript repo. See DESIGN.md.
+**Manuscript databases.** A `bib/` directory inside a manuscript's git repo, discovered by walk-up from cwd (`bib/` + `.git`), at most one active per session. `MergedLibrary` merges it with the personal library for reads; imports write to both; `m` toggles membership; `astrobib refs` syncs it against `.tex` cite keys and writes `refs.bib`. Manuscripts may cite any unambiguous prefix of a key or a raw ADS bibcode (`MergedLibrary.resolve_citation`); `refs.bib` entries are keyed by the cited string, so hash suffixes stay out of the `.tex`. The TUI adds a Manuscript tab (`ManuscriptView`) that polls `.tex` mtimes and `bib/` (2 s `set_interval`), classifies each key as ok/library/missing/uncited, and auto-regenerates `refs.bib` on content change — but never auto-copies or auto-prunes entries; membership changes go through `m`. astrobib never runs git on the manuscript repo. See DESIGN.md.
 
 **UAT.** The Unified Astronomy Thesaurus JSON is a plain recursive tree (not SKOS). Cached at `~/.cache/astrobib/uat.json`. The TUI keyword tree groups library entries by top-level UAT ancestor of their keywords.
 

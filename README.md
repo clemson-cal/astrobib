@@ -146,7 +146,7 @@ To cite a specific arXiv revision (v1, v2) rather than the paper, write a manual
 
 Database `.bib` files are always stored under their full key, one file per paper.
 
-**Manuscripts cite by any unambiguous prefix.** In your `.tex` you may write the full key or any prefix that matches exactly one database key; in practice, `\citep{Zrake2020}`. The generated `refs.bib` keys each entry by the string actually cited, so BibTeX sees exactly what the manuscript says and the hash suffix never appears in your prose. (Classic BibTeX has no key-alias mechanism, so this aliasing happens at the `refs.bib` boundary, which astrobib owns.)
+**Manuscripts cite by any unambiguous string.** In your `.tex` you may write the full key, any prefix that matches exactly one database key (in practice, `\citep{Zrake2020}`), or a raw ADS bibcode (`\citep{2020ApJ...900...12Z}`), which is globally unique by construction. The generated `refs.bib` keys each entry by the string actually cited, so BibTeX sees exactly what the manuscript says and the hash suffix never appears in your prose. (Classic BibTeX has no key-alias mechanism, so this aliasing happens at the `refs.bib` boundary, which astrobib owns.)
 
 **Ambiguity is detected, not guessed.** If a prefix matches several keys (for example, after a second Zrake 2020 paper is imported), no candidate is chosen silently: the Manuscript tab shows the cite as magenta `≈ ambiguous` with the candidates listed, and `astrobib refs` prints them and exits nonzero. Lengthening the key by a character or two resolves the ambiguity.
 
@@ -227,6 +227,16 @@ astrobib update          # check preprint-form entries against ADS, rewrite the 
 astrobib update --all    # re-fetch canonical BibTeX for every entry with an ADS record
 ```
 Cite keys never change on update, so manuscripts citing the paper are unaffected; `refs.bib` regenerates with the published metadata the next time the Manuscript tab looks. Stars and user-curated keywords are preserved, and copies in the active manuscript database are updated in the same pass. The pub card shows a dim `(preprint)` marker on entries that have not yet been updated.
+
+### Converting cite key formats
+`astrobib convert` rewrites the cite keys inside `\cite` commands across the manuscript's TeX sources to one uniform format:
+```bash
+astrobib convert short      # shortest unambiguous keys: \citep{Zrake2020}
+astrobib convert full       # canonical keys with hash: \citep{Zrake2020axbxt}
+astrobib convert bibcode    # raw ADS bibcodes: \citep{2020ApJ...900...12Z}
+astrobib convert short --dry-run   # report without writing
+```
+All three formats resolve interchangeably, so conversion is lossless in any direction. Keys that cannot be resolved against the library are left untouched and reported.
 
 ### Generating refs.bib for a manuscript
 Run this from inside the manuscript directory:

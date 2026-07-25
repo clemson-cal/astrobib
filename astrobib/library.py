@@ -233,15 +233,20 @@ class Library:
         return self._entries.get(key)
 
     def resolve(self, input_key: str) -> Entry | None:
-        """Resolve a full or shortened key to an entry.
+        """Resolve a full key, shortened key, or bibcode to an entry.
 
-        Tries exact match first, then unambiguous prefix match.
-        Returns None if not found or ambiguous.
+        Tries exact match first, then unambiguous prefix match, then the
+        bibcode index (bibcodes start with digits so they can never
+        collide with key prefixes). Returns None if not found or ambiguous.
         """
         if input_key in self._entries:
             return self._entries[input_key]
         matches = [e for k, e in self._entries.items() if k.startswith(input_key)]
-        return matches[0] if len(matches) == 1 else None
+        if len(matches) == 1:
+            return matches[0]
+        if not matches:
+            return self.get_by_bibcode(input_key)
+        return None
 
     def has(self, key: str) -> bool:
         return key in self._entries
@@ -374,7 +379,11 @@ class MergedLibrary:
         if input_key in merged:
             return merged[input_key]
         matches = [e for k, e in merged.items() if k.startswith(input_key)]
-        return matches[0] if len(matches) == 1 else None
+        if len(matches) == 1:
+            return matches[0]
+        if not matches:
+            return self.get_by_bibcode(input_key)
+        return None
 
     def possible_matches(self, input_key: str) -> list[Entry]:
         return [e for k, e in self._merged().items() if k.startswith(input_key)]
@@ -393,8 +402,9 @@ class MergedLibrary:
         return sorted(seen)
 
     def resolve_citation(self, cited: str) -> "tuple[str, Entry | None]":
-        """Classify a cite string from a manuscript, allowing unambiguous
-        prefixes of full keys (so hash suffixes can stay out of the .tex).
+        """Classify a cite string from a manuscript. Accepted forms: a full
+        key, an unambiguous key prefix (so hash suffixes can stay out of
+        the .tex), or a raw ADS bibcode (globally unique by construction).
 
         Returns (state, entry): 'ok' (resolves to a manuscript entry),
         'library' (resolves, but only in the personal library),
@@ -408,7 +418,9 @@ class MergedLibrary:
             elif matches:
                 return "ambiguous", None
             else:
-                return "missing", None
+                entry = self.get_by_bibcode(cited)
+                if entry is None:
+                    return "missing", None
         if self.in_manuscript(entry.key):
             return "ok", entry
         return "library", entry
@@ -486,7 +498,11 @@ class MergedLibrary:
         path = self.manuscript.root / "bib" / f"{key}.bib"
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(format_bib_entry(data))
-        self.manuscript._entries[key] = Entry(data=data, path=path)
+        new_entry = Entry(data=data, path=path)
+        self.manuscript._entries[key] = new_entry
+        bc = _bibcode_of(new_entry)
+        if bc:
+            self.manuscript._by_bibcode[bc] = key
         self.manuscript._compute_short_keys()
         return True
 
@@ -505,7 +521,11 @@ class MergedLibrary:
             path = self.personal.root / "bib" / f"{key}.bib"
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(format_bib_entry(entry.data))
-            self.personal._entries[key] = Entry(data=dict(entry.data), path=path)
+            rescued = Entry(data=dict(entry.data), path=path)
+            self.personal._entries[key] = rescued
+            bc = _bibcode_of(rescued)
+            if bc:
+                self.personal._by_bibcode[bc] = key
             self.personal._compute_short_keys()
         self.manuscript.remove_entry(key)
         return True

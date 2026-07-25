@@ -412,6 +412,66 @@ def update_cmd(update_all: bool):
 
 
 
+@main.command("convert")
+@click.argument("fmt", type=click.Choice(["bibcode", "full", "short"]))
+@click.option("--dry-run", is_flag=True, help="Report what would change without writing.")
+def convert_cmd(fmt: str, dry_run: bool):
+    """Convert manuscript cite keys to one uniform format.
+
+    Rewrites the keys inside \\cite commands across the manuscript's TeX
+    sources. Formats: bibcode (raw ADS bibcode), full (canonical key with
+    hash), short (shortest unambiguous key). Keys that cannot be resolved
+    against the merged library are left untouched and reported.
+    """
+    from .export import convert_citations, manuscript_tex_files
+    from .state import find_manuscript_db
+    ms_root = find_manuscript_db()
+    if ms_root is None:
+        console.print("[red]Not inside a manuscript repo (no bib/ + .git found).[/red]")
+        raise SystemExit(1)
+    files = manuscript_tex_files(ms_root)
+    if not files:
+        console.print(f"[red]No .tex files found in {ms_root}.[/red]")
+        raise SystemExit(1)
+    merged = _open_merged()
+    unresolved: set[str] = set()
+    amp_warned: set[str] = set()
+
+    def mapper(key: str) -> str | None:
+        state, entry = merged.resolve_citation(key)
+        if entry is None:
+            unresolved.add(key)
+            return None
+        if fmt == "full":
+            return entry.key
+        if fmt == "short":
+            return entry.short_key or entry.key
+        bc = ads_client.bibcode_from_url(entry.adsurl) if entry.adsurl else None
+        if not bc:
+            unresolved.add(key)
+            return None
+        if "&" in bc:
+            amp_warned.add(bc)
+        return bc
+
+    total = 0
+    verb = "would convert" if dry_run else "converted"
+    for f in files:
+        n = convert_citations(f, mapper, write=not dry_run)
+        if n:
+            console.print(f"  {f.relative_to(ms_root)}: {verb} {n} key(s)")
+            total += n
+    console.print(f"\n[green]{total} key(s) {verb} to {fmt} format.[/green]")
+    if unresolved:
+        console.print(f"[yellow]{len(unresolved)} key(s) left untouched (unresolvable):[/yellow]")
+        for k in sorted(unresolved):
+            console.print(f"  [yellow]{k}[/yellow]")
+    if amp_warned:
+        console.print(f"[yellow]Note: {len(amp_warned)} bibcode(s) contain '&' "
+                      f"(e.g. {sorted(amp_warned)[0]}), which can be fragile in LaTeX; "
+                      f"consider the full or short format for these.[/yellow]")
+
+
 # ── refs (manuscript sync) ────────────────────────────────────────────────────
 
 @main.command("refs")

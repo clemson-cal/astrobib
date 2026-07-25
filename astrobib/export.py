@@ -73,6 +73,37 @@ def scan_tex_files(paths: list[Path]) -> set[str]:
     return keys
 
 
+def convert_citations(path: Path, mapper, write: bool = True) -> int:
+    r"""Rewrite cite keys inside \cite... commands.
+
+    mapper(key) returns the replacement key, or None to leave the key
+    untouched. Only text inside cite-command braces is modified; spacing
+    between keys is preserved. Returns the number of keys changed.
+    """
+    text = path.read_text(errors="replace")
+    changed = 0
+
+    def repl(m: re.Match) -> str:
+        nonlocal changed
+        head = m.group(0)[: m.start(1) - m.start(0)]
+        pieces = m.group(1).split(",")
+        out = []
+        for piece in pieces:
+            key = piece.strip()
+            new = mapper(key) if key else None
+            if new and new != key:
+                changed += 1
+                out.append(piece.replace(key, new, 1))
+            else:
+                out.append(piece)
+        return head + ",".join(out) + "}"
+
+    new_text = _CITE_RE.sub(repl, text)
+    if changed and write:
+        path.write_text(new_text)
+    return changed
+
+
 def export_refs(
     tex_files: list[Path],
     output: Path,
