@@ -13,7 +13,7 @@ _HELP_FALLBACK = """\
 
 The bundled help file (`astrobib/help.md`) is missing from this
 installation. It is a copy of the project README; see
-<https://github.com/jzrake/astrobib> for the full documentation.
+<https://github.com/clemson-cal/astrobib> for the full documentation.
 
 Press `q` or `escape` to close this screen.
 """

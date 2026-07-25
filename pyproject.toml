@@ -44,9 +44,9 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/jzrake/astrobib"
-Repository = "https://github.com/jzrake/astrobib"
-Issues = "https://github.com/jzrake/astrobib/issues"
+Homepage = "https://github.com/clemson-cal/astrobib"
+Repository = "https://github.com/clemson-cal/astrobib"
+Issues = "https://github.com/clemson-cal/astrobib/issues"
 
 [project.scripts]
 astrobib = "astrobib.cli:main"
