@@ -1482,7 +1482,7 @@ class AstrobibApp(App):
             ads_view = self._active_ads_view()
             if ads_view:
                 ads_view.toggle_selection()
-                self.refresh_bindings()
+        self.refresh_bindings()
 
     def action_export_selected(self) -> None:
         if self._active_pane_id() != "pane-library":
