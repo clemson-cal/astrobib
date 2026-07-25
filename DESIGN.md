@@ -41,6 +41,10 @@ A manuscript database is a `bib/` directory inside a manuscript's git repo. It u
 - The sync flow (`astrobib refs`) may add cited entries and, only with an explicit flag, remove uncited ones. It never removes anything from the personal library.
 - Removal from a manuscript database is never destructive: if the manuscript holds the only copy of an entry (e.g. imported `--ms-only`, or added by a coauthor), removing it first copies it into the personal library.
 
+## Keys denote papers, not revisions
+
+A cite key identifies a paper for life: both the hash and the year in `AuthorYYYYhhhhh` derive from the paper's stable identifier (arXiv ID, else bibcode), never from mutable record state, so every user holding any phase of the paper (preprint or published) generates the same key. `astrobib update` refreshes metadata beneath an existing key and never rekeys. Citing a specific arXiv revision (v1, v2) is out of scope for keys; that rare need is served by a hand-written `@misc` entry with a versioned eprint field.
+
 ## Persistent searches are user-local
 
 Saved ADS query tabs live in user-local app state (e.g., `~/.local/share/astrobib/`), not in the bib database. They are not synced to other group members. Each user maintains their own set of active searches.

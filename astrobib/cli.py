@@ -264,6 +264,18 @@ def import_cmd(file: Path, personal_only: bool, ms_only: bool, verify: bool):
                 continue
             data = resolved
         key = generate_key(data)
+        # dedupe by bibcode too: catches the same paper stored under a
+        # legacy (non-canonical) key
+        bc = ads_client.bibcode_from_url(data.get("adsurl") or "")
+        existing_bc = next((t.get_by_bibcode(bc) for t in targets
+                            if bc and t.get_by_bibcode(bc) is not None), None)
+        if existing_bc is not None and existing_bc.key != key:
+            short = existing_bc.short_key or existing_bc.key
+            console.print(f"  [dim]{orig_key} → {short}  (already present under a legacy key — kept existing)[/dim]")
+            if orig_key != short:
+                renames.append((orig_key, short))
+            skipped += 1
+            continue
         holder = next((t for t in targets if t.has(key)), None)
         if holder is not None:
             replace = False
@@ -329,6 +341,116 @@ def export_cmd(tex_files: tuple[Path, ...], output: Path, list_missing: bool):
             console.print(f"  [yellow]{key}[/yellow]")
         if list_missing:
             raise SystemExit(1)
+
+
+# ── update / rekey ────────────────────────────────────────────────────────────
+
+@main.command("update")
+@click.option("--all", "update_all", is_flag=True,
+              help="Re-fetch every entry with an ADS record, not just preprints.")
+def update_cmd(update_all: bool):
+    """Refresh entries whose arXiv preprint has since been published.
+
+    Checks each preprint-form entry (bibcode like 2024arXiv...) against
+    ADS; when the record has gained publication metadata, rewrites the
+    entry in place with canonical BibTeX. Cite keys never change. Stars
+    and user-curated keywords are preserved. Applies to both the personal
+    library and the active manuscript database.
+    """
+    merged = _open_merged()
+    candidates: list = []
+    for e in merged.entries():
+        bc = ads_client.bibcode_from_url(e.adsurl) if e.adsurl else None
+        if not bc:
+            continue
+        if update_all or (e.eprint and ads_client.is_preprint_bibcode(bc)):
+            candidates.append((e, bc))
+    if not candidates:
+        console.print("[dim]No preprint-form entries to check.[/dim]")
+        return
+    console.print(f"Checking {len(candidates)} entr{'y' if len(candidates)==1 else 'ies'} against ADS…")
+    updated: list[str] = []
+    still = failed = 0
+    for e, bc in candidates:
+        try:
+            ident = f'identifier:"arXiv:{e.eprint}"' if e.eprint else f'identifier:"{bc}"'
+            results = ads_client.search(ident, limit=1)
+            if not results:
+                still += 1
+                continue
+            new_bc = results[0].bibcode
+            if new_bc == bc and not update_all:
+                still += 1
+                continue
+            data = ads_client.fetch_bibtex(new_bc)
+            if data is None:
+                failed += 1
+                continue
+            merged.update_entry(e.key, data)
+            if new_bc != bc:
+                journal = data.get("journal", "").lstrip("\\")
+                where = " ".join(filter(None, [journal, data.get("volume", ""),
+                                               data.get("pages", "")]))
+                updated.append(f"{e.short_key or e.key}  →  {where}".rstrip())
+            else:
+                updated.append(e.short_key or e.key)
+        except RuntimeError as exc:
+            failed += 1
+            console.print(f"  [red]{e.key}: {exc}[/red]")
+    for line in updated:
+        console.print(f"  [green]{line}[/green]")
+    summary = f"\n{len(candidates)} checked · [green]{len(updated)} updated[/green] · {still} still preprint"
+    if failed:
+        summary += f" · [red]{failed} failed[/red]"
+    quota = ads_client.get_quota()
+    if quota:
+        summary += f"  [dim]· ADS quota {quota['remaining']}/{quota['limit']}[/dim]"
+    console.print(summary)
+
+
+@main.command("rekey")
+@click.option("--apply", "do_apply", is_flag=True,
+              help="Rename the .bib files and print .tex replacement commands.")
+def rekey_cmd(do_apply: bool):
+    """Report (or fix) entries whose stored key is not canonical.
+
+    A one-time migration aid after key-policy changes: lists entries
+    whose stored key differs from the content-derived canonical key.
+    With --apply, renames the entries in the personal library and the
+    active manuscript database, and prints copy-pasteable commands to
+    update cite keys in your .tex files.
+    """
+    merged = _open_merged()
+    renames: list[tuple[str, str]] = []
+    for e in merged.entries():
+        canon = generate_key(e.data)
+        if canon != e.key:
+            renames.append((e.key, canon))
+    if not renames:
+        console.print("[green]All keys are canonical.[/green]")
+        return
+    for old, new in sorted(renames):
+        console.print(f"  {old} → [cyan]{new}[/cyan]")
+    if not do_apply:
+        console.print(f"\n{len(renames)} non-canonical key(s). Run with [bold]--apply[/bold] to rename.")
+        return
+    from .state import find_manuscript_db
+    libs = [merged.personal] + ([merged.manuscript] if merged.manuscript else [])
+    for old, new in renames:
+        for lib in libs:
+            entry = lib.get(old)
+            if entry is not None:
+                data = dict(entry.data)
+                lib.remove_entry(old)
+                lib.save_entry(data)  # save_entry regenerates the canonical key
+    ms_root = find_manuscript_db()
+    tex_files = sorted(ms_root.glob("*.tex")) if ms_root else []
+    tex_arg = " ".join(f.name for f in tex_files) or "main.tex"
+    console.print(f"\n[green]Renamed {len(renames)} entr{'y' if len(renames)==1 else 'ies'}.[/green]")
+    console.print("Cite key replacements (copy/paste to update your TeX source):")
+    for old, new in sorted(renames):
+        console.print(f"  perl -pi -e 's/\\b\\Q{old}\\E\\b/{new}/g' {tex_arg}",
+                      highlight=False, markup=False)
 
 
 # ── refs (manuscript sync) ────────────────────────────────────────────────────

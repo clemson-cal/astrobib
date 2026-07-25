@@ -290,6 +290,27 @@ class Library:
             entry.data.pop("astrobib_starred", None)
         entry.path.write_text(format_bib_entry(entry.data))
 
+    def update_entry_data(self, key: str, data: dict) -> Entry | None:
+        """Rewrite an existing entry's data in place, keeping its key.
+
+        Used by the arXiv->published refresh: the file name and cite key
+        never change; the bibcode index follows the new adsurl.
+        """
+        old = self._entries.get(key)
+        if old is None:
+            return None
+        data = dict(data)
+        data["ID"] = key
+        path = self.root / "bib" / f"{key}.bib"
+        path.write_text(format_bib_entry(data))
+        self._by_bibcode.pop(_bibcode_of(old), None)
+        entry = Entry(data=data, path=path, short_key=old.short_key)
+        self._entries[key] = entry
+        bc = _bibcode_of(entry)
+        if bc:
+            self._by_bibcode[bc] = key
+        return entry
+
     def remove_entry(self, key: str) -> None:
         path = self.root / "bib" / f"{key}.bib"
         if path.exists():
@@ -425,6 +446,33 @@ class MergedLibrary:
     def set_starred(self, key: str, starred: bool) -> None:
         """Stars are personal — never written into the manuscript db."""
         self.personal.set_starred(key, starred)
+
+    def update_entry(self, key: str, data: dict) -> Entry | None:
+        """Refresh an entry's metadata under the same key in both databases.
+
+        Preserves the personal copy's astrobib_starred flag and each
+        copy's user-curated keywords (when non-empty); everything else
+        comes from the new record.
+        """
+        self._invalidate()
+        result = None
+        pe = self.personal.get(key)
+        if pe is not None:
+            d = dict(data)
+            if pe.data.get("astrobib_starred"):
+                d["astrobib_starred"] = pe.data["astrobib_starred"]
+            if pe.data.get("keywords"):
+                d["keywords"] = pe.data["keywords"]
+            result = self.personal.update_entry_data(key, d)
+        if self.manuscript is not None and self.manuscript.has(key):
+            d = dict(data)
+            me = self.manuscript.get(key)
+            if me.data.get("keywords"):
+                d["keywords"] = me.data["keywords"]
+            d.pop("astrobib_starred", None)
+            updated = self.manuscript.update_entry_data(key, d)
+            result = result or updated
+        return result
 
     def add_to_manuscript(self, key: str) -> bool:
         if self.manuscript is None or self.manuscript.has(key):

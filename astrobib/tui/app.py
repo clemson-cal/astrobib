@@ -203,6 +203,9 @@ class DetailPanel(VerticalScroll):
             foot.append(" · ".join(entry.keywords), style="dim")
             foot.append("\n\n")
         _append_key(foot, entry)
+        from ..ads_client import bibcode_from_url, is_preprint_bibcode
+        if entry.adsurl and is_preprint_bibcode(bibcode_from_url(entry.adsurl)):
+            foot.append("  (preprint)", style="dim")
         footer.update(foot)
 
     def show_ads_article(self, article, entry: Entry | None = None) -> None:

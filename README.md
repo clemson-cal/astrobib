@@ -135,12 +135,14 @@ useful(abs:"pulsar timing")                    methods/tools papers cited by thi
 ## Cite keys
 astrobib's key policy separates what the **databases** store from what a **manuscript** types, so keys can be collision-proof in one place and clean in the other.
 
-**Database keys are content-derived.** Every stored entry is keyed `AuthorYYYYhhhhh`: the first author's surname, the year, and five hash characters computed from the paper's arXiv ID (or, failing that, its ADS bibcode), e.g. `Zrake2020axbxt`. The key depends only on the paper's identity, so:
+**Database keys are content-derived.** Every stored entry is keyed `AuthorYYYYhhhhh`: the first author's surname, a year, and five hash characters computed from the paper's arXiv ID (or, failing that, its ADS bibcode), e.g. `Zrake2020axbxt`. The year is likewise derived from the identifier itself: the arXiv submission year, or the bibcode's year, never the record's publication year. The key therefore depends only on the paper's identity, so:
 
-- the same paper receives the same key regardless of who imports it, or when, so personal libraries and manuscript databases merge without coordination
+- the same paper receives the same key regardless of who imports it, or when, and regardless of whether they hold the preprint or the published record, so personal libraries and manuscript databases merge without coordination
 - two different Smith 2020 papers can never collide
 - re-importing a paper is detected as a duplicate rather than creating a second entry
-- the key remains stable across the arXiv-to-journal transition (the hash is computed from the arXiv ID when one exists)
+- the key remains stable across the arXiv-to-journal transition, and `astrobib update` refreshes metadata beneath it without ever changing it
+
+To cite a specific arXiv revision (v1, v2) rather than the paper, write a manual `@misc` entry with a versioned eprint field; keys always denote the paper, not a revision.
 
 Database `.bib` files are always stored under their full key, one file per paper.
 
@@ -217,6 +219,16 @@ astrobib import --personal-only other-paper.bib  # personal library only
 astrobib import --ms-only other-paper.bib        # manuscript db only
 ```
 CLI read commands (`list`, `show`, `search`, `export`, `pdf`) see the same merged personal + manuscript view as the TUI, with the same indicators: `↓` PDF cached, `◆` in manuscript db, `★` starred.
+
+### Updating preprints
+Entries imported before journal publication keep their preprint BibTeX ("arXiv e-prints"). Refresh them in place once the paper is published:
+```bash
+astrobib update          # check preprint-form entries against ADS, rewrite the published ones
+astrobib update --all    # re-fetch canonical BibTeX for every entry with an ADS record
+```
+Cite keys never change on update, so manuscripts citing the paper are unaffected; `refs.bib` regenerates with the published metadata the next time the Manuscript tab looks. Stars and user-curated keywords are preserved, and copies in the active manuscript database are updated in the same pass. The pub card shows a dim `(preprint)` marker on entries that have not yet been updated.
+
+`astrobib rekey` is a one-time migration aid after key-policy changes: it lists entries whose stored key differs from the canonical content-derived key, and with `--apply` renames them in both databases and prints `perl` commands to update your `.tex` files.
 
 ### Generating refs.bib for a manuscript
 Run this from inside the manuscript directory:
