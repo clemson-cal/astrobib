@@ -438,6 +438,7 @@ class LibraryView(Static):
         self._library: MergedLibrary | None = None
         self._ms_only: bool = False
         self._last_filter: "tuple[tuple, str, list[Entry]] | None" = None
+        self._last_width: int = 0
 
     def compose(self) -> ComposeResult:
         yield Input(placeholder='Filter: terms author:^name year:2015-2020 "phrase" is:starred/ms/pdf -term',
@@ -546,7 +547,20 @@ class LibraryView(Static):
     def _refresh_table(self) -> None:
         from .. import pdf as _pdf
         t = self.query_one("#lib-table", DataTable)
-        t.clear()
+        prev_key = self._highlighted_entry.key if self._highlighted_entry else None
+        # Elastic title column: absorb whatever width the pane offers
+        # (68 = indicator/year/author/keyword columns plus cell padding).
+        width = t.size.width or 130
+        title_w = max(52, width - 80)
+        t.clear(columns=True)
+        t.add_column(" ", key="sel", width=2)
+        t.add_column("↓", key="pdf", width=2)
+        t.add_column("◆", key="lib", width=2)
+        t.add_column("★", key="star", width=2)
+        t.add_column("Year", key="year", width=6)
+        t.add_column("Author", key="author", width=20)
+        t.add_column("Title", key="title", width=title_w)
+        t.add_column("Keywords", key="keywords", width=28)
         entries = sorted(self._filtered, key=self._sort_key, reverse=self._sort_reverse)
         entries = entries[:self.MAX_ROWS]
         pdf_set = _pdf.cached_keys()
@@ -558,11 +572,25 @@ class LibraryView(Static):
             kws = ", ".join(e.keywords[:3])
             if len(e.keywords) > 3:
                 kws += "…"
-            title = e.title[:52] + "…" if len(e.title) > 52 else e.title
+            title = e.title[:title_w - 1] + "…" if len(e.title) > title_w else e.title
             t.add_row(sel, cached, in_ms, star, e.year, e.first_author_last, title, kws, key=e.key)
-        first = entries[0] if entries else None
-        self._highlighted_entry = first
-        self.post_message(self.EntryHighlighted(first))
+        row = None
+        if prev_key is not None:
+            try:
+                t.move_cursor(row=t.get_row_index(prev_key))
+                row = next((e for e in entries if e.key == prev_key), None)
+            except Exception:
+                row = None
+        if row is None:
+            row = entries[0] if entries else None
+        self._highlighted_entry = row
+        self.post_message(self.EntryHighlighted(row))
+
+    def on_resize(self, event) -> None:
+        width = self.size.width
+        if abs(width - self._last_width) >= 2:
+            self._last_width = width
+            self._refresh_table()
 
     def refresh_pdf_status(self) -> None:
         from .. import pdf as _pdf
