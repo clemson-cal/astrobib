@@ -1,4 +1,7 @@
-"""Persistent ADS query tab state stored in user-local app state dir."""
+"""Persistent ADS query tab state, stored user-locally but keyed by
+context: each manuscript gets its own tab set; sessions with no active
+manuscript share the "global" set. Never written into a manuscript repo.
+"""
 from __future__ import annotations
 
 import json
@@ -10,27 +13,33 @@ from pathlib import Path
 from ..state import _BASE
 
 _STATE_FILE = _BASE / "tabs.json"
-SCHEMA_VERSION = 1
+_GLOBAL = "global"
 
 
-def load() -> list[dict]:
+def _context_key(ms_root: Path | None) -> str:
+    return str(ms_root) if ms_root else _GLOBAL
+
+
+def _read_contexts() -> dict[str, list[dict]]:
     if not _STATE_FILE.exists():
-        return []
+        return {}
     try:
         data = json.loads(_STATE_FILE.read_text())
-        if data.get("version") != SCHEMA_VERSION:
-            return []
-        return data.get("tabs", [])
+        return data.get("contexts", {})
     except Exception:
-        return []
+        return {}
 
 
-def save(tabs: list[dict]) -> None:
+def load(ms_root: Path | None = None) -> list[dict]:
+    return _read_contexts().get(_context_key(ms_root), [])
+
+
+def save(tabs: list[dict], ms_root: Path | None = None) -> None:
     try:
+        contexts = _read_contexts()
+        contexts[_context_key(ms_root)] = tabs
         _STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
-        _STATE_FILE.write_text(
-            json.dumps({"version": SCHEMA_VERSION, "tabs": tabs}, indent=2)
-        )
+        _STATE_FILE.write_text(json.dumps({"contexts": contexts}, indent=2))
     except Exception:
         pass
 

@@ -45,6 +45,8 @@ A manuscript database is a `bib/` directory inside a manuscript's git repo. It u
 
 Saved ADS query tabs live in user-local app state (e.g., `~/.local/share/astrobib/`), not in the bib database. They are not synced to other group members. Each user maintains their own set of active searches.
 
+Tabs are keyed by context: each manuscript database (by its root path) has its own tab set, and sessions with no active manuscript share a global set. The storage location stays user-local either way — per-manuscript tabs are never written into the manuscript repo.
+
 ## Adding to the bib database format
 
 The only acceptable additions to the bib database layout are:

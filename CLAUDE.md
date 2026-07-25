@@ -47,7 +47,7 @@ There are no tests. Verify changes by importing the affected modules and running
 - `astrobib/pdf.py` — ephemeral PDF cache at `PDF_CACHE_DIR`
 - `astrobib/cli.py` — Click commands: `add`, `import`, `export`, `refs`, `search`, `show`, `list`, `keywords`, `quota`, plus `config`, `pdf`, `uat` groups
 - `astrobib/tui/app.py` — Textual TUI: library tab, ADS search tab (via `S`), UAT browser panel (via `u`)
-- `astrobib/tui/tabs_state.py` — persistent ADS query tabs (`tabs.json`), tab labels, result limits
+- `astrobib/tui/tabs_state.py` — persistent ADS query tabs (`tabs.json`, keyed per manuscript context), tab labels, result limits
 - `astrobib/tui/uat_browser.py` — standalone UAT browser app and screen
 - `astrobib/tui/help_screen.py` — modal help screen; content loaded from `astrobib/help.md` (symlink to `../README.md`)
 

@@ -1016,7 +1016,7 @@ class AstrobibApp(App):
             self._poll_manuscript()
             self.set_interval(2.0, self._poll_manuscript)
 
-        self._tab_states = tabs_state.load()
+        self._tab_states = tabs_state.load(self._ms_root)
         for tab_data in self._tab_states:
             await self._create_ads_tab(tab_data, fetch=False, switch=False)
         self.call_after_refresh(self._focus_active_table)
@@ -1077,7 +1077,7 @@ class AstrobibApp(App):
             ads_view.load_articles(articles, self._library)
             tab_data["bibcodes"] = [a.bibcode for a in articles]
             tab_data["refreshed"] = int(time.time())
-            tabs_state.save(self._tab_states)
+            tabs_state.save(self._tab_states, self._ms_root)
             ads_client.refresh_quota()
             n = len(articles)
             if _is_active():
@@ -1378,7 +1378,7 @@ class AstrobibApp(App):
             tab_data["query"] = query
             tab_data["limit"] = limit
             ads_view.query = query
-            tabs_state.save(self._tab_states)
+            tabs_state.save(self._tab_states, self._ms_root)
             await self._do_refresh(ads_view, tab_data)
 
         self.push_screen(
@@ -1461,7 +1461,7 @@ class AstrobibApp(App):
         tab_id = pane_id.removeprefix("pane-")
         self._ads_views.pop(tab_id, None)
         self._tab_states = [t for t in self._tab_states if t["id"] != tab_id]
-        tabs_state.save(self._tab_states)
+        tabs_state.save(self._tab_states, self._ms_root)
         await self.query_one(TabbedContent).remove_pane(pane_id)
 
     async def action_refresh_tab(self) -> None:
@@ -1605,7 +1605,7 @@ class AstrobibApp(App):
         if tab_data is None:
             return
         new_limit = tabs_state.step_limit(tab_data, direction)
-        tabs_state.save(self._tab_states)
+        tabs_state.save(self._tab_states, self._ms_root)
         n = len(ads_view._articles)
         self._set_status(_ads_tab_status(ads_view.query, n, new_limit)
                          + "  [dim]· r to reload[/dim]")
