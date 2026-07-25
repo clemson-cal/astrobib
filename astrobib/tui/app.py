@@ -1631,10 +1631,16 @@ class AstrobibApp(App):
             else:
                 text = ms_view._highlighted_key
         elif ads_view is not None:
-            a = ads_view._selected_article
-            if a is not None:
-                entry = self._library.get_by_bibcode(a.bibcode) if self._library else None
-                text = (entry.short_key or entry.key) if entry else a.bibcode
+            def _key_for(bibcode: str) -> str:
+                entry = self._library.get_by_bibcode(bibcode) if self._library else None
+                return (entry.short_key or entry.key) if entry else bibcode
+            if ads_view._selected_bibcodes:
+                text = ", ".join(_key_for(a.bibcode) for a in ads_view._articles
+                                 if a.bibcode in ads_view._selected_bibcodes)
+            else:
+                a = ads_view._selected_article
+                if a is not None:
+                    text = _key_for(a.bibcode)
         if not text:
             self._set_status("[yellow]Nothing to copy.[/yellow]")
             return
