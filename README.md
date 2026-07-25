@@ -6,6 +6,23 @@ astrobib is a personal astrophysics literature manager. It connects to the [NASA
 Keywords follow the [Unified Astronomy Thesaurus (UAT)](https://astrothesaurus.org), the controlled vocabulary used by AAS journals.
 
 ---
+## Installation
+Requires Python 3.11 or later. Any of the following provides the `astrobib` command:
+```bash
+# uv (recommended): isolated per-user tool install; fetches a suitable Python if needed
+uv tool install astrobib
+
+# pipx: the same isolated-tool model
+pipx install astrobib
+
+# standard venv + pip
+python3 -m venv ~/.venvs/astrobib
+~/.venvs/astrobib/bin/pip install astrobib
+# then invoke ~/.venvs/astrobib/bin/astrobib, or add it to your PATH
+```
+Upgrade later with `uv tool upgrade astrobib`, `pipx upgrade astrobib`, or `pip install -U astrobib` respectively.
+
+---
 ## Quick start
 ```bash
 # Download the UAT concept hierarchy (one-time, ~2 MB)
