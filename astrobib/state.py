@@ -11,6 +11,7 @@ LIBRARY_DIR = _BASE / "library"
 STATE_FILE = _BASE / "state.json"
 UAT_CACHE = Path.home() / ".cache" / "astrobib" / "uat.json"
 PDF_CACHE_DIR = Path.home() / ".cache" / "astrobib" / "pdfs"
+PARSE_CACHE_DIR = Path.home() / ".cache" / "astrobib" / "parsecache"
 
 SCHEMA_VERSION = 1
 

@@ -31,6 +31,15 @@ def is_cached(citekey: str) -> bool:
     return cache_path(citekey).exists()
 
 
+def cached_keys() -> set[str]:
+    """All cite keys with a cached PDF — one directory listing instead of
+    per-entry stat calls."""
+    try:
+        return {p.stem for p in PDF_CACHE_DIR.glob("*.pdf")}
+    except OSError:
+        return set()
+
+
 def _bibcode_from_adsurl(adsurl: str | None) -> str | None:
     if not adsurl:
         return None

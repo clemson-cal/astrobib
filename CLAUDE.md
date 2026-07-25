@@ -39,8 +39,9 @@ There are no tests. Verify changes by importing the affected modules and running
 **Package layout:**
 
 - `astrobib/state.py` — user-local app state: library path, ADS token, cache constants, `find_manuscript_db()`
-- `astrobib/library.py` — `Entry`, `Library`, `MergedLibrary`; reads `bib/*.bib` files
+- `astrobib/library.py` — `Entry`, `Library`, `MergedLibrary`; reads `bib/*.bib` files through an mtime-keyed parse cache (`~/.cache/astrobib/parsecache/`); bibcode index, memoized merge, O(N log N) short keys — sized for 1e4-entry libraries
 - `astrobib/keys.py` — deterministic cite key generation (`AuthorYYYY` + 5-char hash of arXiv ID/bibcode)
+- `astrobib/query.py` — local filter language (ADS-flavored: fielded terms, year ranges, phrases, negation, `is:` state filters); `to_ads_query()` translates a filter for ADS escalation
 - `astrobib/ads_client.py` — ADS search and BibTeX export via the `ads` package; `refresh_quota()` and `resolve_pdf_url()` use httpx directly
 - `astrobib/uat.py` — UAT loader and hierarchy traversal; cached at `UAT_CACHE`
 - `astrobib/export.py` — scans `.tex` files for cite keys, writes `refs.bib`; `manuscript_tex_files()`: `main.tex` is the sole root when present (else all top-level `.tex`), expanded recursively via `\input`/`\include`

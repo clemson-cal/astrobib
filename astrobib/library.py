@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -36,6 +37,7 @@ class Entry:
     data: dict
     path: Path
     short_key: str = ""  # set by Library after all entries are loaded
+    _search: dict | None = field(default=None, repr=False, compare=False)
 
     @property
     def key(self) -> str:
@@ -79,6 +81,10 @@ class Entry:
         return self.data.get("astrobib_starred", "").strip().lower() == "true"
 
     @property
+    def abstract(self) -> str:
+        return self.data.get("abstract", "")
+
+    @property
     def first_author_last(self) -> str:
         author = self.author
         if not author:
@@ -86,11 +92,87 @@ class Entry:
         first = author.split(" and ")[0].strip()
         return first.split(",")[0].strip()
 
+    def search_doc(self) -> dict:
+        """Lowercased field cache for filtering — built once per entry so
+        per-keystroke matching never re-lowers 10^4 abstracts."""
+        if self._search is None:
+            author = self.author.lower()
+            title = self.title.lower()
+            abs_ = self.abstract.lower()
+            key = self.key.lower()
+            kw = self.data.get("keywords", "").lower()
+            self._search = {
+                "author": author,
+                "first": self.first_author_last.lower().lstrip("{"),
+                "title": title,
+                "abs": abs_,
+                "key": key,
+                "kw": kw,
+                "all": " ".join((author, title, abs_, key, kw, self.year)),
+            }
+        return self._search
+
+
+class _ParseCache:
+    """mtime-keyed cache of parsed bib entries, one JSON file per library
+    root under ~/.cache/astrobib/parsecache/. Purely a disposable cache —
+    deleting it just costs a re-parse (10-30 s at 10^4 entries, ~nothing
+    below 10^3).
+    """
+
+    def __init__(self, root: Path):
+        import hashlib
+        from .state import PARSE_CACHE_DIR
+        digest = hashlib.sha1(str(root).encode()).hexdigest()[:16]
+        self._file = PARSE_CACHE_DIR / f"{digest}.json"
+        self._seen: set[str] = set()
+        self._dirty = False
+        try:
+            self._data: dict = json.loads(self._file.read_text())
+        except Exception:
+            self._data = {}
+
+    def load(self, path: Path) -> Entry | None:
+        key = str(path)
+        try:
+            mtime = path.stat().st_mtime
+        except OSError:
+            return None
+        self._seen.add(key)
+        rec = self._data.get(key)
+        if rec and rec.get("mtime") == mtime:
+            return Entry(data=rec["data"], path=path)
+        entry = _parse_bib_file(path)
+        if entry is not None:
+            self._data[key] = {"mtime": mtime, "data": entry.data}
+            self._dirty = True
+        return entry
+
+    def flush(self) -> None:
+        stale = set(self._data) - self._seen
+        if stale:
+            for key in stale:
+                del self._data[key]
+            self._dirty = True
+        if not self._dirty:
+            return
+        try:
+            self._file.parent.mkdir(parents=True, exist_ok=True)
+            self._file.write_text(json.dumps(self._data))
+        except OSError:
+            pass
+
+
+def _bibcode_of(entry: Entry) -> str:
+    adsurl = entry.data.get("adsurl", "")
+    return adsurl.rstrip("/").rsplit("/", 1)[-1] if adsurl else ""
+
 
 @dataclass
 class Library:
     root: Path
     _entries: dict[str, Entry] = field(default_factory=dict, repr=False)
+    _by_bibcode: dict[str, str] = field(default_factory=dict, repr=False)
 
     def __post_init__(self):
         self._load()
@@ -98,26 +180,47 @@ class Library:
     def _load(self):
         bib_dir = self.root / "bib"
         bib_dir.mkdir(exist_ok=True)
+        cache = _ParseCache(self.root)
         for bib_file in sorted(bib_dir.glob("*.bib")):
             try:
-                entry = _parse_bib_file(bib_file)
+                entry = cache.load(bib_file)
                 if entry:
                     self._entries[entry.key] = entry
             except Exception:
                 pass
+        cache.flush()
+        self._reindex_bibcodes()
         self._compute_short_keys()
 
+    def _reindex_bibcodes(self) -> None:
+        self._by_bibcode = {}
+        for key, entry in self._entries.items():
+            bc = _bibcode_of(entry)
+            if bc:
+                self._by_bibcode[bc] = key
+
     def _compute_short_keys(self) -> None:
-        """Populate Entry.short_key for all entries: shortest unambiguous prefix."""
-        all_keys = list(self._entries)
+        """Populate Entry.short_key for all entries: shortest unambiguous prefix.
+
+        Prefix counting via bisect over the sorted key list — O(N log N),
+        not O(N^2); matters from a few thousand entries up.
+        """
+        import bisect
+        sorted_keys = sorted(self._entries)
+
+        def prefix_count(prefix: str) -> int:
+            lo = bisect.bisect_left(sorted_keys, prefix)
+            hi = bisect.bisect_left(sorted_keys, prefix + "￿")
+            return hi - lo
+
         for key, entry in self._entries.items():
             base = key[:-5]  # strip the 5-char sha256 suffix
-            if sum(1 for k in all_keys if k.startswith(base)) == 1:
+            if prefix_count(base) == 1:
                 entry.short_key = base
             else:
                 for n in range(1, 6):
                     prefix = key[:len(base) + n]
-                    if sum(1 for k in all_keys if k.startswith(prefix)) == 1:
+                    if prefix_count(prefix) == 1:
                         entry.short_key = prefix
                         break
                 else:
@@ -148,13 +251,11 @@ class Library:
         return [e for e in self._entries.values() if e.key.startswith(input_key)]
 
     def has_bibcode(self, bibcode: str) -> bool:
-        return any(bibcode in e.data.get("adsurl", "") for e in self._entries.values())
+        return bibcode in self._by_bibcode
 
     def get_by_bibcode(self, bibcode: str) -> Entry | None:
-        return next(
-            (e for e in self._entries.values() if bibcode in e.data.get("adsurl", "")),
-            None,
-        )
+        key = self._by_bibcode.get(bibcode)
+        return self._entries.get(key) if key else None
 
     def by_keyword(self, label: str, descendant_labels: set[str] | None = None) -> list[Entry]:
         match_labels: set[str] = descendant_labels or {label}
@@ -173,6 +274,9 @@ class Library:
         path.write_text(format_bib_entry(data))
         entry = Entry(data=data, path=path)
         self._entries[key] = entry
+        bc = _bibcode_of(entry)
+        if bc:
+            self._by_bibcode[bc] = key
         self._compute_short_keys()
         return entry
 
@@ -190,7 +294,9 @@ class Library:
         path = self.root / "bib" / f"{key}.bib"
         if path.exists():
             path.unlink()
-        self._entries.pop(key, None)
+        entry = self._entries.pop(key, None)
+        if entry is not None:
+            self._by_bibcode.pop(_bibcode_of(entry), None)
         self._compute_short_keys()
 
     def all_keywords(self) -> list[str]:
@@ -214,15 +320,24 @@ class MergedLibrary:
     """
     personal: Library
     manuscript: Library | None = None
+    _merged_cache: "dict[str, Entry] | None" = field(
+        default=None, init=False, repr=False, compare=False)
 
     @property
     def manuscript_root(self) -> Path | None:
         return self.manuscript.root if self.manuscript else None
 
     def _merged(self) -> dict[str, Entry]:
-        merged = dict(self.manuscript._entries) if self.manuscript else {}
-        merged.update(self.personal._entries)
-        return merged
+        # Memoized: this runs per cited key per 2 s manuscript poll, so
+        # rebuilding a 10^4-entry dict each call would be hot-path waste.
+        if self._merged_cache is None:
+            merged = dict(self.manuscript._entries) if self.manuscript else {}
+            merged.update(self.personal._entries)
+            self._merged_cache = merged
+        return self._merged_cache
+
+    def _invalidate(self) -> None:
+        self._merged_cache = None
 
     def entries(self) -> list[Entry]:
         return list(self._merged().values())
@@ -295,12 +410,14 @@ class MergedLibrary:
 
     def save_entry(self, data: dict) -> Entry:
         """Import: write to the personal library and the manuscript db (if any)."""
+        self._invalidate()
         entry = self.personal.save_entry(data)
         if self.manuscript is not None:
             self.manuscript.save_entry(dict(data))
         return entry
 
     def remove_entry(self, key: str) -> None:
+        self._invalidate()
         self.personal.remove_entry(key)
         if self.manuscript is not None:
             self.manuscript.remove_entry(key)
@@ -315,6 +432,7 @@ class MergedLibrary:
         entry = self.get(key)
         if entry is None:
             return False
+        self._invalidate()
         data = dict(entry.data)
         data.pop("astrobib_starred", None)
         path = self.manuscript.root / "bib" / f"{key}.bib"
@@ -333,6 +451,7 @@ class MergedLibrary:
         """
         if self.manuscript is None or not self.manuscript.has(key):
             return False
+        self._invalidate()
         if not self.personal.has(key):
             entry = self.manuscript.get(key)
             path = self.personal.root / "bib" / f"{key}.bib"

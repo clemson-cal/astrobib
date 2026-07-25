@@ -418,6 +418,15 @@ class LibraryView(Static):
             super().__init__()
             self.entry = entry
 
+    class FilterChanged(Message):
+        def __init__(self, shown: int, total: int, capped: bool) -> None:
+            super().__init__()
+            self.shown = shown
+            self.total = total
+            self.capped = capped
+
+    MAX_ROWS = 500  # render cap: filtering matches everything, displays this many
+
     def __init__(self) -> None:
         super().__init__(id="library-view")
         self._all_entries: list[Entry] = []
@@ -428,9 +437,11 @@ class LibraryView(Static):
         self._highlighted_entry: Entry | None = None
         self._library: MergedLibrary | None = None
         self._ms_only: bool = False
+        self._last_filter: "tuple[tuple, str, list[Entry]] | None" = None
 
     def compose(self) -> ComposeResult:
-        yield Input(placeholder="Filter by author, title, key, or keyword…", id="lib-filter")
+        yield Input(placeholder='Filter: terms author:^name year:2015-2020 "phrase" is:starred/ms/pdf -term',
+                    id="lib-filter")
         yield DataTable(id="lib-table", cursor_type="row")
 
     def on_mount(self) -> None:
@@ -448,6 +459,7 @@ class LibraryView(Static):
         self._library = library
         self._all_entries = library.entries() if library else []
         self._selected_keys.clear()
+        self._last_filter = None
         filter_val = self.query_one("#lib-filter", Input).value
         self._apply_filter(filter_val)
 
@@ -486,22 +498,41 @@ class LibraryView(Static):
     def get_selected_keys(self) -> list[str]:
         return list(self._selected_keys)
 
+    @staticmethod
+    def _is_simple_query(text: str) -> bool:
+        """Bare-terms-only queries are monotonic under text extension, so
+        keystrokes can narrow the previous result instead of rescanning."""
+        return not any(c in text for c in '-:"')
+
     def _apply_filter(self, text: str) -> None:
-        q = text.lower().strip()
+        from .. import pdf as _pdf
+        from ..query import compile_query
+        text = text.strip()
+        pdf_set = _pdf.cached_keys()
+        matcher = compile_query(
+            text,
+            in_manuscript=(self._library.in_manuscript if self._library else None),
+            has_pdf=pdf_set.__contains__,
+        )
+        pool_state = (id(self._all_entries), self._ms_only)
         pool = self._all_entries
         if self._ms_only and self._library is not None:
             pool = [e for e in pool if self._library.in_manuscript(e.key)]
-        if q:
-            self._filtered = [
-                e for e in pool
-                if q in e.title.lower()
-                or q in e.author.lower()
-                or q in e.key.lower()
-                or any(q in kw.lower() for kw in e.keywords)
-            ]
-        else:
-            self._filtered = list(pool)
+        total = len(pool)
+        # Progressive narrowing: when the new query merely extends a simple
+        # previous one, only the previous matches need rescanning.
+        if self._last_filter is not None:
+            prev_state, prev_text, prev_result = self._last_filter
+            if (prev_state == pool_state and self._is_simple_query(prev_text)
+                    and text.startswith(prev_text)):
+                pool = prev_result
+        result = pool if not text else [e for e in pool if matcher(e)]
+        result = list(result)
+        self._last_filter = (pool_state, text, result)
+        self._filtered = result
         self._refresh_table()
+        self.post_message(self.FilterChanged(
+            len(result), total, len(result) > self.MAX_ROWS))
 
     def _sort_key(self, e: Entry) -> str:
         if self._sort_col == "year":
@@ -517,9 +548,11 @@ class LibraryView(Static):
         t = self.query_one("#lib-table", DataTable)
         t.clear()
         entries = sorted(self._filtered, key=self._sort_key, reverse=self._sort_reverse)
+        entries = entries[:self.MAX_ROWS]
+        pdf_set = _pdf.cached_keys()
         for e in entries:
             sel = "✓" if e.key in self._selected_keys else ""
-            cached = "↓" if _pdf.is_cached(e.key) else ""
+            cached = "↓" if e.key in pdf_set else ""
             in_ms = "◆" if self._library and self._library.in_manuscript(e.key) else ""
             star = "★" if e.starred else ""
             kws = ", ".join(e.keywords[:3])
@@ -534,9 +567,10 @@ class LibraryView(Static):
     def refresh_pdf_status(self) -> None:
         from .. import pdf as _pdf
         t = self.query_one("#lib-table", DataTable)
-        for e in self._all_entries:
+        pdf_set = _pdf.cached_keys()
+        for e in self._filtered:
             try:
-                t.update_cell(e.key, "pdf", "↓" if _pdf.is_cached(e.key) else "")
+                t.update_cell(e.key, "pdf", "↓" if e.key in pdf_set else "")
             except Exception:
                 pass
 
@@ -1253,6 +1287,19 @@ class AstrobibApp(App):
             self.query_one(DetailPanel).show_entry(event.entry)
             self.refresh_bindings()
 
+    @on(LibraryView.FilterChanged)
+    def _on_filter_changed(self, event: LibraryView.FilterChanged) -> None:
+        if self._active_pane_id() != "pane-library":
+            return
+        if event.shown == event.total:
+            self._set_status(f"{event.total} papers  [dim]/ filter · S to search ADS[/dim]")
+        else:
+            cap = (f"  [dim]· showing first {LibraryView.MAX_ROWS}[/dim]"
+                   if event.capped else "")
+            self._set_status(
+                f"{event.shown}/{event.total} papers match{cap}"
+                f"  [dim]· S to run on ADS[/dim]")
+
     @on(ManuscriptView.KeyHighlighted)
     def _on_ms_key_highlighted(self, event: ManuscriptView.KeyHighlighted) -> None:
         if self._active_pane_id() != "pane-manuscript":
@@ -1474,6 +1521,12 @@ class AstrobibApp(App):
             ms_view = self.query_one(ManuscriptView)
             if ms_view._highlighted_state == "missing" and ms_view._highlighted_key:
                 initial = ms_view._highlighted_key
+        elif self._active_pane_id() == "pane-library":
+            # escalate the local filter to an ADS search
+            ftext = self.query_one(LibraryView).query_one("#lib-filter", Input).value
+            if ftext.strip():
+                from ..query import to_ads_query
+                initial = to_ads_query(ftext)
         self.push_screen(AdsSearchModal(initial=initial), handle)
 
     async def action_close_tab(self) -> None:
