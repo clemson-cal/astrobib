@@ -236,7 +236,7 @@ astrobib convert full       # canonical keys with hash: \citep{Zrake2020axbxt}
 astrobib convert bibcode    # raw ADS bibcodes: \citep{2020ApJ...900...12Z}
 astrobib convert short --dry-run   # report without writing
 ```
-All three formats resolve interchangeably, so conversion is lossless in any direction. Keys that cannot be resolved against the library are left untouched and reported.
+All three formats resolve interchangeably, so conversion is lossless in any direction. Keys that cannot be resolved against the library are left untouched and reported. After converting, `refs.bib` is regenerated to match the new keys, which also merges citations of the same paper written in different forms.
 
 ### Generating refs.bib for a manuscript
 Run this from inside the manuscript directory:

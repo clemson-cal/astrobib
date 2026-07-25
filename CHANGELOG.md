@@ -4,7 +4,7 @@
 
 ### Added
 - Manuscripts may cite by raw ADS bibcode: citation resolution falls back to the bibcode index, so `\citep{2020ApJ...900...12Z}` resolves like any key.
-- `astrobib convert bibcode|full|short [--dry-run]`: rewrites all manuscript cite keys to one uniform format.
+- `astrobib convert bibcode|full|short [--dry-run]`: rewrites all manuscript cite keys to one uniform format and regenerates refs.bib to match.
 - `astrobib update`: refreshes entries whose arXiv preprint has since been published, rewriting canonical ADS BibTeX in place under the same cite key; preserves stars and user-curated keywords, updates manuscript-db copies, and reports quota. `--all` re-fetches every entry with an ADS record.
 - The pub card shows a dim `(preprint)` marker on entries whose ADS record is still arXiv-only.
 - Import now also dedupes by bibcode, catching the same paper stored under a different key.

@@ -462,6 +462,10 @@ def convert_cmd(fmt: str, dry_run: bool):
             console.print(f"  {f.relative_to(ms_root)}: {verb} {n} key(s)")
             total += n
     console.print(f"\n[green]{total} key(s) {verb} to {fmt} format.[/green]")
+    if total and not dry_run and merged.manuscript is not None:
+        # the .tex now cites new strings; regenerate refs.bib to match
+        found, _ = export_refs(files, ms_root / "refs.bib", merged.manuscript)
+        console.print(f"[green]refs.bib regenerated ({len(found)} entr{'y' if len(found)==1 else 'ies'}).[/green]")
     if unresolved:
         console.print(f"[yellow]{len(unresolved)} key(s) left untouched (unresolvable):[/yellow]")
         for k in sorted(unresolved):
