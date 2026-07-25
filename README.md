@@ -104,6 +104,50 @@ useful(abs:"pulsar timing")                    methods/tools papers cited by thi
 
 ---
 
+## Cite keys
+
+astrobib's key policy separates what the **databases** store from what a
+**manuscript** types, so keys can be collision-proof in one place and
+clean in the other.
+
+**Database keys are content-derived.** Every stored entry is keyed
+`AuthorYYYYhhhhh` — first author's surname, year, and five hash
+characters computed from the paper's arXiv ID (or, failing that, its ADS
+bibcode): `Zrake2020axbxt`. The key depends only on the paper's identity,
+so:
+
+- the same paper gets the same key no matter who imports it, or when —
+  personal libraries and manuscript databases merge without coordination
+- two different Smith 2020 papers can never collide
+- re-importing a paper is detected as a duplicate rather than creating
+  a second entry
+- the arXiv → published transition keeps the key stable (the hash comes
+  from the arXiv ID when one exists)
+
+Database `.bib` files are always stored under their full key, one file
+per paper.
+
+**Manuscripts cite by any unambiguous prefix.** In your `.tex` you may
+write the full key or any prefix that matches exactly one database key —
+in practice `\citep{Zrake2020}`. The generated `refs.bib` keys each entry
+by the string actually cited, so BibTeX sees exactly what the manuscript
+says and the hash suffix never appears in your prose. (Classic BibTeX has
+no key-alias mechanism, so this aliasing happens at the `refs.bib`
+boundary, which astrobib owns.)
+
+**Ambiguity is detected, not guessed.** If a prefix matches several keys
+— say a second Zrake-2020 paper arrives — nothing is silently picked:
+the Manuscript tab shows the cite as magenta `≈ ambiguous` with the
+candidates listed, and `astrobib refs` prints them and exits nonzero.
+Lengthen the key by a character or two and it heals.
+
+**Displayed keys are the shortest unambiguous form.** The TUI and CLI
+show short keys wherever possible, and `astrobib import` emits its
+cite-key replacement commands using short keys, so hashes only surface
+when they're needed to disambiguate.
+
+---
+
 ## Manuscript databases
 
 A manuscript can carry its own bib database: a `bib/` directory inside the
@@ -137,16 +181,9 @@ keys found in the `.tex` sources and entries in `bib/`, color-coded:
 | magenta `≈` | cite key is an ambiguous prefix of several entries — lengthen it |
 | cyan `·` | in `bib/` but cited by nothing — press `m` to remove |
 
-### Citing by short key
-
-Cite keys in the `.tex` may be **any unambiguous prefix** of a database
-key: `\citep{Zrake2020}` finds `Zrake2020axbxt` as long as no other key
-starts with `Zrake2020`. The generated `refs.bib` keys each entry by the
-string actually cited, so the hash suffixes that protect the shared
-databases never appear in the manuscript. If a prefix later becomes
-ambiguous (a second Zrake-2020 paper arrives), the Manuscript tab and
-`astrobib refs` flag it and list the candidates — lengthen the key by a
-character or two.
+Cite keys in the `.tex` may be any unambiguous prefix of a database key
+(`\citep{Zrake2020}`), and `refs.bib` is keyed by the cited string — see
+[Cite keys](#cite-keys).
 
 If `main.tex` exists it is the sole root document — other top-level
 `.tex` files (old drafts, notes) are ignored; otherwise every top-level
@@ -195,8 +232,9 @@ share the resulting `astrobib-export.bib` file. The recipient can import it:
 astrobib import shared-papers.bib
 ```
 
-Collision-resistant cite keys (`AuthorYYYYhhhh`) are deterministic from the
-arXiv ID, so the same paper always gets the same key regardless of who added it.
+Because keys are content-derived (see [Cite keys](#cite-keys)), the same
+paper always gets the same key regardless of who added it, so shared files
+merge cleanly and duplicates are detected on import.
 
 ### Importing a foreign .bib file
 
