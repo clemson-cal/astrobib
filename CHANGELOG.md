@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.2.1 — 2026-07-25
+
+### Fixed
+- Silenced `SyntaxWarning`s emitted by the `ads` package at first import on Python 3.12 and later (invalid escape sequences in its regex literals; harmless at runtime).
+
+### Added
+- Python 3.14 classifier.
+
 ## 0.2.0 — 2026-07-25
 
 ### Added
