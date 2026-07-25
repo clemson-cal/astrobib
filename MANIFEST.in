@@ -1,3 +1,4 @@
 include DESIGN.md
+include CHANGELOG.md
 prune scripts
 exclude .python-version
