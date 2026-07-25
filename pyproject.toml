@@ -16,7 +16,6 @@ keywords = [
     "astrophysics",
     "bibliography",
     "bibtex",
-    "ads",
     "latex",
     "literature",
     "tui",
@@ -36,7 +35,6 @@ classifiers = [
     "Topic :: Text Processing :: Markup :: LaTeX",
 ]
 dependencies = [
-    "ads>=0.12",
     "bibtexparser>=1.4,<2",
     "click>=8",
     "httpx>=0.27",

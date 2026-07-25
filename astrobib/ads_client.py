@@ -1,27 +1,19 @@
-"""ADS API access via the official `ads` package."""
+"""Direct ADS API client: search, BibTeX export, link resolver (httpx)."""
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass, field
 from urllib.parse import unquote
-
-import warnings
 
 import bibtexparser
 import httpx
 from bibtexparser.bparser import BibTexParser
 from bibtexparser.customization import convert_to_unicode
 
-# The ads package (last released 2020) contains regex literals with invalid
-# escape sequences; Python >= 3.12 emits SyntaxWarnings when compiling it on
-# first import. Harmless at runtime — silence them at this boundary.
-with warnings.catch_warnings():
-    warnings.filterwarnings("ignore", category=SyntaxWarning)
-    import ads as _ads
-
 from .state import get_token
 
-
-ADS_SEARCH_URL = "https://api.adsabs.harvard.edu/v1/search/query"
+ADS_API = "https://api.adsabs.harvard.edu/v1"
+ADS_SEARCH_URL = f"{ADS_API}/search/query"
 
 SEARCH_FIELDS = [
     "bibcode",
@@ -39,6 +31,39 @@ SEARCH_FIELDS = [
 _quota: dict | None = None
 
 _ABS_URL_RE = re.compile(r"(?:https?://)?(?:ui\.)?adsabs\.harvard\.edu/abs/([^/?#\s]+)")
+_PREPRINT_RE = re.compile(r"^\d{4}arXiv")
+
+
+@dataclass
+class Article:
+    """One ADS search result document."""
+    _raw: dict = field(default_factory=dict, repr=False)
+    bibcode: str = ""
+    title: list = field(default_factory=list)
+    author: list = field(default_factory=list)
+    year: str = ""
+    abstract: str = ""
+    identifier: list = field(default_factory=list)
+    doi: list = field(default_factory=list)
+    esources: list = field(default_factory=list)
+    arxiv_class: list = field(default_factory=list)
+    citation_count: "int | None" = None
+
+    @classmethod
+    def from_doc(cls, doc: dict) -> "Article":
+        return cls(
+            _raw=doc,
+            bibcode=doc.get("bibcode", ""),
+            title=doc.get("title") or [],
+            author=doc.get("author") or [],
+            year=str(doc.get("year") or ""),
+            abstract=doc.get("abstract") or "",
+            identifier=doc.get("identifier") or [],
+            doi=doc.get("doi") or [],
+            esources=doc.get("esources") or [],
+            arxiv_class=doc.get("arxiv_class") or [],
+            citation_count=doc.get("citation_count"),
+        )
 
 
 def bibcode_from_url(text: str) -> str | None:
@@ -47,62 +72,85 @@ def bibcode_from_url(text: str) -> str | None:
     return unquote(m.group(1)) if m else None
 
 
+def is_preprint_bibcode(bibcode: str | None) -> bool:
+    """True for arXiv-only records (bibcodes of the form 2024arXiv...)."""
+    return bool(bibcode and _PREPRINT_RE.match(bibcode))
+
+
 def get_quota() -> dict | None:
     return _quota
 
 
-def refresh_quota() -> dict | None:
-    global _quota
-    try:
-        token = get_token()
-        if not token:
-            return None
-        resp = httpx.get(
-            ADS_SEARCH_URL,
-            params={"q": "*:*", "rows": "1", "fl": "bibcode"},
-            headers={"Authorization": f"Bearer {token}"},
-            timeout=5,
+# ── HTTP plumbing ─────────────────────────────────────────────────────────────
+
+def _require_token() -> str:
+    token = get_token()
+    if not token:
+        raise RuntimeError(
+            "No ADS API token.\n"
+            "Run: astrobib config token\n"
+            "Get one at: https://ui.adsabs.harvard.edu/user/settings/token"
         )
-        h = resp.headers
-        _quota = {
-            "limit": int(h.get("X-RateLimit-Limit", 0)),
-            "remaining": int(h.get("X-RateLimit-Remaining", 0)),
-            "reset": int(h.get("X-RateLimit-Reset", 0)),
-        }
+    return token
+
+
+def _update_quota(resp: httpx.Response) -> None:
+    global _quota
+    h = resp.headers
+    if h.get("X-RateLimit-Limit"):
+        try:
+            _quota = {
+                "limit": int(h.get("X-RateLimit-Limit", 0)),
+                "remaining": int(h.get("X-RateLimit-Remaining", 0)),
+                "reset": int(h.get("X-RateLimit-Reset", 0)),
+            }
+        except ValueError:
+            pass
+
+
+def _api_request(method: str, url: str, **kwargs) -> httpx.Response:
+    headers = {"Authorization": f"Bearer {_require_token()}"}
+    try:
+        resp = httpx.request(method, url, headers=headers, timeout=30, **kwargs)
+    except httpx.HTTPError as exc:
+        raise RuntimeError(f"ADS request failed: {exc}") from exc
+    _update_quota(resp)
+    if resp.status_code != 200:
+        detail = resp.text[:200].strip()
+        raise RuntimeError(f"ADS API error {resp.status_code}: {detail}")
+    return resp
+
+
+# ── Public API ────────────────────────────────────────────────────────────────
+
+def refresh_quota() -> dict | None:
+    try:
+        _api_request("GET", ADS_SEARCH_URL,
+                     params={"q": "*:*", "rows": "1", "fl": "bibcode"})
         return _quota
     except Exception:
         return None
 
 
-def _set_token():
-    token = get_token()
-    if not token:
-        raise RuntimeError(
-            "No ADS API token.\n"
-            "Run: astrobib token\n"
-            "Get one at: https://ui.adsabs.harvard.edu/user/settings/token"
-        )
-    _ads.config.token = token
+def search(query: str, limit: int = 20) -> list[Article]:
+    resp = _api_request("GET", ADS_SEARCH_URL, params={
+        "q": query,
+        "fl": ",".join(SEARCH_FIELDS),
+        "rows": limit,
+        "sort": "date desc",
+    })
+    docs = resp.json().get("response", {}).get("docs", [])
+    return [Article.from_doc(d) for d in docs]
 
 
-def search(query: str, limit: int = 20) -> list[_ads.search.Article]:
-    _set_token()
-    q = _ads.SearchQuery(q=query, fl=SEARCH_FIELDS, rows=limit, sort="date desc")
-    results = list(q)
-    global _quota
-    try:
-        rl = q._rate_limits
-        if rl and rl.get("limit"):
-            _quota = {k: int(v) for k, v in rl.items()}
-    except Exception:
-        pass
-    return results
+def _export_bibtex(bibcodes: list[str]) -> str:
+    resp = _api_request("POST", f"{ADS_API}/export/bibtex",
+                        json={"bibcode": bibcodes})
+    return resp.json().get("export", "")
 
 
 def fetch_bibtex(bibcode: str) -> dict | None:
-    _set_token()
-    exporter = _ads.ExportQuery(bibcodes=[bibcode], format="bibtex")
-    raw = exporter.execute()
+    raw = _export_bibtex([bibcode])
     if not raw:
         return None
     data = _parse_bibtex_string(raw)
@@ -110,7 +158,7 @@ def fetch_bibtex(bibcode: str) -> dict | None:
         return None
     # BibTeX export omits the abstract; fetch it separately
     try:
-        results = list(_ads.SearchQuery(q=f"bibcode:{bibcode}", fl=["abstract"], rows=1))
+        results = search(f"bibcode:{bibcode}", limit=1)
         if results and results[0].abstract:
             data["abstract"] = _clean_abstract(results[0].abstract)
     except Exception:
@@ -119,11 +167,9 @@ def fetch_bibtex(bibcode: str) -> dict | None:
 
 
 def fetch_bibtex_bulk(bibcodes: list[str]) -> list[dict]:
-    _set_token()
     if not bibcodes:
         return []
-    exporter = _ads.ExportQuery(bibcodes=bibcodes, format="bibtex")
-    raw = exporter.execute()
+    raw = _export_bibtex(bibcodes)
     if not raw:
         return []
     return _parse_bibtex_string_multi(raw)
@@ -140,7 +186,7 @@ def resolve_pdf_url(bibcode: str, link_type: str = "OA_PDF") -> str | None:
         return None
     try:
         resp = httpx.get(
-            f"https://api.adsabs.harvard.edu/v1/resolver/{bibcode}/{link_type}",
+            f"{ADS_API}/resolver/{bibcode}/{link_type}",
             headers={"Authorization": f"Bearer {token}"},
             timeout=10,
             follow_redirects=False,
@@ -153,16 +199,17 @@ def resolve_pdf_url(bibcode: str, link_type: str = "OA_PDF") -> str | None:
         return None
 
 
-def arxiv_id_from_article(article: _ads.search.Article) -> str | None:
+def arxiv_id_from_article(article: Article) -> str | None:
     for ident in article.identifier or []:
         if ident.startswith("arXiv:"):
             return ident[6:]
     return None
 
 
+# ── BibTeX parsing helpers ────────────────────────────────────────────────────
+
 def _clean_abstract(text: str) -> str:
     """Strip HTML tags and LaTeX braces from abstract text (display-only field)."""
-    import re
     text = re.sub(r'<[^>]+>', '', text)   # strip HTML tags (<SUB>, <i>, etc.)
     text = text.replace('{', '').replace('}', '')  # remove LaTeX brace groups
     return ' '.join(text.split())          # normalize whitespace
