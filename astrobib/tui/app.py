@@ -1456,7 +1456,7 @@ class AstrobibApp(App):
 
     async def action_close_tab(self) -> None:
         pane_id = self._active_pane_id()
-        if not pane_id or pane_id == "pane-library":
+        if not pane_id or pane_id in ("pane-library", "pane-manuscript"):
             return
         tab_id = pane_id.removeprefix("pane-")
         self._ads_views.pop(tab_id, None)
@@ -2007,11 +2007,12 @@ class AstrobibApp(App):
         on_library = pane_id == "pane-library"
         ads_view = self._active_ads_view()
 
-        # Actions only valid on ADS tabs (refresh_tab is footer-visible: grey on library)
+        # Actions only valid on ADS tabs (refresh_tab is footer-visible:
+        # greyed on the library and manuscript tabs)
         if action == "refresh_tab":
-            return True if not on_library else None
+            return True if ads_view is not None else None
         if action in ("close_tab", "more_results", "fewer_results"):
-            return not on_library
+            return ads_view is not None
 
         # Filter on library, edit query on ADS tabs — valid on both
         if action == "filter":
