@@ -9,7 +9,7 @@ description = "Astrophysics literature manager: ADS search, a personal BibTeX li
 readme = "README.md"
 requires-python = ">=3.11"
 authors = [
-    { name = "Jonathan Zrake", email = "jonathan.zrake@gmail.com" },
+    { name = "Jonathan Zrake", email = "jzrake@clemson.edu" },
 ]
 keywords = [
     "astronomy",
