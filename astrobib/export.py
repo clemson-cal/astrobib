@@ -4,9 +4,6 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from .library import Library
-
-
 # Matches \cite, \citep, \citet, \citealt, \citealp, \citeauthor, \citeyear,
 # \citenum, \Citet, \Citep, and starred variants — all with optional pre/post notes
 _CITE_RE = re.compile(r"\\[Cc]ite[a-zA-Z*]*(?:\[[^\]]*\]){0,2}\{([^}]+)\}")
@@ -79,24 +76,31 @@ def scan_tex_files(paths: list[Path]) -> set[str]:
 def export_refs(
     tex_files: list[Path],
     output: Path,
-    library: Library,
+    library,
 ) -> tuple[list[str], list[str]]:
     """Write refs.bib for the given TeX files.
 
-    Returns (found_keys, missing_keys).
+    Cited strings may be full keys or unambiguous prefixes; each emitted
+    entry is keyed by the string actually cited, so hash suffixes never
+    need to appear in the manuscript. Returns (found_keys, missing_keys);
+    ambiguous prefixes count as missing.
     """
+    from .library import format_bib_entry
+
     keys = scan_tex_files(tex_files)
     found: list[str] = []
     missing: list[str] = []
 
     bib_blocks: list[str] = []
-    for key in sorted(keys):
-        entry = library.get(key)
-        if entry:
-            bib_blocks.append(entry.path.read_text())
-            found.append(key)
+    for cited in sorted(keys):
+        entry = library.get(cited) or library.resolve(cited)
+        if entry is not None:
+            data = dict(entry.data)
+            data["ID"] = cited
+            bib_blocks.append(format_bib_entry(data))
+            found.append(cited)
         else:
-            missing.append(key)
+            missing.append(cited)
 
     output.write_text("\n".join(bib_blocks))
     return found, missing

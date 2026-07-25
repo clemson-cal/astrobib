@@ -252,6 +252,19 @@ class DetailPanel(VerticalScroll):
             foot.append(article.bibcode, style="dim")
         footer.update(foot)
 
+    def show_ambiguous_key(self, key: str, matches: list[Entry]) -> None:
+        body = self.query_one("#detail-body", Static)
+        footer = self.query_one("#detail-footer", Static)
+        lines = [f"[bold magenta]{key}[/bold magenta]\n",
+                 "[dim]Ambiguous cite key — matches several entries:[/dim]\n"]
+        for m in matches[:8]:
+            lines.append(f"  [cyan]{m.key}[/cyan]  [dim]{m.title[:48]}[/dim]")
+        lines.append("\n[dim]Lengthen the key in the .tex source until it is unique.[/dim]")
+        body.update("\n".join(lines))
+        footer.update("")
+        self._set_links("", "", "")
+        self._update_pdf_buttons(has_eprint=False, has_adsurl=False, has_doi=False)
+
     def show_missing_key(self, key: str) -> None:
         body = self.query_one("#detail-body", Static)
         footer = self.query_one("#detail-footer", Static)
@@ -585,16 +598,19 @@ class ManuscriptView(Vertical):
             self.entry = entry
             self.state = state
 
-    _STATE_ORDER = {"missing": 0, "library": 1, "uncited": 2, "ok": 3}
-    _STATE_STYLE = {"missing": "red", "library": "yellow", "uncited": "cyan", "ok": ""}
-    _STATE_LABEL = {"missing": "missing", "library": "in library", "uncited": "uncited", "ok": ""}
-    _STATE_ICON = {"missing": "✗", "library": "○", "uncited": "·", "ok": "◆"}
+    _STATE_ORDER = {"missing": 0, "ambiguous": 1, "library": 2, "uncited": 3, "ok": 4}
+    _STATE_STYLE = {"missing": "red", "ambiguous": "magenta", "library": "yellow",
+                    "uncited": "cyan", "ok": ""}
+    _STATE_LABEL = {"missing": "missing", "ambiguous": "ambiguous",
+                    "library": "in library", "uncited": "uncited", "ok": ""}
+    _STATE_ICON = {"missing": "✗", "ambiguous": "≈", "library": "○", "uncited": "·", "ok": "◆"}
 
     def __init__(self) -> None:
         super().__init__(id="manuscript-view")
         self._rows: list[tuple[str, str, Entry | None]] = []
         self._highlighted_key: str | None = None
         self._highlighted_state: str = "ok"
+        self._highlighted_entry: Entry | None = None
 
     def compose(self) -> ComposeResult:
         yield DataTable(id="ms-table", cursor_type="row")
@@ -611,25 +627,22 @@ class ManuscriptView(Vertical):
     def load(self, library: MergedLibrary | None, cited_keys: set[str]) -> None:
         ms = library.manuscript if library else None
         rows: list[tuple[str, str, Entry | None]] = []
-        for key in cited_keys:
-            entry = library.get(key) if library else None
-            if ms is not None and ms.has(key):
-                state = "ok"
-            elif entry is not None:
-                state = "library"
-            else:
-                state = "missing"
-            rows.append((key, state, entry))
+        targets: set[str] = set()
+        for cited in cited_keys:
+            state, entry = library.resolve_citation(cited) if library else ("missing", None)
+            if entry is not None:
+                targets.add(entry.key)
+            rows.append((cited, state, entry))
         if ms is not None:
             for e in ms.entries():
-                if e.key not in cited_keys:
+                if e.key not in targets:
                     rows.append((e.key, "uncited", (library.get(e.key) if library else e)))
         rows.sort(key=lambda r: (self._STATE_ORDER[r[1]], r[0].lower()))
         self._rows = rows
         self._refresh_table()
 
     def counts(self) -> dict[str, int]:
-        c = {"ok": 0, "library": 0, "missing": 0, "uncited": 0}
+        c = {"ok": 0, "library": 0, "missing": 0, "ambiguous": 0, "uncited": 0}
         for _, state, _ in self._rows:
             c[state] += 1
         return c
@@ -661,6 +674,7 @@ class ManuscriptView(Vertical):
         if row is None:
             row = self._rows[0] if self._rows else (None, "ok", None)
         self._highlighted_key, self._highlighted_state = row[0], row[1]
+        self._highlighted_entry = row[2]
         self.post_message(self.KeyHighlighted(row[0], row[2], row[1]))
 
     @on(DataTable.RowHighlighted, "#ms-table")
@@ -673,6 +687,7 @@ class ManuscriptView(Vertical):
         if row is None:
             return
         self._highlighted_key, self._highlighted_state = row[0], row[1]
+        self._highlighted_entry = row[2]
         self.post_message(self.KeyHighlighted(row[0], row[2], row[1]))
 
 
@@ -1122,10 +1137,12 @@ class AstrobibApp(App):
 
     def _manuscript_status(self, ms_view: ManuscriptView) -> str:
         c = ms_view.counts()
-        cited = c["ok"] + c["library"] + c["missing"]
+        cited = c["ok"] + c["library"] + c["missing"] + c["ambiguous"]
         parts = [f"{cited} cited"]
         if c["missing"]:
             parts.append(f"[red]{c['missing']} missing[/red]")
+        if c["ambiguous"]:
+            parts.append(f"[magenta]{c['ambiguous']} ambiguous[/magenta]")
         if c["library"]:
             parts.append(f"[yellow]{c['library']} in library — m to add[/yellow]")
         if c["uncited"]:
@@ -1133,18 +1150,24 @@ class AstrobibApp(App):
         return " · ".join(parts) + f"  [dim]· ms: {self._ms_root.name}[/dim]"
 
     def _write_refs_bib(self) -> None:
-        """Regenerate refs.bib from cited manuscript entries, only on change."""
+        """Regenerate refs.bib from cited manuscript entries, only on change.
+
+        Each entry is emitted under the string actually cited in the .tex
+        (full key or unambiguous prefix), so hash suffixes stay out of the
+        manuscript.
+        """
+        from ..library import format_bib_entry
         ms = self._library.manuscript if self._library else None
         if ms is None or self._ms_root is None:
             return
         blocks: list[str] = []
-        for key in sorted(self._cited_keys):
-            e = ms.get(key)
-            if e is not None:
-                try:
-                    blocks.append(e.path.read_text())
-                except OSError:
-                    pass
+        for cited in sorted(self._cited_keys):
+            state, entry = self._library.resolve_citation(cited)
+            if state != "ok" or entry is None:
+                continue
+            data = dict((ms.get(entry.key) or entry).data)
+            data["ID"] = cited
+            blocks.append(format_bib_entry(data))
         content = "\n".join(blocks)
         out = self._ms_root / "refs.bib"
         try:
@@ -1170,9 +1193,11 @@ class AstrobibApp(App):
         elif pane_id == "pane-manuscript":
             ms_view = self.query_one(ManuscriptView)
             key = ms_view._highlighted_key
-            entry = self._library.get(key) if (key and self._library) else None
+            entry = ms_view._highlighted_entry
             if entry is not None:
                 detail.show_entry(entry)
+            elif key and ms_view._highlighted_state == "ambiguous" and self._library:
+                detail.show_ambiguous_key(key, self._library.possible_matches(key))
             elif key:
                 detail.show_missing_key(key)
             else:
@@ -1213,6 +1238,8 @@ class AstrobibApp(App):
         detail = self.query_one(DetailPanel)
         if event.entry is not None:
             detail.show_entry(event.entry)
+        elif event.key and event.state == "ambiguous" and self._library:
+            detail.show_ambiguous_key(event.key, self._library.possible_matches(event.key))
         elif event.key:
             detail.show_missing_key(event.key)
         else:
@@ -1491,14 +1518,18 @@ class AstrobibApp(App):
         if self._active_pane_id() == "pane-manuscript":
             ms_view = self.query_one(ManuscriptView)
             key, state = ms_view._highlighted_key, ms_view._highlighted_state
+            entry = ms_view._highlighted_entry
             if not key:
                 return
-            if state == "library":
-                self._library.add_to_manuscript(key)
-                self._set_status(f"[green]Added {key} to manuscript db[/green]")
-            elif state in ("ok", "uncited"):
-                self._library.remove_from_manuscript(key)
-                self._set_status(f"Removed {key} from manuscript db")
+            if state == "library" and entry is not None:
+                self._library.add_to_manuscript(entry.key)
+                self._set_status(f"[green]Added {entry.key} to manuscript db[/green]")
+            elif state in ("ok", "uncited") and entry is not None:
+                self._library.remove_from_manuscript(entry.key)
+                self._set_status(f"Removed {entry.key} from manuscript db")
+            elif state == "ambiguous":
+                self._set_status(f"[magenta]{key} is ambiguous — lengthen it in the .tex[/magenta]")
+                return
             else:
                 self._set_status(f"[yellow]{key} not found anywhere — S to search ADS[/yellow]")
                 return

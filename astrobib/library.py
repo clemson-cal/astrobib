@@ -256,6 +256,27 @@ class MergedLibrary:
             seen.update(entry.keywords)
         return sorted(seen)
 
+    def resolve_citation(self, cited: str) -> "tuple[str, Entry | None]":
+        """Classify a cite string from a manuscript, allowing unambiguous
+        prefixes of full keys (so hash suffixes can stay out of the .tex).
+
+        Returns (state, entry): 'ok' (resolves to a manuscript entry),
+        'library' (resolves, but only in the personal library),
+        'ambiguous' (prefix of several keys), or 'missing' (no match).
+        """
+        entry = self.get(cited)
+        if entry is None:
+            matches = self.possible_matches(cited)
+            if len(matches) == 1:
+                entry = matches[0]
+            elif matches:
+                return "ambiguous", None
+            else:
+                return "missing", None
+        if self.in_manuscript(entry.key):
+            return "ok", entry
+        return "library", entry
+
     def in_manuscript(self, key: str) -> bool:
         return self.manuscript is not None and self.manuscript.has(key)
 

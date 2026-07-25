@@ -274,18 +274,20 @@ def import_cmd(file: Path, personal_only: bool, ms_only: bool, verify: bool):
                 console.print(f"  Import: {data.get('title', '')[:65]}")
                 replace = click.confirm("  Replace?", default=False)
             if not replace:
-                console.print(f"  [dim]{orig_key} → {key}  (already present — kept existing)[/dim]")
-                if orig_key != key:
-                    renames.append((orig_key, key))  # key mapping still applies
+                short = holder.get(key).short_key or key
+                console.print(f"  [dim]{orig_key} → {short}  (already present — kept existing)[/dim]")
+                if orig_key != short:
+                    renames.append((orig_key, short))  # key mapping still applies
                 skipped += 1
                 continue
         for t in targets:
             entry = t.save_entry(dict(data))
-        if orig_key != entry.key:
-            renames.append((orig_key, entry.key))
-            console.print(f"  {orig_key} → [cyan]{entry.key}[/cyan]")
+        new_key = entry.short_key or entry.key
+        if orig_key != new_key:
+            renames.append((orig_key, new_key))
+            console.print(f"  {orig_key} → [cyan]{new_key}[/cyan]")
         else:
-            console.print(f"  [cyan]{entry.key}[/cyan]")
+            console.print(f"  [cyan]{new_key}[/cyan]")
         added += 1
 
     console.print(f"\n[green]{added}[/green] imported → {dest}, [dim]{skipped}[/dim] skipped.")
@@ -370,16 +372,22 @@ def refs_cmd(tex_files: tuple[Path, ...], output: Path, prune: bool):
 
     copied: list[str] = []
     missing: list[str] = []
-    for key in sorted(keys):
-        if ms.has(key):
-            continue
-        if merged.personal.has(key):
-            merged.add_to_manuscript(key)
-            copied.append(key)
+    ambiguous: list[str] = []
+    targets: set[str] = set()
+    for cited in sorted(keys):
+        state, entry = merged.resolve_citation(cited)
+        if state == "ok":
+            targets.add(entry.key)
+        elif state == "library":
+            merged.add_to_manuscript(entry.key)
+            targets.add(entry.key)
+            copied.append(entry.key if cited == entry.key else f"{cited} → {entry.key}")
+        elif state == "ambiguous":
+            ambiguous.append(cited)
         else:
-            missing.append(key)
+            missing.append(cited)
 
-    uncited = sorted(e.key for e in ms.entries() if e.key not in keys)
+    uncited = sorted(e.key for e in ms.entries() if e.key not in targets)
     if prune and uncited:
         for key in uncited:
             ms.remove_entry(key)
@@ -398,10 +406,16 @@ def refs_cmd(tex_files: tuple[Path, ...], output: Path, prune: bool):
         console.print(f"[dim]{len(uncited)} uncited entr{'y' if len(uncited)==1 else 'ies'} in bib/ (use --prune to remove):[/dim]")
         for key in uncited:
             console.print(f"  [dim]{key}[/dim]")
+    if ambiguous:
+        console.print(f"[magenta]{len(ambiguous)} ambiguous key(s) — lengthen in the .tex:[/magenta]")
+        for key in ambiguous:
+            for m in merged.possible_matches(key)[:4]:
+                console.print(f"  [magenta]{key}[/magenta] → [dim]{m.key}?[/dim]")
     if missing:
         console.print(f"[yellow]Missing {len(missing)} key(s) (not in any database):[/yellow]")
         for key in missing:
             console.print(f"  [yellow]{key}[/yellow]")
+    if missing or ambiguous:
         raise SystemExit(1)
 
 

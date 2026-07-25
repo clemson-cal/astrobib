@@ -134,7 +134,19 @@ keys found in the `.tex` sources and entries in `bib/`, color-coded:
 | normal `◆` | cited and in `bib/` — healthy |
 | yellow `○` | cited, in your personal library but not `bib/` — press `m` to add |
 | red `✗` | cited but found nowhere — fix the key, or `S` to search ADS (pre-filled) |
+| magenta `≈` | cite key is an ambiguous prefix of several entries — lengthen it |
 | cyan `·` | in `bib/` but cited by nothing — press `m` to remove |
+
+### Citing by short key
+
+Cite keys in the `.tex` may be **any unambiguous prefix** of a database
+key: `\citep{Zrake2020}` finds `Zrake2020axbxt` as long as no other key
+starts with `Zrake2020`. The generated `refs.bib` keys each entry by the
+string actually cited, so the hash suffixes that protect the shared
+databases never appear in the manuscript. If a prefix later becomes
+ambiguous (a second Zrake-2020 paper arrives), the Manuscript tab and
+`astrobib refs` flag it and list the candidates — lengthen the key by a
+character or two.
 
 If `main.tex` exists it is the sole root document — other top-level
 `.tex` files (old drafts, notes) are ignored; otherwise every top-level
