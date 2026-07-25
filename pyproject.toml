@@ -4,9 +4,36 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "astrobib"
-version = "0.1.0"
-description = "Computational Astrophysics Lab literature manager"
+dynamic = ["version"]
+description = "Astrophysics literature manager: ADS search, a personal BibTeX library, UAT keywords, and refs.bib generation for LaTeX manuscripts, with a Textual TUI"
+readme = "README.md"
 requires-python = ">=3.11"
+authors = [
+    { name = "Jonathan Zrake", email = "jonathan.zrake@gmail.com" },
+]
+keywords = [
+    "astronomy",
+    "astrophysics",
+    "bibliography",
+    "bibtex",
+    "ads",
+    "latex",
+    "literature",
+    "tui",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Astronomy",
+    "Topic :: Text Processing :: Markup :: LaTeX",
+]
 dependencies = [
     "ads>=0.12",
     "bibtexparser>=1.4,<2",
@@ -16,8 +43,16 @@ dependencies = [
     "textual>=0.60",
 ]
 
+[project.urls]
+Homepage = "https://github.com/jzrake/astrobib"
+Repository = "https://github.com/jzrake/astrobib"
+Issues = "https://github.com/jzrake/astrobib/issues"
+
 [project.scripts]
 astrobib = "astrobib.cli:main"
+
+[tool.setuptools.dynamic]
+version = { attr = "astrobib.__version__" }
 
 [tool.setuptools.packages.find]
 where = ["."]
