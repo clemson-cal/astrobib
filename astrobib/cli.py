@@ -17,12 +17,14 @@ from .state import (
 from .library import Library
 from .keys import generate_key
 from . import ads_client
+from . import __version__
 from .export import export_refs
 
 console = Console()
 
 
 @click.group(invoke_without_command=True)
+@click.version_option(version=__version__, prog_name="astrobib")
 @click.pass_context
 def main(ctx: click.Context):
     """astrobib — astrophysics literature manager."""

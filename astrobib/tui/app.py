@@ -1091,6 +1091,8 @@ class AstrobibApp(App):
         return MergedLibrary(personal=personal, manuscript=ms)
 
     async def on_mount(self) -> None:
+        from .. import __version__
+        self.title = f"astrobib {__version__}"
         self._uat = get_uat(UAT_CACHE, auto_fetch=False)
 
         if self._ms_root:
