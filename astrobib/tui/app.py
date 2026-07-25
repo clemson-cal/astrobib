@@ -1440,6 +1440,31 @@ class AstrobibApp(App):
             tabs.action_previous_tab()
         self.call_after_refresh(self._focus_active_table)
 
+    def _selection_size(self) -> int:
+        """Number of check-selected rows on the active view."""
+        pane_id = self._active_pane_id()
+        if pane_id == "pane-library":
+            return len(self.query_one(LibraryView)._selected_keys)
+        ads_view = self._active_ads_view()
+        return len(ads_view._selected_bibcodes) if ads_view else 0
+
+    def _selection_entries(self) -> list[Entry]:
+        """Library entries targeted by the current check-selection (ADS
+        selections resolve through bibcodes; unimported ones drop out)."""
+        if self._library is None:
+            return []
+        pane_id = self._active_pane_id()
+        if pane_id == "pane-library":
+            lib_view = self.query_one(LibraryView)
+            return [e for k in lib_view.get_selected_keys()
+                    if (e := self._library.get(k)) is not None]
+        ads_view = self._active_ads_view()
+        if ads_view is not None and ads_view._selected_bibcodes:
+            return [e for a in ads_view._articles
+                    if a.bibcode in ads_view._selected_bibcodes
+                    and (e := self._library.get_by_bibcode(a.bibcode)) is not None]
+        return []
+
     def _focus_active_table(self) -> None:
         pane_id = self._active_pane_id()
         if pane_id == "pane-library":
@@ -1600,9 +1625,17 @@ class AstrobibApp(App):
             self.push_screen(ConfigModal())
             self._set_status("[yellow]Set your ADS token first.[/yellow]")
             return
+        if self._selection_size() > 1:
+            self._set_status(f"[yellow]{kind} works on a single paper — "
+                             f"deselect down to one (Space)[/yellow]")
+            return
         ads_view = self._active_ads_view()
         if ads_view is not None:
-            a = ads_view._selected_article
+            if ads_view._selected_bibcodes:
+                bc = next(iter(ads_view._selected_bibcodes))
+                a = next((x for x in ads_view._articles if x.bibcode == bc), None)
+            else:
+                a = ads_view._selected_article
             if a is None:
                 self._set_status("[yellow]Select an article first.[/yellow]")
                 return
@@ -1610,7 +1643,8 @@ class AstrobibApp(App):
             surname = (a.author[0].split(",")[0] if a.author else "").replace(" ", "")
             label_key = f"{surname}{a.year or ''}" or bibcode
         else:
-            entry = self.query_one(LibraryView)._highlighted_entry
+            selected = self._selection_entries()
+            entry = selected[0] if selected else self.query_one(LibraryView)._highlighted_entry
             if entry is None:
                 self._set_status("[yellow]Select a paper first.[/yellow]")
                 return
@@ -1892,6 +1926,17 @@ class AstrobibApp(App):
 
     def action_remove_paper(self) -> None:
         ads_view = self._active_ads_view()
+        selected = self._selection_entries()
+        if selected:
+            for e in selected:
+                self._library.remove_entry(e.key)
+            self._reload_library()
+            if ads_view is not None:
+                ads_view._selected_bibcodes.clear()
+                ads_view.update_lib_status(self._library)
+            self.refresh_bindings()
+            self._set_status(f"[green]Removed {len(selected)} paper(s)[/green]")
+            return
         if ads_view is None:
             if self._active_pane_id() == "pane-library":
                 entry = self.query_one(LibraryView)._highlighted_entry
@@ -1917,6 +1962,18 @@ class AstrobibApp(App):
         self.refresh_bindings()
         self._set_status(f"[green]Removed {entry.key}[/green]")
 
+    def _selected_cache_keys(self) -> list[str]:
+        """PDF-cache keys for the current selection: library cite keys, or
+        raw bibcodes on ADS tabs (ADS-side downloads are keyed by bibcode)."""
+        pane_id = self._active_pane_id()
+        if pane_id == "pane-library":
+            return self.query_one(LibraryView).get_selected_keys()
+        ads_view = self._active_ads_view()
+        if ads_view is not None:
+            return [a.bibcode for a in ads_view._articles
+                    if a.bibcode in ads_view._selected_bibcodes]
+        return []
+
     def action_clear_pdf(self) -> None:
         from .. import pdf as _pdf
         if self._poll_cancel is not None:
@@ -1925,6 +1982,21 @@ class AstrobibApp(App):
             self._set_status("[dim]Browser download cancelled[/dim]")
             return
         ads_view = self._active_ads_view()
+        selected = self._selected_cache_keys()
+        if selected:
+            cleared = 0
+            for key in selected:
+                path = _pdf.cache_path(key)
+                if path.exists():
+                    path.unlink()
+                    cleared += 1
+            if ads_view is not None:
+                ads_view.refresh_pdf_status()
+            else:
+                self.query_one(LibraryView).refresh_pdf_status()
+            self.refresh_bindings()
+            self._set_status(f"[green]Cleared {cleared} cached PDF(s)[/green]")
+            return
         if ads_view is not None:
             article = ads_view._selected_article
             if article:
@@ -1946,6 +2018,37 @@ class AstrobibApp(App):
     def action_download_pdf(self) -> None:
         from .. import pdf, ads_client as _ac
         ads_view = self._active_ads_view()
+        if self._selection_size():
+            items: list[tuple[str, str, str, str]] = []
+            skipped = 0
+            if ads_view is not None:
+                for a in ads_view._articles:
+                    if a.bibcode not in ads_view._selected_bibcodes:
+                        continue
+                    if not (self._library and self._library.has_bibcode(a.bibcode)):
+                        skipped += 1
+                        continue
+                    eprint = _ac.arxiv_id_from_article(a) or ""
+                    doi = (a.doi or [""])[0]
+                    if not eprint and not doi:
+                        skipped += 1
+                        continue
+                    items.append((a.bibcode, eprint, doi,
+                                  f"https://ui.adsabs.harvard.edu/abs/{a.bibcode}"))
+            else:
+                for e in self._selection_entries():
+                    if not (e.eprint or e.doi):
+                        skipped += 1
+                        continue
+                    items.append((e.key, e.eprint, e.doi, e.adsurl))
+            if not items:
+                self._set_status("[yellow]No downloadable PDFs in selection.[/yellow]")
+                return
+            self._cancel_poll()
+            note = f" ({skipped} skipped)" if skipped else ""
+            self._set_status(f"Downloading {len(items)} PDF(s)…{note}")
+            self.run_worker(self._do_download_pdf_batch(items, ads_view), exclusive=True)
+            return
         if ads_view is not None:
             article = ads_view._selected_article
             if article is None:
@@ -1965,6 +2068,29 @@ class AstrobibApp(App):
         self._cancel_poll()
         self._set_status(f"Downloading {key}…")
         self.run_worker(self._do_download_pdf(key, eprint, doi, adsurl, ads_view), exclusive=True)
+
+    async def _do_download_pdf_batch(self, items: "list[tuple[str, str, str, str]]",
+                                     ads_view: "AdsView | None") -> None:
+        import asyncio
+        from .. import pdf
+        done, failed = 0, []
+        for i, (key, eprint, doi, adsurl) in enumerate(items, 1):
+            self._set_status(f"Downloading [{i}/{len(items)}] {key}…")
+            path = await asyncio.to_thread(
+                pdf.fetch, key, eprint=eprint, doi=doi, adsurl=adsurl)
+            if path is None:
+                failed.append(key)
+            else:
+                done += 1
+        if ads_view is not None:
+            ads_view.refresh_pdf_status()
+        else:
+            self.query_one(LibraryView).refresh_pdf_status()
+        self.refresh_bindings()
+        msg = f"[green]Downloaded {done}/{len(items)} PDF(s)[/green]"
+        if failed:
+            msg += f"  [yellow]failed: {', '.join(failed[:4])}{'…' if len(failed) > 4 else ''}[/yellow]"
+        self._set_status(msg)
 
     async def _do_download_pdf(self, key: str, eprint: str, doi: str,
                                 adsurl: str, ads_view: "AdsView | None",
@@ -2080,9 +2206,17 @@ class AstrobibApp(App):
 
     def action_browser_pdf(self) -> None:
         from .. import pdf, ads_client as _ac
+        if self._selection_size() > 1:
+            self._set_status("[yellow]Browser download works on a single paper — "
+                             "deselect down to one (Space)[/yellow]")
+            return
         ads_view = self._active_ads_view()
         if ads_view is not None:
-            article = ads_view._selected_article
+            if ads_view._selected_bibcodes:
+                bc = next(iter(ads_view._selected_bibcodes))
+                article = next((x for x in ads_view._articles if x.bibcode == bc), None)
+            else:
+                article = ads_view._selected_article
             if article is None:
                 return
             doi = (article.doi or [""])[0]
@@ -2090,7 +2224,8 @@ class AstrobibApp(App):
             adsurl = f"https://ui.adsabs.harvard.edu/abs/{article.bibcode}"
             eprint = _ac.arxiv_id_from_article(article)
         else:
-            entry = self.query_one(LibraryView)._highlighted_entry
+            selected = self._selection_entries()
+            entry = selected[0] if selected else self.query_one(LibraryView)._highlighted_entry
             if entry is None:
                 return
             doi, key, adsurl, eprint = entry.doi, entry.key, entry.adsurl, entry.eprint
@@ -2141,6 +2276,20 @@ class AstrobibApp(App):
         if self._library is None:
             return
         pane_id = self._active_pane_id()
+        selected = self._selection_entries()
+        if selected:
+            # if any selected entry is unstarred, star them all; else unstar all
+            target = any(not e.starred for e in selected)
+            for e in selected:
+                self._library.set_starred(e.key, target)
+            if pane_id == "pane-library":
+                self.query_one(LibraryView).refresh_star_status()
+            else:
+                ads_view = self._active_ads_view()
+                if ads_view:
+                    ads_view.update_lib_status(self._library)
+            self._set_status(f"{'★ Starred' if target else 'Unstarred'} {len(selected)} paper(s)")
+            return
         if pane_id == "pane-library":
             lib_view = self.query_one(LibraryView)
             entry = lib_view._highlighted_entry
@@ -2178,71 +2327,84 @@ class AstrobibApp(App):
         self.push_screen(HelpScreen())
 
     def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
+        # Policy: return True (enabled) or None (visible but dimmed) —
+        # never False — so key listings always show every action.
+        # When a check-selection exists, actions target the selection;
+        # single-item actions (references/citations/browser) dim at >1.
         from .. import pdf as _pdf
         pane_id = self._active_pane_id()
         on_library = pane_id == "pane-library"
         ads_view = self._active_ads_view()
+        n_sel = self._selection_size()
 
-        # Actions only valid on ADS tabs (refresh_tab is footer-visible:
-        # greyed on the library and manuscript tabs)
-        if action == "refresh_tab":
+        # Actions only valid on ADS query tabs
+        if action in ("refresh_tab", "close_tab", "more_results", "fewer_results"):
             return True if ads_view is not None else None
-        if action in ("close_tab", "more_results", "fewer_results"):
-            return ads_view is not None
 
         # Filter on library, edit query on ADS tabs — valid on both
         if action == "filter":
             return True if (on_library or ads_view) else None
         if action == "export_selected":
-            return on_library
+            return True if on_library else None
 
         if action == "toggle_select":
             if on_library:
                 return True
             if ads_view:
-                return ads_view._selected_article is not None
-            return False
+                return True if ads_view._selected_article is not None else None
+            return None
 
         if action in ("toggle_manuscript", "toggle_ms_only"):
             has_ms = bool(self._library and self._library.manuscript)
             on_manuscript = pane_id == "pane-manuscript"
             if action == "toggle_ms_only":
-                return on_library and has_ms
+                return True if (on_library and has_ms) else None
             if on_library and has_ms:
                 lib_view = self.query_one(LibraryView)
-                return bool(lib_view._selected_keys or lib_view._highlighted_entry)
+                return True if (lib_view._selected_keys or lib_view._highlighted_entry) else None
             if on_manuscript and has_ms:
-                return self.query_one(ManuscriptView)._highlighted_key is not None
-            return False
+                return True if self.query_one(ManuscriptView)._highlighted_key else None
+            return None
 
         if action in ("references", "citations"):
+            if n_sel > 1:
+                return None  # single-paper actions
             if on_library:
-                entry = self.query_one(LibraryView)._highlighted_entry
-                return entry is not None and bool(entry.adsurl)
+                selected = self._selection_entries()
+                entry = selected[0] if selected \
+                    else self.query_one(LibraryView)._highlighted_entry
+                return True if (entry is not None and entry.adsurl) else None
             if ads_view:
-                return ads_view._selected_article is not None
-            return False
+                return True if (n_sel == 1 or ads_view._selected_article) else None
+            return None
 
         if action == "star":
+            selected = self._selection_entries()
+            if selected:
+                return True
+            if n_sel:  # selection exists but nothing in library
+                return None
             if on_library:
-                lib_view = self.query_one(LibraryView)
-                return lib_view._highlighted_entry is not None
+                return True if self.query_one(LibraryView)._highlighted_entry else None
             if ads_view:
                 a = ads_view._selected_article
-                return a is not None and self._library is not None and self._library.has_bibcode(a.bibcode)
-            return False
+                return True if (a is not None and self._library is not None
+                                and self._library.has_bibcode(a.bibcode)) else None
+            return None
 
         if action == "clear_pdf":
             if self._poll_cancel is not None:
                 return True
+            if n_sel:
+                return True if any(_pdf.is_cached(k) for k in self._selected_cache_keys()) else None
             if on_library:
                 entry = self.query_one(LibraryView)._highlighted_entry
-                return entry is not None and _pdf.is_cached(entry.key)
+                return True if (entry is not None and _pdf.is_cached(entry.key)) else None
             if ads_view and ads_view._selected_article:
                 a = ads_view._selected_article
-                return (self._library is not None and self._library.has_bibcode(a.bibcode)
-                        and _pdf.is_cached(a.bibcode))
-            return False
+                return True if (self._library is not None and self._library.has_bibcode(a.bibcode)
+                                and _pdf.is_cached(a.bibcode)) else None
+            return None
 
         if action == "open_pdf":
             if on_library:
@@ -2259,12 +2421,20 @@ class AstrobibApp(App):
             return None
 
         if action == "download_pdf":
+            if n_sel:
+                if on_library:
+                    return True if any(e.eprint or e.doi for e in self._selection_entries()) else None
+                if ads_view:
+                    return True if any(
+                        self._library and self._library.has_bibcode(a.bibcode)
+                        and (a.identifier or (a.doi and a.doi[0]))
+                        for a in ads_view._articles
+                        if a.bibcode in ads_view._selected_bibcodes) else None
+                return None
             if on_library:
                 entry = self.query_one(LibraryView)._highlighted_entry
                 return (entry is not None and bool(entry.eprint or entry.doi)) or None
             if ads_view:
-                if ads_view._selected_bibcodes:
-                    return None
                 a = ads_view._selected_article
                 if a is None or not (self._library and self._library.has_bibcode(a.bibcode)):
                     return None
@@ -2272,15 +2442,22 @@ class AstrobibApp(App):
             return None
 
         if action == "browser_pdf":
+            if n_sel > 1:
+                return None  # single-paper action
             if on_library:
-                entry = self.query_one(LibraryView)._highlighted_entry
-                return entry is not None and bool(entry.doi or entry.adsurl)
+                selected = self._selection_entries()
+                entry = selected[0] if selected \
+                    else self.query_one(LibraryView)._highlighted_entry
+                return True if (entry is not None and (entry.doi or entry.adsurl)) else None
             if ads_view:
+                if n_sel == 1:
+                    bc = next(iter(ads_view._selected_bibcodes))
+                    return True if (self._library and self._library.has_bibcode(bc)) else None
                 a = ads_view._selected_article
                 if a is None or not (self._library and self._library.has_bibcode(a.bibcode)):
-                    return False
-                return bool((a.doi and a.doi[0]) or a.bibcode)
-            return False
+                    return None
+                return True if ((a.doi and a.doi[0]) or a.bibcode) else None
+            return None
 
         if action == "add_paper":
             if on_library:
@@ -2297,6 +2474,8 @@ class AstrobibApp(App):
             return True
 
         if action == "remove_paper":
+            if n_sel:
+                return True if self._selection_entries() else None
             if on_library:
                 lib_view = self.query_one(LibraryView)
                 return (lib_view._highlighted_entry is not None) or None

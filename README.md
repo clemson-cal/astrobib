@@ -38,8 +38,8 @@ astrobib token
 ## TUI key bindings
 ### Core actions (shown in footer)
 - `i` — Import highlighted/selected papers to library (ADS tabs)
-- `d` — Remove highlighted paper from library
-- `p` — Download PDF for highlighted paper
+- `d` — Remove highlighted/selected papers from library
+- `p` — Download PDFs for highlighted/selected papers
 - `o` — Open cached PDF (all selected, or highlighted)
 - `/` — Library: filter with query syntax (see [Filtering the library](#filtering-the-library)). ADS tab: view/edit the tab's query
 - `S` — Open new ADS search tab
@@ -47,20 +47,20 @@ astrobib token
 - `?` — Show this help
 - `q` — Quit
 
-Footer actions keep fixed positions; a greyed-out action is unavailable in the current context (wrong tab, no PDF cached, already imported, …).
+Footer actions keep fixed positions; a greyed-out action is unavailable in the current context (wrong tab, no PDF cached, already imported, …). When rows are check-selected with `Space`, actions apply to the selection rather than the cursor row; single-paper actions (`R`, `c`, `B`) are dimmed while more than one row is selected.
 
 ### More keys
 - `Space` — Toggle selection of highlighted row
 - `y` — Copy highlighted/selected cite key(s), shortest unambiguous form
 - `Y` — Copy highlighted/selected cite key(s), full form with hash
-- `s` — Star / unstar highlighted paper
+- `s` — Star / unstar highlighted/selected papers
 - `m` — Add/remove highlighted or selected papers in the manuscript db
 - `M` — Toggle manuscript-only view (hide personal-library-only papers)
-- `R` — Browse references of highlighted paper (opens ADS tab)
-- `c` — Browse citations of highlighted paper (opens ADS tab)
+- `R` — Browse references of the highlighted or single-selected paper (opens ADS tab)
+- `c` — Browse citations of the highlighted or single-selected paper (opens ADS tab)
 - `e` — Export selected papers to `astrobib-export.bib`
 - `B` — Download PDF via system browser (watches `~/Downloads`)
-- `X` — Clear cached PDF (or cancel a browser download)
+- `X` — Clear cached PDFs for highlighted/selected papers (or cancel a browser download)
 - `u` — Open UAT concept browser
 - `C` — Configuration (ADS API token)
 - `[` / `]` — Switch to previous / next tab
