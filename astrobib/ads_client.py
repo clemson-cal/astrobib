@@ -4,12 +4,19 @@ from __future__ import annotations
 import re
 from urllib.parse import unquote
 
+import warnings
+
 import bibtexparser
 import httpx
 from bibtexparser.bparser import BibTexParser
 from bibtexparser.customization import convert_to_unicode
 
-import ads as _ads
+# The ads package (last released 2020) contains regex literals with invalid
+# escape sequences; Python >= 3.12 emits SyntaxWarnings when compiling it on
+# first import. Harmless at runtime — silence them at this boundary.
+with warnings.catch_warnings():
+    warnings.filterwarnings("ignore", category=SyntaxWarning)
+    import ads as _ads
 
 from .state import get_token
 
