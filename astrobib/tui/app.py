@@ -1525,8 +1525,10 @@ class AstrobibApp(App):
                 self._library.add_to_manuscript(entry.key)
                 self._set_status(f"[green]Added {entry.key} to manuscript db[/green]")
             elif state in ("ok", "uncited") and entry is not None:
+                rescued = not self._library.in_personal(entry.key)
                 self._library.remove_from_manuscript(entry.key)
-                self._set_status(f"Removed {entry.key} from manuscript db")
+                note = "  [dim](copied to personal library)[/dim]" if rescued else ""
+                self._set_status(f"Removed {entry.key} from manuscript db{note}")
             elif state == "ambiguous":
                 self._set_status(f"[magenta]{key} is ambiguous — lengthen it in the .tex[/magenta]")
                 return

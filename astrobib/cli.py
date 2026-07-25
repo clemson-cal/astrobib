@@ -389,9 +389,11 @@ def refs_cmd(tex_files: tuple[Path, ...], output: Path, prune: bool):
 
     uncited = sorted(e.key for e in ms.entries() if e.key not in targets)
     if prune and uncited:
+        rescued = [k for k in uncited if not merged.in_personal(k)]
         for key in uncited:
-            ms.remove_entry(key)
-        console.print(f"[yellow]Pruned {len(uncited)} uncited entr{'y' if len(uncited)==1 else 'ies'}.[/yellow]")
+            merged.remove_from_manuscript(key)
+        note = (f" ({len(rescued)} moved to personal library)" if rescued else "")
+        console.print(f"[yellow]Pruned {len(uncited)} uncited entr{'y' if len(uncited)==1 else 'ies'}.{note}[/yellow]")
         uncited = []
 
     output_path = output if output.is_absolute() else ms_root / output

@@ -38,7 +38,8 @@ A manuscript database is a `bib/` directory inside a manuscript's git repo. It u
 - astrobib never runs git on a manuscript repo. Versioning rides along in the user's own paper commits.
 - Copies, not links: an entry added to a manuscript database is a self-contained copy of the `.bib` file, so the repo stands alone for coauthors. Identical content yields identical keys, so copies agree across databases.
 - Personal fields (`astrobib_starred`) are stripped from manuscript copies. The manuscript database is shared; stars are personal.
-- The sync flow (`astrobib refs`) may add cited entries and, only with an explicit flag, remove uncited ones. It never modifies the personal library.
+- The sync flow (`astrobib refs`) may add cited entries and, only with an explicit flag, remove uncited ones. It never removes anything from the personal library.
+- Removal from a manuscript database is never destructive: if the manuscript holds the only copy of an entry (e.g. imported `--ms-only`, or added by a coauthor), removing it first copies it into the personal library.
 
 ## Persistent searches are user-local
 

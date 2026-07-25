@@ -168,6 +168,11 @@ While a manuscript db is active:
 astrobib never runs git on the manuscript repo — bib files ride along in
 your normal paper commits.
 
+Removal from the manuscript db is never destructive: if it holds the
+only copy of an entry (imported `--ms-only`, or added by a coauthor),
+removing it via `m` or `refs --prune` first copies it into your
+personal library.
+
 ### The Manuscript tab
 
 A **Manuscript** tab appears next to Library, showing the union of cite

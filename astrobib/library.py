@@ -325,8 +325,21 @@ class MergedLibrary:
         return True
 
     def remove_from_manuscript(self, key: str) -> bool:
+        """Remove an entry from the manuscript db.
+
+        If the manuscript holds the only copy, it is first copied into
+        the personal library — removal never destroys bibdata, it just
+        demotes the entry to personal-only.
+        """
         if self.manuscript is None or not self.manuscript.has(key):
             return False
+        if not self.personal.has(key):
+            entry = self.manuscript.get(key)
+            path = self.personal.root / "bib" / f"{key}.bib"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(format_bib_entry(entry.data))
+            self.personal._entries[key] = Entry(data=dict(entry.data), path=path)
+            self.personal._compute_short_keys()
         self.manuscript.remove_entry(key)
         return True
 
