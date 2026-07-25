@@ -265,13 +265,13 @@ def import_cmd(file: Path, personal_only: bool, ms_only: bool, verify: bool):
             data = resolved
         key = generate_key(data)
         # dedupe by bibcode too: catches the same paper stored under a
-        # legacy (non-canonical) key
+        # different key (e.g. hand-written)
         bc = ads_client.bibcode_from_url(data.get("adsurl") or "")
         existing_bc = next((t.get_by_bibcode(bc) for t in targets
                             if bc and t.get_by_bibcode(bc) is not None), None)
         if existing_bc is not None and existing_bc.key != key:
             short = existing_bc.short_key or existing_bc.key
-            console.print(f"  [dim]{orig_key} → {short}  (already present under a legacy key — kept existing)[/dim]")
+            console.print(f"  [dim]{orig_key} → {short}  (already present under a different key — kept existing)[/dim]")
             if orig_key != short:
                 renames.append((orig_key, short))
             skipped += 1
@@ -343,7 +343,7 @@ def export_cmd(tex_files: tuple[Path, ...], output: Path, list_missing: bool):
             raise SystemExit(1)
 
 
-# ── update / rekey ────────────────────────────────────────────────────────────
+# ── update ────────────────────────────────────────────────────────────────────
 
 @main.command("update")
 @click.option("--all", "update_all", is_flag=True,
@@ -408,49 +408,6 @@ def update_cmd(update_all: bool):
     console.print(summary)
 
 
-@main.command("rekey")
-@click.option("--apply", "do_apply", is_flag=True,
-              help="Rename the .bib files and print .tex replacement commands.")
-def rekey_cmd(do_apply: bool):
-    """Report (or fix) entries whose stored key is not canonical.
-
-    A one-time migration aid after key-policy changes: lists entries
-    whose stored key differs from the content-derived canonical key.
-    With --apply, renames the entries in the personal library and the
-    active manuscript database, and prints copy-pasteable commands to
-    update cite keys in your .tex files.
-    """
-    merged = _open_merged()
-    renames: list[tuple[str, str]] = []
-    for e in merged.entries():
-        canon = generate_key(e.data)
-        if canon != e.key:
-            renames.append((e.key, canon))
-    if not renames:
-        console.print("[green]All keys are canonical.[/green]")
-        return
-    for old, new in sorted(renames):
-        console.print(f"  {old} → [cyan]{new}[/cyan]")
-    if not do_apply:
-        console.print(f"\n{len(renames)} non-canonical key(s). Run with [bold]--apply[/bold] to rename.")
-        return
-    from .state import find_manuscript_db
-    libs = [merged.personal] + ([merged.manuscript] if merged.manuscript else [])
-    for old, new in renames:
-        for lib in libs:
-            entry = lib.get(old)
-            if entry is not None:
-                data = dict(entry.data)
-                lib.remove_entry(old)
-                lib.save_entry(data)  # save_entry regenerates the canonical key
-    ms_root = find_manuscript_db()
-    tex_files = sorted(ms_root.glob("*.tex")) if ms_root else []
-    tex_arg = " ".join(f.name for f in tex_files) or "main.tex"
-    console.print(f"\n[green]Renamed {len(renames)} entr{'y' if len(renames)==1 else 'ies'}.[/green]")
-    console.print("Cite key replacements (copy/paste to update your TeX source):")
-    for old, new in sorted(renames):
-        console.print(f"  perl -pi -e 's/\\b\\Q{old}\\E\\b/{new}/g' {tex_arg}",
-                      highlight=False, markup=False)
 
 
 # ── refs (manuscript sync) ────────────────────────────────────────────────────

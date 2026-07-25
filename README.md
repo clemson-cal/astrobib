@@ -228,8 +228,6 @@ astrobib update --all    # re-fetch canonical BibTeX for every entry with an ADS
 ```
 Cite keys never change on update, so manuscripts citing the paper are unaffected; `refs.bib` regenerates with the published metadata the next time the Manuscript tab looks. Stars and user-curated keywords are preserved, and copies in the active manuscript database are updated in the same pass. The pub card shows a dim `(preprint)` marker on entries that have not yet been updated.
 
-`astrobib rekey` is a one-time migration aid after key-policy changes: it lists entries whose stored key differs from the canonical content-derived key, and with `--apply` renames them in both databases and prints `perl` commands to update your `.tex` files.
-
 ### Generating refs.bib for a manuscript
 Run this from inside the manuscript directory:
 ```bash

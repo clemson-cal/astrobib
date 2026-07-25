@@ -66,7 +66,7 @@ Nothing is committed, uploaded, tagged, or pushed until the build and twine chec
 - `astrobib/uat.py` — UAT loader and hierarchy traversal; cached at `UAT_CACHE`
 - `astrobib/export.py` — scans `.tex` files for cite keys, writes `refs.bib`; `manuscript_tex_files()`: `main.tex` is the sole root when present (else all top-level `.tex`), expanded recursively via `\input`/`\include`
 - `astrobib/pdf.py` — ephemeral PDF cache at `PDF_CACHE_DIR`
-- `astrobib/cli.py` — Click commands: `add`, `import`, `update`, `rekey`, `export`, `refs`, `search`, `show`, `list`, `keywords`, `quota`, plus `config`, `pdf`, `uat` groups
+- `astrobib/cli.py` — Click commands: `add`, `import`, `update`, `export`, `refs`, `search`, `show`, `list`, `keywords`, `quota`, plus `config`, `pdf`, `uat` groups
 - `astrobib/tui/app.py` — Textual TUI: library tab, ADS search tab (via `S`), UAT browser panel (via `u`)
 - `astrobib/tui/tabs_state.py` — persistent ADS query tabs (`tabs.json`, keyed per manuscript context), tab labels, result limits
 - `astrobib/tui/uat_browser.py` — standalone UAT browser app and screen

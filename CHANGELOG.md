@@ -4,12 +4,11 @@
 
 ### Added
 - `astrobib update`: refreshes entries whose arXiv preprint has since been published, rewriting canonical ADS BibTeX in place under the same cite key; preserves stars and user-curated keywords, updates manuscript-db copies, and reports quota. `--all` re-fetches every entry with an ADS record.
-- `astrobib rekey [--apply]`: one-time migration aid that renames entries whose stored key differs from the canonical content-derived key, emitting `.tex` replacement commands.
 - The pub card shows a dim `(preprint)` marker on entries whose ADS record is still arXiv-only.
-- Import now also dedupes by bibcode, catching the same paper stored under a legacy key.
+- Import now also dedupes by bibcode, catching the same paper stored under a different key.
 
 ### Changed
-- Cite keys are now fully identity-derived: the year comes from the arXiv submission year (or bibcode year), never the record's publication year, so the same paper yields the same key for every user regardless of preprint/published state. Also fixed the arXiv-ID hash branch, which never matched bibtexparser's lowercased `archiveprefix` field, so existing keys were silently hashing bibcodes. Run `astrobib rekey --apply` once to migrate existing libraries.
+- Cite keys are now fully identity-derived: the year comes from the arXiv submission year (or bibcode year), never the record's publication year, so the same paper yields the same key for every user regardless of preprint/published state. Also fixed the arXiv-ID hash branch, which never matched bibtexparser's lowercased `archiveprefix` field, so existing keys were silently hashing bibcodes.
 
 ### Removed
 - The unmaintained `ads` package dependency: astrobib now talks to the ADS API directly via httpx (search, BibTeX export, link resolver, quota).
