@@ -50,6 +50,7 @@ in the current context (wrong tab, no PDF cached, already imported, …).
 | Key | Action |
 |-----|--------|
 | `Space` | Toggle selection of highlighted row |
+| `y` | Copy highlighted/selected cite key(s) to the clipboard |
 | `s` | Star / unstar highlighted paper |
 | `m` | Add/remove highlighted or selected papers in the manuscript db |
 | `M` | Toggle manuscript-only view (hide personal-library-only papers) |
@@ -65,6 +66,19 @@ in the current context (wrong tab, no PDF cached, already imported, …).
 | `+` / `-` | Increase / decrease ADS result count (then `r` to reload) |
 | `Escape` | Clear filter |
 | `z` | Zoom detail panel |
+
+### Copying text from the TUI
+
+Terminal apps like astrobib enable *mouse reporting*, so drag-selection
+goes to the app rather than the terminal — which is why ⌘C often copies
+nothing. Two ways around it:
+
+- Press `y` to copy the highlighted (or Space-selected) cite keys
+  straight to the system clipboard — the intended workflow for getting
+  keys into a `.tex` file.
+- For arbitrary text, hold **⌥ Option** (macOS Terminal/iTerm2; **Shift**
+  on most Linux terminals) while dragging: this bypasses mouse reporting
+  and restores native selection, after which ⌘C works normally.
 
 ---
 

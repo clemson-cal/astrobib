@@ -967,6 +967,7 @@ class AstrobibApp(App):
         Binding("c", "citations", "Citations", show=False),
         Binding("m", "toggle_manuscript", "Manuscript ±", show=False),
         Binding("M", "toggle_ms_only", "Ms-only view", show=False),
+        Binding("y", "copy_key", "Copy key", show=False),
         Binding("escape", "clear_filter", "Clear", show=False),
         Binding("z", "zoom", "Zoom", show=False),
     ]
@@ -1590,6 +1591,57 @@ class AstrobibApp(App):
         name = self._ms_root.name if self._ms_root else "manuscript"
         self._set_status(f"Showing [cyan]{name}[/cyan] entries only  [dim](M to show all)[/dim]"
                          if on else "Showing all entries")
+
+    def _copy_text(self, text: str) -> bool:
+        """Copy text to the system clipboard: pbcopy on macOS (reliable in
+        any terminal), else Textual's OSC 52 escape (terminal-dependent)."""
+        import subprocess
+        import sys
+        if sys.platform == "darwin":
+            try:
+                subprocess.run(["pbcopy"], input=text.encode(), check=True)
+                return True
+            except Exception:
+                pass
+        try:
+            self.copy_to_clipboard(text)
+            return True
+        except Exception:
+            return False
+
+    def action_copy_key(self) -> None:
+        """Copy the highlighted (or selected) cite key(s) to the clipboard."""
+        pane_id = self._active_pane_id()
+        ads_view = self._active_ads_view()
+        text = None
+        if pane_id == "pane-library":
+            lib_view = self.query_one(LibraryView)
+            keys = lib_view.get_selected_keys()
+            if keys and self._library:
+                entries = [self._library.get(k) for k in keys]
+                text = ", ".join((e.short_key or e.key) for e in entries if e)
+            elif lib_view._highlighted_entry is not None:
+                e = lib_view._highlighted_entry
+                text = e.short_key or e.key
+        elif pane_id == "pane-manuscript":
+            ms_view = self.query_one(ManuscriptView)
+            e = ms_view._highlighted_entry
+            if e is not None:
+                text = e.short_key or e.key
+            else:
+                text = ms_view._highlighted_key
+        elif ads_view is not None:
+            a = ads_view._selected_article
+            if a is not None:
+                entry = self._library.get_by_bibcode(a.bibcode) if self._library else None
+                text = (entry.short_key or entry.key) if entry else a.bibcode
+        if not text:
+            self._set_status("[yellow]Nothing to copy.[/yellow]")
+            return
+        if self._copy_text(text):
+            self._set_status(f"[green]Copied:[/green] {text}")
+        else:
+            self._set_status("[red]Clipboard copy failed — terminal may not support OSC 52[/red]")
 
     def action_more_results(self) -> None:
         self._step_tab_limit(+1)
