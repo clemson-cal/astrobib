@@ -68,6 +68,18 @@ class PdfButton(Static, can_focus=True):
 
 # ── Detail panel ──────────────────────────────────────────────────────────────
 
+# Style for the trailing hash portion of a cite key that citations don't need
+_HASH_STYLE = "grey35"
+
+
+def _append_key(text, entry: Entry) -> None:
+    """Append a cite key: short prefix in cyan, unused hash suffix very dim."""
+    short = entry.short_key or entry.key
+    text.append(short, style="cyan")
+    if short != entry.key:
+        text.append(entry.key[len(short):], style=_HASH_STYLE)
+
+
 class DetailPanel(VerticalScroll):
     DEFAULT_CSS = """
     DetailPanel {
@@ -188,10 +200,7 @@ class DetailPanel(VerticalScroll):
         if entry.keywords:
             foot.append(" · ".join(entry.keywords), style="dim")
             foot.append("\n\n")
-        short = entry.short_key or entry.key
-        foot.append(short, style="cyan")
-        if short != entry.key:
-            foot.append(f"  [{entry.key}]", style="dim")
+        _append_key(foot, entry)
         footer.update(foot)
 
     def show_ads_article(self, article, entry: Entry | None = None) -> None:
@@ -244,10 +253,7 @@ class DetailPanel(VerticalScroll):
             if entry.keywords:
                 foot.append(" · ".join(entry.keywords), style="dim")
                 foot.append("\n\n")
-            short = entry.short_key or entry.key
-            foot.append(short, style="cyan")
-            if short != entry.key:
-                foot.append(f"  [{entry.key}]", style="dim")
+            _append_key(foot, entry)
         elif article.bibcode:
             foot.append(article.bibcode, style="dim")
         footer.update(foot)
@@ -649,13 +655,13 @@ class ManuscriptView(Vertical):
 
     def _key_cell(self, key_str: str, entry: Entry | None, style: str):
         """Render a key with the portion beyond the shortest unambiguous
-        prefix dimmed — the bright part is all a citation needs."""
+        prefix very dim — the bright part is all a citation needs."""
         from rich.text import Text
         if entry is not None:
             short = entry.short_key or entry.key
             if key_str.startswith(short) and len(key_str) > len(short):
                 t = Text(key_str[:len(short)], style=style or "")
-                t.append(key_str[len(short):], style=f"dim {style}".strip())
+                t.append(key_str[len(short):], style=_HASH_STYLE)
                 return t
         return Text(key_str, style=style) if style else Text(key_str)
 
