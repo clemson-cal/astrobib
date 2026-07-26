@@ -276,6 +276,8 @@ astrobib keywords                # list all keywords in the library
 ## Library layout
 Papers are stored in `~/.local/share/astrobib/library/bib/`, one `.bib` file per paper. The directory is created automatically on first use.
 
+To use a different library location (for example a synced or git-managed directory), pass `astrobib --library ~/my-lib` or set `ASTROBIB_LIBRARY=~/my-lib`; the flag wins when both are given. The PDF cache and other app state stay in their usual locations regardless, and `astrobib config` shows which library is active and why.
+
 Cite keys have the form `AuthorYYYYhhhhh` where `hhhhh` is the first 5 hex characters of the SHA-256 of the arXiv ID (or ADS bibcode for non-arXiv papers). This makes keys collision-resistant and stable across the arXiv→journal publishing transition.
 
 ---

@@ -58,7 +58,7 @@ Nothing is committed, uploaded, tagged, or pushed until the build and twine chec
 
 **Package layout:**
 
-- `astrobib/state.py` — user-local app state: library path, ADS token, cache constants, `find_manuscript_db()`
+- `astrobib/state.py` — user-local app state: library path (relocatable via `--library` flag / `ASTROBIB_LIBRARY` env, flag wins; caches and `state.json` are unaffected), ADS token, cache constants, `find_manuscript_db()` (excludes the active library root from the walk-up)
 - `astrobib/library.py` — `Entry`, `Library`, `MergedLibrary`; reads `bib/*.bib` files through an mtime-keyed parse cache (`~/.cache/astrobib/parsecache/`); bibcode index, memoized merge, O(N log N) short keys — sized for 1e4-entry libraries
 - `astrobib/keys.py` — deterministic cite key generation: `AuthorYYYY` + 5-char hash, with both year and hash derived from the stable identifier (arXiv submission year / bibcode year), so keys are identical across preprint and published states
 - `astrobib/query.py` — local filter language (ADS-flavored: fielded terms, year ranges, phrases, negation, `is:` state filters); `to_ads_query()` translates a filter for ADS escalation

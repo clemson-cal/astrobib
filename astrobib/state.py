@@ -53,9 +53,38 @@ def set_token(token: str) -> None:
     _state = state
 
 
+_library_override: Path | None = None
+
+
+def set_library_path(path: Path | str) -> None:
+    """Override the personal library root for this process (--library flag)."""
+    global _library_override
+    _library_override = Path(path).expanduser()
+
+
+def _library_root() -> Path:
+    if _library_override is not None:
+        return _library_override
+    env = os.environ.get("ASTROBIB_LIBRARY")
+    return Path(env).expanduser() if env else LIBRARY_DIR
+
+
+def library_source() -> str:
+    """Where the active library path came from: 'flag', 'env', or 'default'."""
+    if _library_override is not None:
+        return "flag"
+    return "env" if os.environ.get("ASTROBIB_LIBRARY") else "default"
+
+
 def get_library_path() -> Path:
-    """Return the library root, creating bib/ if needed."""
-    path = LIBRARY_DIR
+    """Return the library root, creating bib/ if needed.
+
+    The root is --library if given, else $ASTROBIB_LIBRARY, else the
+    default under the state dir. Caches (PDF, parse, UAT) and state.json
+    are unaffected by the override — they are machine-local, not library
+    data.
+    """
+    path = _library_root()
     (path / "bib").mkdir(parents=True, exist_ok=True)
     return path
 
@@ -66,9 +95,10 @@ def find_manuscript_db(start: Path | None = None) -> Path | None:
     A manuscript database is any directory containing bib/ alongside .git —
     typically the manuscript's own repo. Returns None if not inside one.
     """
+    library_root = _library_root().resolve()
     path = (start or Path.cwd()).resolve()
     while path != path.parent:
-        if (path / "bib").is_dir() and (path / ".git").exists() and path != LIBRARY_DIR:
+        if (path / "bib").is_dir() and (path / ".git").exists() and path != library_root:
             return path
         path = path.parent
     return None

@@ -12,7 +12,8 @@ from rich.text import Text
 
 from .state import (
     get_token, set_token,
-    get_library_path, STATE_FILE, PDF_CACHE_DIR, UAT_CACHE,
+    get_library_path, set_library_path, library_source,
+    STATE_FILE, PDF_CACHE_DIR, UAT_CACHE,
 )
 from .library import Library
 from .keys import generate_key
@@ -25,9 +26,15 @@ console = Console()
 
 @click.group(invoke_without_command=True)
 @click.version_option(version=__version__, prog_name="astrobib")
+@click.option(
+    "--library", "library_path", metavar="PATH", type=click.Path(path_type=Path),
+    help="Personal library root to use (contains bib/); overrides $ASTROBIB_LIBRARY.",
+)
 @click.pass_context
-def main(ctx: click.Context):
+def main(ctx: click.Context, library_path: Path | None):
     """astrobib — astrophysics literature manager."""
+    if library_path is not None:
+        set_library_path(library_path)
     if ctx.invoked_subcommand is None:
         from .tui.app import AstrobibApp
         AstrobibApp().run()
@@ -56,7 +63,8 @@ def _show_config() -> None:
     else:
         table.add_row("ads_token", Text("not set", style="yellow"), "")
 
-    table.add_row("library", Text(str(get_library_path()), style="dim"), "")
+    lib_source = {"flag": "--library", "env": "env:ASTROBIB_LIBRARY", "default": ""}[library_source()]
+    table.add_row("library", Text(str(get_library_path()), style="dim"), lib_source)
     table.add_row("state_file", Text(str(STATE_FILE), style="dim"), "")
     table.add_row("pdf_cache", Text(str(PDF_CACHE_DIR), style="dim"), "")
     console.print(table)
