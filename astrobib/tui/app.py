@@ -1397,8 +1397,11 @@ class AstrobibApp(App):
         elif event.source == "clear":
             self.action_clear_pdf()
         elif event.source == "browser":
+            if not pdf.browser_open_url(doi=doi, adsurl=adsurl, eprint=eprint):
+                self._set_status(f"[yellow]No DOI, ADS URL, or arXiv ID for {key}[/yellow]")
+                return
             self._cancel_poll()
-            self.run_worker(self._do_browser_pdf(key, doi, adsurl, ads_view), exclusive=True)
+            self.run_worker(self._do_browser_pdf(key, doi, adsurl, eprint, ads_view), exclusive=True)
         else:
             self._cancel_poll()
             source = event.source if event.source in ("arxiv", "oa") else "auto"
