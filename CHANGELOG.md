@@ -3,6 +3,8 @@
 ## Unreleased
 
 ### Fixed
+- The pub card's PDF buttons now update the moment the cache changes: clearing swaps open/clear for the download buttons, and a completed download swaps them back — previously the card was stale until the cursor moved.
+- Browser downloads are no longer missed: the ~/Downloads poll now waits up to 5 minutes instead of 60 seconds (publisher pages and logins routinely take longer, after which the poll silently ignored the arriving file), detects a download that overwrites an existing file of the same name, accepts `.PDF` uppercase names, and tolerates preamble bytes before the `%PDF` header.
 - Clicking the pub card's browser-download button crashed with a TypeError: the handler was never updated for the arXiv-fallback parameter added to the browser resolver, which the `B` key path already passed.
 - The key panel (ctrl+p → "Show keys and help panel") now dims unavailable actions like the footer does; Textual's stock panel ignores binding enablement. The `+`/`-` result-count bindings also gained their missing descriptions there.
 

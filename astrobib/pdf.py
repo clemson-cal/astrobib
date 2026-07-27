@@ -93,15 +93,26 @@ def browser_open(url: str) -> None:
         subprocess.run(["start", url], shell=True, check=False)
 
 
-def downloads_snapshot() -> set[Path]:
-    """Current set of PDF files in ~/Downloads."""
-    d = Path.home() / "Downloads"
-    return {f for f in d.glob("*.pdf")} if d.exists() else set()
+def downloads_snapshot() -> dict[Path, tuple[int, int]]:
+    """PDFs currently in ~/Downloads: path → (size, mtime_ns).
+
+    Recording size and mtime lets the poller catch a download that
+    overwrites a file of the same name, which a bare path-set misses.
+    """
+    out: dict[Path, tuple[int, int]] = {}
+    try:
+        for f in (Path.home() / "Downloads").iterdir():
+            if f.suffix.lower() == ".pdf" and f.is_file():
+                st = f.stat()
+                out[f] = (st.st_size, st.st_mtime_ns)
+    except OSError:
+        pass
+    return out
 
 
-def poll_downloads(citekey: str, before: set[Path], timeout: int = 60,
-                   cancel=None) -> Path | None:
-    """Watch ~/Downloads for a new PDF not in before; move it to cache on arrival.
+def poll_downloads(citekey: str, before: dict[Path, tuple[int, int]],
+                   timeout: int = 300, cancel=None) -> Path | None:
+    """Watch ~/Downloads for a new or rewritten PDF; move it to cache on arrival.
 
     Uses a two-poll size-stability check so we don't grab a partial download.
     cancel: a threading.Event — when set, returns None immediately.
@@ -112,18 +123,17 @@ def poll_downloads(citekey: str, before: set[Path], timeout: int = 60,
         if cancel is not None and cancel.is_set():
             return None
         time.sleep(1)
-        d = Path.home() / "Downloads"
-        current = {f for f in d.glob("*.pdf")} if d.exists() else set()
-        for f in current - before:
-            try:
-                size = f.stat().st_size
-            except OSError:
-                continue
+        for f, (size, _mtime) in downloads_snapshot().items():
+            if before.get(f) == (size, _mtime):
+                continue  # pre-existing file, unchanged
             if prev_sizes.get(f) == size and size > 0:
                 try:
-                    if f.read_bytes()[:4] != b"%PDF":
-                        continue
+                    # header may follow a short preamble in the wild
+                    with f.open("rb") as fh:
+                        head = fh.read(1024)
                 except OSError:
+                    continue
+                if b"%PDF" not in head:
                     continue
                 dest = cache_path(citekey)
                 dest.parent.mkdir(parents=True, exist_ok=True)
