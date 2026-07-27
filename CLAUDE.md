@@ -72,6 +72,7 @@ Nothing is committed, uploaded, tagged, or pushed until the build and twine chec
 - `astrobib/tui/uat_browser.py` — standalone UAT browser app and screen
 - `astrobib/tui/help_screen.py` — modal help screen; content loaded from `astrobib/help.md` (symlink to `../README.md`)
 - `astrobib/tui/key_panel.py` — ctrl+p key panel subclasses that dim disabled bindings (stock Textual panel ignores enablement)
+- `astrobib/tui/file_pick.py` — modal DirectoryTree PDF picker (pub card `pick …` button; roots at ~/Downloads, backspace re-roots at parent)
 
 Note: `astrobib/config.py` and `astrobib/db.py` are dead code from an earlier multi-database design — nothing imports them.
 

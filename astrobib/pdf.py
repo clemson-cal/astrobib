@@ -93,6 +93,39 @@ def browser_open(url: str) -> None:
         subprocess.run(["start", url], shell=True, check=False)
 
 
+def downloads_error() -> str | None:
+    """None if ~/Downloads is readable, else a human-readable reason.
+
+    macOS privacy protection (TCC) can deny a terminal app access to
+    ~/Downloads with EPERM; pathlib's glob suppresses that error, so
+    without this check the watcher would silently see an empty directory
+    forever.
+    """
+    d = Path.home() / "Downloads"
+    try:
+        next(iter(d.iterdir()), None)
+        return None
+    except PermissionError:
+        return ("macOS is blocking access to ~/Downloads — grant your terminal "
+                "access in System Settings → Privacy & Security → Files and Folders")
+    except FileNotFoundError:
+        return "~/Downloads does not exist"
+    except OSError as e:
+        return f"cannot read ~/Downloads ({e.strerror or e})"
+
+
+def downloads_diagnosis(before: dict[Path, tuple[int, int]]) -> str | None:
+    """After a failed poll, explain what the watcher saw (None = nothing new)."""
+    err = downloads_error()
+    if err:
+        return err
+    changed = [f.name for f, sig in downloads_snapshot().items() if before.get(f) != sig]
+    if changed:
+        return (f"saw {', '.join(sorted(changed)[:3])} but rejected it "
+                "(no %PDF header — an HTML error page?)")
+    return None
+
+
 def downloads_snapshot() -> dict[Path, tuple[int, int]]:
     """PDFs currently in ~/Downloads: path → (size, mtime_ns).
 
@@ -111,7 +144,7 @@ def downloads_snapshot() -> dict[Path, tuple[int, int]]:
 
 
 def poll_downloads(citekey: str, before: dict[Path, tuple[int, int]],
-                   timeout: int = 300, cancel=None) -> Path | None:
+                   timeout: int = 60, cancel=None) -> Path | None:
     """Watch ~/Downloads for a new or rewritten PDF; move it to cache on arrival.
 
     Uses a two-poll size-stability check so we don't grab a partial download.
@@ -141,6 +174,26 @@ def poll_downloads(citekey: str, before: dict[Path, tuple[int, int]],
                 return dest
             prev_sizes[f] = size
     return None
+
+
+def import_file(citekey: str, source: Path) -> Path | None:
+    """Copy a user-chosen PDF into the cache for citekey.
+
+    Copies rather than moves — the source may be a curated original, not
+    a disposable download. Returns None if the file doesn't look like a
+    PDF (header check, tolerant of a short preamble).
+    """
+    try:
+        with source.open("rb") as fh:
+            head = fh.read(1024)
+    except OSError:
+        return None
+    if b"%PDF" not in head:
+        return None
+    dest = cache_path(citekey)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(source, dest)
+    return dest
 
 
 # ── HTTP download ─────────────────────────────────────────────────────────────

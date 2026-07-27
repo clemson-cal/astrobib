@@ -289,3 +289,7 @@ PDFs are ephemeral and are never stored in the library. When you open a paper (`
 3. Caches and opens in the system PDF viewer
 
 The cache can be deleted freely; everything is re-fetchable.
+
+The pub card offers per-paper sources: `arXiv ↓` and `ADS OA ↓` download directly, `browser ↓` opens the publisher page and watches `~/Downloads` for the arriving file, and `pick …` browses the filesystem (starting in `~/Downloads`) to import a PDF you already have.
+
+If macOS blocks your terminal from reading `~/Downloads`, the browser watcher says so instead of waiting silently; grant access in System Settings → Privacy & Security → Files and Folders, or use `pick …`.

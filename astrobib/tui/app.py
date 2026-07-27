@@ -49,6 +49,7 @@ class PdfButton(Static, can_focus=True):
     PdfButton.arxiv  { color: cyan; }
     PdfButton.oa     { color: cyan; }
     PdfButton.browser { color: yellow; }
+    PdfButton.pick   { color: magenta; }
     PdfButton.open   { color: green; }
     PdfButton.clear  { color: $text-muted; }
     """
@@ -133,6 +134,7 @@ class DetailPanel(VerticalScroll):
             yield PdfButton("arXiv ↓", source="arxiv", id="pdf-btn-arxiv", classes="arxiv")
             yield PdfButton("ADS OA ↓", source="oa", id="pdf-btn-oa", classes="oa")
             yield PdfButton("browser ↓", source="browser", id="pdf-btn-browser", classes="browser")
+            yield PdfButton("pick …", source="pick", id="pdf-btn-pick", classes="pick")
             yield PdfButton("Open ↗", source="open", id="pdf-btn-open", classes="open")
             yield PdfButton("Clear ✕", source="clear", id="pdf-btn-clear", classes="clear")
         yield Static("", id="pdf-status")
@@ -156,25 +158,25 @@ class DetailPanel(VerticalScroll):
 
         self.query_one("#detail-links").display = bool(adsurl or eprint or doi)
 
-    _pdf_flags: "tuple[bool, bool, bool]" = (False, False, False)
+    _pdf_flags: "tuple[bool, bool, bool, bool]" = (False, False, False, False)
 
     def _update_pdf_buttons(self, *, has_eprint: bool, has_adsurl: bool, has_doi: bool,
-                             cached: bool = False) -> None:
-        self._pdf_flags = (has_eprint, has_adsurl, has_doi)
+                             cached: bool = False, present: bool = False) -> None:
+        self._pdf_flags = (has_eprint, has_adsurl, has_doi, present)
         self.refresh_pdf_cached(cached)
         self.query_one("#pdf-status", Static).update("")
 
     def refresh_pdf_cached(self, cached: bool) -> None:
         """Re-toggle DL vs open/clear buttons for the shown entry after a
         cache change, without rebuilding the card or clearing the status."""
-        has_eprint, has_adsurl, has_doi = self._pdf_flags
+        has_eprint, has_adsurl, has_doi, present = self._pdf_flags
         self.query_one("#pdf-btn-arxiv").display = has_eprint and not cached
         self.query_one("#pdf-btn-oa").display = has_adsurl and not cached
         self.query_one("#pdf-btn-browser").display = (has_doi or has_adsurl) and not cached
+        self.query_one("#pdf-btn-pick").display = present and not cached
         self.query_one("#pdf-btn-open").display = cached
         self.query_one("#pdf-btn-clear").display = cached
-        has_any = has_eprint or has_adsurl or has_doi or cached
-        self.query_one("#pdf-sources").display = has_any
+        self.query_one("#pdf-sources").display = present or cached
 
     def set_pdf_status(self, text: str) -> None:
         self.query_one("#pdf-status", Static).update(text)
@@ -206,6 +208,7 @@ class DetailPanel(VerticalScroll):
             has_adsurl=bool(entry.adsurl),
             has_doi=bool(entry.doi),
             cached=_pdf.is_cached(entry.key),
+            present=True,
         )
         foot = Text()
         if entry.keywords:
@@ -261,6 +264,7 @@ class DetailPanel(VerticalScroll):
             has_adsurl=bool(article.bibcode),
             has_doi=bool(eff_doi),
             cached=_pdf.is_cached(cache_key),
+            present=True,
         )
         foot = Text()
         if entry:
@@ -1411,6 +1415,9 @@ class AstrobibApp(App):
                 return
             self._cancel_poll()
             self.run_worker(self._do_browser_pdf(key, doi, adsurl, eprint, ads_view), exclusive=True)
+        elif event.source == "pick":
+            self._cancel_poll()
+            self._pick_pdf_file(key, ads_view)
         else:
             self._cancel_poll()
             source = event.source if event.source in ("arxiv", "oa") else "auto"
@@ -1991,6 +1998,31 @@ class AstrobibApp(App):
                     if a.bibcode in ads_view._selected_bibcodes]
         return []
 
+    def _pick_pdf_file(self, key: str, ads_view: "AdsView | None") -> None:
+        from .. import pdf as _pdf
+        from .file_pick import FilePickScreen
+
+        def _picked(path: "Path | None") -> None:
+            if path is None:
+                return
+            dest = _pdf.import_file(key, path)
+            detail = self.query_one(DetailPanel)
+            if dest is None:
+                self._set_status(f"[red]{path.name} does not look like a PDF[/red]")
+                detail.set_pdf_status("[red]✗ not a PDF[/red]")
+                return
+            sz = dest.stat().st_size // 1024
+            self._set_status(f"[green]Imported {path.name} for {key}  ({sz} KB)[/green]")
+            detail.set_pdf_status(f"[green]✓ {sz} KB[/green]")
+            if ads_view is not None:
+                ads_view.refresh_pdf_status()
+            elif self._active_pane_id() == "pane-library":
+                self.query_one(LibraryView).refresh_pdf_status()
+            self._refresh_detail_pdf()
+            self.refresh_bindings()
+
+        self.push_screen(FilePickScreen(), callback=_picked)
+
     def _refresh_detail_pdf(self) -> None:
         """Sync the pub card's PDF buttons with the cache state of the
         currently shown entry (after a download or clear)."""
@@ -2289,22 +2321,31 @@ class AstrobibApp(App):
         if url is None:
             self._set_status(f"[red]No browser source found for {key}[/red]")
             return
+        detail = self.query_one(DetailPanel)
+        watch_err = await asyncio.to_thread(pdf.downloads_error)
+        if watch_err is not None:
+            pdf.browser_open(url)
+            detail.set_pdf_status("[red]✗ can't watch ~/Downloads — use pick … when done[/red]")
+            self._set_status(f"[red]{watch_err}[/red]")
+            return
         before = pdf.downloads_snapshot()
         pdf.browser_open(url)
         cancel = threading.Event()
         self._poll_cancel = cancel
-        detail = self.query_one(DetailPanel)
         detail.set_pdf_status("[yellow]⏳ Waiting for download…  [dim](X to cancel)[/dim][/yellow]")
-        self._set_status(f"[yellow]Browser opened — waiting for PDF in ~/Downloads (up to 5 min)…[/yellow]")
-        path = await asyncio.to_thread(pdf.poll_downloads, key, before, 300, cancel)
+        self._set_status(f"[yellow]Browser opened — waiting for PDF in ~/Downloads (60s)…[/yellow]")
+        path = await asyncio.to_thread(pdf.poll_downloads, key, before, 60, cancel)
         self._poll_cancel = None
         if path is None:
             if cancel.is_set():
                 detail.set_pdf_status("[dim]Cancelled[/dim]")
                 self._set_status("[dim]Browser download cancelled[/dim]")
             else:
-                detail.set_pdf_status("[red]✗ Timed out (5 min)[/red]")
-                self._set_status(f"[red]No PDF appeared in ~/Downloads within 5 minutes[/red]")
+                detail.set_pdf_status("[red]✗ Timed out (60s)[/red]")
+                why = await asyncio.to_thread(pdf.downloads_diagnosis, before)
+                self._set_status(
+                    f"[red]{why}[/red]" if why
+                    else "[red]No PDF appeared in ~/Downloads within 60s[/red]")
         else:
             sz = path.stat().st_size // 1024
             detail.set_pdf_status(f"[green]✓ {sz} KB[/green]")
