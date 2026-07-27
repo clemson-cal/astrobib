@@ -156,8 +156,18 @@ class DetailPanel(VerticalScroll):
 
         self.query_one("#detail-links").display = bool(adsurl or eprint or doi)
 
+    _pdf_flags: "tuple[bool, bool, bool]" = (False, False, False)
+
     def _update_pdf_buttons(self, *, has_eprint: bool, has_adsurl: bool, has_doi: bool,
                              cached: bool = False) -> None:
+        self._pdf_flags = (has_eprint, has_adsurl, has_doi)
+        self.refresh_pdf_cached(cached)
+        self.query_one("#pdf-status", Static).update("")
+
+    def refresh_pdf_cached(self, cached: bool) -> None:
+        """Re-toggle DL vs open/clear buttons for the shown entry after a
+        cache change, without rebuilding the card or clearing the status."""
+        has_eprint, has_adsurl, has_doi = self._pdf_flags
         self.query_one("#pdf-btn-arxiv").display = has_eprint and not cached
         self.query_one("#pdf-btn-oa").display = has_adsurl and not cached
         self.query_one("#pdf-btn-browser").display = (has_doi or has_adsurl) and not cached
@@ -165,7 +175,6 @@ class DetailPanel(VerticalScroll):
         self.query_one("#pdf-btn-clear").display = cached
         has_any = has_eprint or has_adsurl or has_doi or cached
         self.query_one("#pdf-sources").display = has_any
-        self.query_one("#pdf-status", Static).update("")
 
     def set_pdf_status(self, text: str) -> None:
         self.query_one("#pdf-status", Static).update(text)
@@ -1982,6 +1991,26 @@ class AstrobibApp(App):
                     if a.bibcode in ads_view._selected_bibcodes]
         return []
 
+    def _refresh_detail_pdf(self) -> None:
+        """Sync the pub card's PDF buttons with the cache state of the
+        currently shown entry (after a download or clear)."""
+        from .. import pdf as _pdf
+        ads_view = self._active_ads_view()
+        if ads_view is not None:
+            article = ads_view._selected_article
+            if article is None:
+                return
+            entry = self._library.get_by_bibcode(article.bibcode) if self._library else None
+            cache_key = entry.key if entry else article.bibcode
+        else:
+            if self._active_pane_id() != "pane-library":
+                return
+            entry = self.query_one(LibraryView)._highlighted_entry
+            if entry is None:
+                return
+            cache_key = entry.key
+        self.query_one(DetailPanel).refresh_pdf_cached(_pdf.is_cached(cache_key))
+
     def action_clear_pdf(self) -> None:
         from .. import pdf as _pdf
         if self._poll_cancel is not None:
@@ -2002,6 +2031,7 @@ class AstrobibApp(App):
                 ads_view.refresh_pdf_status()
             else:
                 self.query_one(LibraryView).refresh_pdf_status()
+            self._refresh_detail_pdf()
             self.refresh_bindings()
             self._set_status(f"[green]Cleared {cleared} cached PDF(s)[/green]")
             return
@@ -2011,6 +2041,7 @@ class AstrobibApp(App):
                 path = _pdf.cache_path(article.bibcode)
                 if path.exists():
                     path.unlink()
+                    self._refresh_detail_pdf()
                     self.refresh_bindings()
                     self._set_status(f"[green]Cleared cached PDF for {article.bibcode}[/green]")
         elif self._active_pane_id() == "pane-library":
@@ -2020,6 +2051,7 @@ class AstrobibApp(App):
                 if path.exists():
                     path.unlink()
                     self.query_one(LibraryView).refresh_pdf_status()
+                    self._refresh_detail_pdf()
                     self.refresh_bindings()
                     self._set_status(f"[green]Cleared cached PDF for {entry.key}[/green]")
 
@@ -2094,6 +2126,7 @@ class AstrobibApp(App):
             ads_view.refresh_pdf_status()
         else:
             self.query_one(LibraryView).refresh_pdf_status()
+        self._refresh_detail_pdf()
         self.refresh_bindings()
         msg = f"[green]Downloaded {done}/{len(items)} PDF(s)[/green]"
         if failed:
@@ -2124,6 +2157,7 @@ class AstrobibApp(App):
                 ads_view.refresh_pdf_status()
             else:
                 self.query_one(LibraryView).refresh_pdf_status()
+            self._refresh_detail_pdf()
             self.refresh_bindings()
 
     def action_open_pdf(self) -> None:
@@ -2210,6 +2244,7 @@ class AstrobibApp(App):
                 ads_view.refresh_pdf_status()
             else:
                 self.query_one(LibraryView).refresh_pdf_status()
+            self._refresh_detail_pdf()
             self.refresh_bindings()
 
     def action_browser_pdf(self) -> None:
@@ -2260,16 +2295,16 @@ class AstrobibApp(App):
         self._poll_cancel = cancel
         detail = self.query_one(DetailPanel)
         detail.set_pdf_status("[yellow]⏳ Waiting for download…  [dim](X to cancel)[/dim][/yellow]")
-        self._set_status(f"[yellow]Browser opened — waiting for PDF in ~/Downloads (60s)…[/yellow]")
-        path = await asyncio.to_thread(pdf.poll_downloads, key, before, 60, cancel)
+        self._set_status(f"[yellow]Browser opened — waiting for PDF in ~/Downloads (up to 5 min)…[/yellow]")
+        path = await asyncio.to_thread(pdf.poll_downloads, key, before, 300, cancel)
         self._poll_cancel = None
         if path is None:
             if cancel.is_set():
                 detail.set_pdf_status("[dim]Cancelled[/dim]")
                 self._set_status("[dim]Browser download cancelled[/dim]")
             else:
-                detail.set_pdf_status("[red]✗ Timed out (60s)[/red]")
-                self._set_status(f"[red]No PDF appeared in ~/Downloads within 60s[/red]")
+                detail.set_pdf_status("[red]✗ Timed out (5 min)[/red]")
+                self._set_status(f"[red]No PDF appeared in ~/Downloads within 5 minutes[/red]")
         else:
             sz = path.stat().st_size // 1024
             detail.set_pdf_status(f"[green]✓ {sz} KB[/green]")
@@ -2278,6 +2313,7 @@ class AstrobibApp(App):
                 ads_view.refresh_pdf_status()
             else:
                 self.query_one(LibraryView).refresh_pdf_status()
+            self._refresh_detail_pdf()
             self.refresh_bindings()
 
     def action_star(self) -> None:
