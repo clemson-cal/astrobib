@@ -71,6 +71,7 @@ Nothing is committed, uploaded, tagged, or pushed until the build and twine chec
 - `astrobib/tui/tabs_state.py` — persistent ADS query tabs (`tabs.json`, keyed per manuscript context), tab labels, result limits
 - `astrobib/tui/uat_browser.py` — standalone UAT browser app and screen
 - `astrobib/tui/help_screen.py` — modal help screen; content loaded from `astrobib/help.md` (symlink to `../README.md`)
+- `astrobib/tui/key_panel.py` — ctrl+p key panel subclasses that dim disabled bindings (stock Textual panel ignores enablement)
 
 Note: `astrobib/config.py` and `astrobib/db.py` are dead code from an earlier multi-database design — nothing imports them.
 

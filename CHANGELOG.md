@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+### Fixed
+- The key panel (ctrl+p → "Show keys and help panel") now dims unavailable actions like the footer does; Textual's stock panel ignores binding enablement. The `+`/`-` result-count bindings also gained their missing descriptions there.
+
 ### Added
 - The personal library can live anywhere: `astrobib --library PATH` (or `ASTROBIB_LIBRARY=PATH`) points every command and the TUI at a different library root. Caches (PDF, parse, UAT) and `state.json` stay in their usual machine-local locations, and `astrobib config` reports which library is active and whether it came from the flag or the environment.
 

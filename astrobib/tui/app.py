@@ -1042,8 +1042,8 @@ class AstrobibApp(App):
         Binding("e", "export_selected", "Export", show=False),
         Binding("u", "uat_browser", "UAT", show=False),
         Binding("ctrl+w", "close_tab", "Close tab", show=False),
-        Binding("plus,equals_sign", "more_results", show=False),
-        Binding("minus", "fewer_results", show=False),
+        Binding("plus,equals_sign", "more_results", "More results", show=False),
+        Binding("minus", "fewer_results", "Fewer results", show=False),
         Binding("[", "prev_tab", "Prev tab", show=False),
         Binding("]", "next_tab", "Next tab", show=False),
         Binding("space", "toggle_select", "Select", show=False),
@@ -2330,6 +2330,19 @@ class AstrobibApp(App):
     def action_help(self) -> None:
         from .help_screen import HelpScreen
         self.push_screen(HelpScreen())
+
+    def action_show_help_panel(self) -> None:
+        # Mount our dimming panel instead of the stock HelpPanel, which
+        # ignores binding enablement (see key_panel.py). The stock
+        # action_hide_help_panel still matches it: type selectors match
+        # subclasses.
+        from textual.css.query import NoMatches
+        from textual.widgets import HelpPanel
+        from .key_panel import DimHelpPanel
+        try:
+            self.screen.query_one(HelpPanel)
+        except NoMatches:
+            self.screen.mount(DimHelpPanel())
 
     def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
         # Policy: return True (enabled) or None (visible but dimmed) —
