@@ -7,17 +7,24 @@
 
 use crate::library::{has_cached_pdf, MergedLibrary};
 use crate::query::{self, QueryContext};
-use ratatui::crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
+use ratatui::crossterm::event::{
+    self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, KeyModifiers,
+    MouseButton, MouseEvent, MouseEventKind,
+};
+use ratatui::crossterm::execute;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Borders, Paragraph, Row, Table, TableState, Wrap};
 use ratatui::Frame;
+use std::collections::HashSet;
 use std::time::Duration;
 
 pub fn run(lib: MergedLibrary) -> anyhow::Result<()> {
     let mut terminal = ratatui::init();
+    let _ = execute!(std::io::stdout(), EnableMouseCapture);
     let result = App::new(lib).run(&mut terminal);
+    let _ = execute!(std::io::stdout(), DisableMouseCapture);
     ratatui::restore();
     result
 }
@@ -37,6 +44,11 @@ struct App {
     show_detail: bool,
     status: String,
     quit: bool,
+    // iOS-style selection mode: circles appear, Space/click toggles rows,
+    // Esc exits and clears; bulk actions apply to the selection
+    select_mode: bool,
+    selected: HashSet<String>,
+    table_area: Rect, // last drawn table region, for mouse hit-testing
 }
 
 impl App {
@@ -72,6 +84,9 @@ impl App {
             show_detail: true,
             status,
             quit: false,
+            select_mode: false,
+            selected: HashSet::new(),
+            table_area: Rect::default(),
         }
     }
 
@@ -79,10 +94,12 @@ impl App {
         while !self.quit {
             terminal.draw(|f| self.draw(f))?;
             if event::poll(Duration::from_millis(250))? {
-                if let Event::Key(key) = event::read()? {
-                    if key.kind == KeyEventKind::Press {
-                        self.on_key(key.code, key.modifiers);
+                match event::read()? {
+                    Event::Key(key) if key.kind == KeyEventKind::Press => {
+                        self.on_key(key.code, key.modifiers)
                     }
+                    Event::Mouse(m) => self.on_mouse(m),
+                    _ => {}
                 }
             }
         }
@@ -131,7 +148,80 @@ impl App {
         self.table.select(Some(next as usize));
     }
 
+    /// Toggle selection membership of the row at a filtered position.
+    fn toggle_row_selected(&mut self, pos: usize) {
+        let Some(&idx) = self.filtered.get(pos) else {
+            return;
+        };
+        let key = self.order[idx].clone();
+        if !self.selected.remove(&key) {
+            self.selected.insert(key);
+        }
+        self.status = format!("{} selected", self.selected.len());
+    }
+
+    fn exit_select_mode(&mut self) {
+        self.select_mode = false;
+        self.selected.clear();
+        self.status = format!("{} papers", self.order.len());
+    }
+
+    fn on_mouse(&mut self, m: MouseEvent) {
+        match m.kind {
+            MouseEventKind::ScrollDown => self.move_sel(3),
+            MouseEventKind::ScrollUp => self.move_sel(-3),
+            MouseEventKind::Down(MouseButton::Left) => self.on_click(m.column, m.row),
+            _ => {}
+        }
+    }
+
+    fn on_click(&mut self, x: u16, y: u16) {
+        let a = self.table_area;
+        // y == a.y is the header row; data rows start one line below
+        if x < a.x || x >= a.x + a.width || y <= a.y || y >= a.y + a.height {
+            return;
+        }
+        let pos = self.table.offset() + (y - a.y - 1) as usize;
+        if pos >= self.filtered.len() {
+            return;
+        }
+        self.table.select(Some(pos));
+        if x < a.x + 2 {
+            // the ◯/◉ gutter: enter selection mode if needed, then toggle
+            self.select_mode = true;
+            self.toggle_row_selected(pos);
+        }
+    }
+
+    /// Star/unstar: the whole selection in selection mode (any unstarred →
+    /// star all, like the Python TUI), else the highlighted entry.
     fn toggle_star(&mut self) {
+        if self.select_mode && !self.selected.is_empty() {
+            let keys: Vec<String> = self
+                .order
+                .iter()
+                .filter(|k| self.selected.contains(*k) && self.lib.personal.has(k))
+                .cloned()
+                .collect();
+            if keys.is_empty() {
+                self.status = "selection has no personal-library papers".to_string();
+                return;
+            }
+            let target = keys
+                .iter()
+                .any(|k| !self.lib.get(k).map(|e| e.starred()).unwrap_or(false));
+            let mut n = 0;
+            for k in &keys {
+                if self.lib.set_starred(k, target).is_ok() {
+                    n += 1;
+                }
+            }
+            self.status = format!(
+                "{} {n} paper(s)",
+                if target { "★ Starred" } else { "Unstarred" }
+            );
+            return;
+        }
         let Some(key) = self.selected_key().map(str::to_string) else {
             return;
         };
@@ -182,8 +272,17 @@ impl App {
                 KeyCode::Char('/') => self.mode = Mode::Filter,
                 KeyCode::Char('s') => self.toggle_star(),
                 KeyCode::Char('d') | KeyCode::Char('z') => self.show_detail = !self.show_detail,
+                KeyCode::Char(' ') => {
+                    // first Space enters selection mode and selects the row
+                    self.select_mode = true;
+                    if let Some(pos) = self.table.selected() {
+                        self.toggle_row_selected(pos);
+                    }
+                }
                 KeyCode::Esc => {
-                    if !self.filter.is_empty() {
+                    if self.select_mode {
+                        self.exit_select_mode();
+                    } else if !self.filter.is_empty() {
                         self.filter.clear();
                         self.refilter();
                     }
@@ -222,12 +321,21 @@ impl App {
     }
 
     fn draw_table(&mut self, f: &mut Frame, area: Rect) {
+        self.table_area = area;
         let rows: Vec<Row> = self
             .filtered
             .iter()
             .map(|&i| {
                 let e = self.lib.get(&self.order[i]).unwrap();
+                let circle = if !self.select_mode {
+                    ""
+                } else if self.selected.contains(e.key()) {
+                    "◉"
+                } else {
+                    "◯"
+                };
                 Row::new(vec![
+                    circle.to_string(),
                     if has_cached_pdf(e.key()) { "↓" } else { "" }.to_string(),
                     if self.lib.in_manuscript(e.key()) { "●" } else { "" }.to_string(),
                     if e.starred() { "★" } else { "" }.to_string(),
@@ -245,6 +353,7 @@ impl App {
                 Constraint::Length(2),
                 Constraint::Length(2),
                 Constraint::Length(2),
+                Constraint::Length(2),
                 Constraint::Length(6),
                 Constraint::Length(18),
                 Constraint::Min(20),
@@ -252,7 +361,7 @@ impl App {
             ],
         )
         .header(
-            Row::new(vec!["↓", "●", "★", "Year", "Author", "Title", "Key"])
+            Row::new(vec!["", "↓", "●", "★", "Year", "Author", "Title", "Key"])
                 .style(Style::default().add_modifier(Modifier::BOLD)),
         )
         .row_highlight_style(
@@ -323,6 +432,16 @@ impl App {
                 Span::raw(self.filter.clone()),
                 Span::styled("▏", Style::default().fg(Color::Cyan)),
             ]),
+            Mode::Normal if self.select_mode => Line::from(vec![
+                Span::styled(
+                    format!("◉ {} selected", self.selected.len()),
+                    Style::default().fg(Color::Cyan),
+                ),
+                Span::styled(
+                    "  ·  Space/click ◯ toggle · s star · Esc done".to_string(),
+                    Style::default().fg(Color::DarkGray),
+                ),
+            ]),
             Mode::Normal => {
                 let n = self.filtered.len();
                 let total = self.order.len();
@@ -333,7 +452,7 @@ impl App {
                 };
                 Line::from(Span::styled(
                     format!(
-                        "{n}/{total}  ·  {}{filt}  ·  / filter · s star · d card · q quit",
+                        "{n}/{total}  ·  {}{filt}  ·  / filter · Space select · s star · d card · q quit",
                         self.status
                     ),
                     Style::default().fg(Color::DarkGray),
