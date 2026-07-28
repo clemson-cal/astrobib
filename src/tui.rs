@@ -472,6 +472,26 @@ impl App {
         Ok(())
     }
 
+    /// The table position under the mouse, if any (header and rule
+    /// rows excluded).
+    fn hovered_table_pos(&self) -> Option<usize> {
+        let a = self.table_area;
+        if !hit(a, self.hover.0, self.hover.1) || self.hover.1 <= a.y + 1 {
+            return None;
+        }
+        let pos = self.table.offset() + (self.hover.1 - a.y - 2) as usize;
+        (pos < self.filtered.len()).then_some(pos)
+    }
+
+    /// The entry the pub card shows: a hovered table row previews in the
+    /// card; otherwise the cursor row.
+    fn card_key(&self) -> Option<&str> {
+        if let Some(pos) = self.hovered_table_pos() {
+            return self.filtered.get(pos).map(|&i| self.order[i].as_str());
+        }
+        self.selected_key()
+    }
+
     fn selected_key(&self) -> Option<&str> {
         let pos = self.table.selected()?;
         let idx = *self.filtered.get(pos)?;
@@ -1546,11 +1566,7 @@ impl App {
         // author column scales with the table; text picks the densest
         // description that fits
         let author_w = (area.width / 6).clamp(14, 30);
-        let hov_row = if hit(area, self.hover.0, self.hover.1) && self.hover.1 > area.y + 1 {
-            Some(self.table.offset() + (self.hover.1 - area.y - 2) as usize)
-        } else {
-            None
-        };
+        let hov_row = self.hovered_table_pos();
         let rows: Vec<Row> = self
             .filtered
             .iter()
@@ -1674,7 +1690,7 @@ impl App {
     fn draw_detail(&mut self, f: &mut Frame, area: Rect) {
         self.card_links.clear();
         f.render_widget(Block::default().borders(Borders::LEFT), area);
-        let Some(key) = self.selected_key().map(str::to_string) else {
+        let Some(key) = self.card_key().map(str::to_string) else {
             return;
         };
         // actions/copy menu occupies the card bottom, as tall as needed
