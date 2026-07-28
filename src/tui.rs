@@ -230,6 +230,20 @@ fn hit(r: Rect, x: u16, y: u16) -> bool {
     x >= r.x && x < r.x + r.width && y >= r.y && y < r.y + r.height
 }
 
+/// Centered dim hint for an empty table (no results / empty library).
+fn draw_empty_hint(f: &mut Frame, area: Rect, msg: &str) {
+    if area.height == 0 {
+        return;
+    }
+    let y = area.y + (area.height / 3).min(area.height - 1);
+    let line = Line::from(Span::styled(msg, Style::default().fg(Color::DarkGray)))
+        .alignment(ratatui::layout::Alignment::Center);
+    f.render_widget(
+        Paragraph::new(line),
+        Rect { x: area.x, y, width: area.width, height: 1 },
+    );
+}
+
 /// Plain chips instead of powerline pills, for terminals without Nerd
 /// Font glyphs (set ASTROBIB_ASCII=1).
 fn ascii_chips() -> bool {
@@ -2329,6 +2343,9 @@ impl App {
             )
             .block(Block::default().borders(Borders::NONE));
             f.render_stateful_widget(table, data_area, &mut self.table);
+            if self.row_count() == 0 {
+                draw_empty_hint(f, data_area, "no results — r re-runs, +/- changes n");
+            }
             return;
         }
         // subtle per-column palette; the terminal theme supplies the hues.
@@ -2501,6 +2518,15 @@ impl App {
         let table = Table::new(rows, constraints)
         .block(Block::default().borders(Borders::NONE));
         f.render_stateful_widget(table, data_area, &mut self.table);
+        if self.order.is_empty() {
+            draw_empty_hint(
+                f,
+                data_area,
+                "library is empty — S searches ADS, or: astrobib add <bibcode>",
+            );
+        } else if self.filtered.is_empty() {
+            draw_empty_hint(f, data_area, "no matches — Esc clears the filter");
+        }
     }
 
     /// The pub card for an ADS result: body and links, plus import state.
