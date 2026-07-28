@@ -58,7 +58,6 @@ enum Action {
     PickPdf,
     Remove,
     Copy,
-    TextSelect,
     Filter,
     Card,
     Log,
@@ -164,9 +163,6 @@ struct App {
     sort_headers: Vec<(Rect, SortCol)>,
     // footer view badges: clickable show/hide toggles per app-wide view
     footer_badges: Vec<(Rect, Action)>,
-    // v — mouse capture released so the terminal's native drag-select
-    // works; v again re-captures
-    text_select: bool,
     // pub card button and link rects, rebuilt each draw
     card_buttons: Vec<(Rect, CardBtn)>,
     card_links: Vec<(Rect, String)>,
@@ -284,7 +280,6 @@ impl App {
             panel_area: Rect::default(),
             panel_copy_rows: vec![],
             copy_restore: None,
-            text_select: false,
             hover: (u16::MAX, u16::MAX),
             hover_hint: None,
             log: vec![],
@@ -343,7 +338,6 @@ impl App {
             Action::PickPdf => single,
             Action::Remove => !keys.is_empty(),
             Action::Copy => !keys.is_empty(),
-            Action::TextSelect => true,
         }
     }
 
@@ -368,7 +362,6 @@ impl App {
             Action::PickPdf => self.open_picker(),
             Action::Remove => self.remove_papers(),
             Action::Copy => self.enter_copy_mode(),
-            Action::TextSelect => self.toggle_text_select(),
             Action::Filter => self.mode = Mode::Filter,
             Action::Card => self.show_detail = !self.show_detail,
             Action::Log => self.show_log = !self.show_log,
@@ -1106,19 +1099,6 @@ impl App {
         }
     }
 
-    /// v — release mouse capture so the terminal's native drag-select
-    /// (and cmd/ctrl+C) works; v again re-captures. run()'s teardown
-    /// tolerates the already-released state on quit.
-    fn toggle_text_select(&mut self) {
-        self.text_select = !self.text_select;
-        if self.text_select {
-            let _ = execute!(std::io::stdout(), DisableMouseCapture);
-        } else {
-            let _ = execute!(std::io::stdout(), EnableMouseCapture);
-            self.status = format!("{} papers", self.order.len());
-        }
-    }
-
     fn on_key(&mut self, code: KeyCode, mods: KeyModifiers) {
         if mods.contains(KeyModifiers::CONTROL) && code == KeyCode::Char('c') {
             self.quit = true;
@@ -1205,7 +1185,6 @@ impl App {
                 KeyCode::Char('L') => self.run_action(Action::Log),
                 KeyCode::Char('y') => self.run_action(Action::Copy),
                 KeyCode::Char('Y') => self.do_copy(CopyItem::FullKey),
-                KeyCode::Char('v') => self.run_action(Action::TextSelect),
                 KeyCode::Char(' ') => self.run_action(Action::Select),
                 KeyCode::Esc => {
                     if self.select_mode {
@@ -1450,7 +1429,6 @@ impl App {
         } else {
             let sel_label = if self.select_mode { "done" } else { "select" };
             let clear_label = if self.poll_cancel.is_some() { "cancel DL" } else { "clear PDF" };
-            let text_label = if self.text_select { "mouse on" } else { "select text" };
             [
                 ("␣", sel_label, Action::Select),
                 ("m", "manuscr. ◆", Action::Manuscript),
@@ -1460,7 +1438,6 @@ impl App {
                 ("o", "open PDF", Action::OpenPdf),
                 ("X", clear_label, Action::ClearPdf),
                 ("y", "copy…", Action::Copy),
-                ("v", text_label, Action::TextSelect),
                 ("⌫", "remove…", Action::Remove),
                 ("/", "filter", Action::Filter),
                 ("D", "pub card", Action::Card),
@@ -2034,13 +2011,6 @@ impl App {
                 Span::styled("copy: ", Style::default().fg(Color::Cyan)),
                 Span::styled(
                     "y key · Y full key · b bibcode · a ADS · x arXiv · d DOI · p PDF path · t title · Esc cancel",
-                    Style::default().fg(Color::DarkGray),
-                ),
-            ]),
-            Mode::Normal | Mode::Pick { .. } | Mode::Confirm { .. } if self.text_select => Line::from(vec![
-                Span::styled("✂ text selection", Style::default().fg(Color::Yellow)),
-                Span::styled(
-                    "  ·  drag to select, copy in the terminal · v restores the mouse",
                     Style::default().fg(Color::DarkGray),
                 ),
             ]),
