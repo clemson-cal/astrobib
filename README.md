@@ -82,6 +82,7 @@ Press `/` on the Library tab to filter the list as you type. The filter is a loc
 sironi shock                        bare terms — match author, title, abstract, key, keywords, year
 author:sironi                       author anywhere in the author list
 author:^zrake                       first-author papers only (ADS ^ convention)
+^zrake                              same — a bare ^ term implies author:
 title:magnetar                      word in title
 abs:"fast radio burst"              phrase in abstract
 key:Zrake2020                       cite key
@@ -90,16 +91,20 @@ year:2020                           single year
 year:2015-2020                      year range
 year:2020-                          2020 or later (year:-2015 for 2015 or earlier)
 "quoted phrase"                     exact phrase, any field
--abs:neutrino  -is:ms               a leading - negates any term
+-abs:neutrino  -is:ms               a leading - negates any term (NOT works too)
 is:starred                          starred papers
 is:ms                               manuscript-db members
 is:pdf                              papers with a cached PDF
 
 author:^zrake year:2019- is:pdf     terms combine with implicit AND
+^zrake OR ^metzger                  uppercase OR separates alternatives
+^zrake year:2019- OR ^metzger       AND binds tighter than OR, as in ADS
 ```
-A partially typed query never produces an error: unknown fields are treated as bare text, so the list refines smoothly as you type.
+Operators are uppercase-only — a lowercase `or` is just a search word, matching ADS's own convention. There is no parenthesized grouping; a query that needs it belongs on ADS (press `S`).
 
-With a filter active, pressing `S` opens an ADS search tab pre-filled with the equivalent ADS query; local-only terms (`is:`, `key:`, and negations) are dropped. This allows you to filter locally and escalate the same query to ADS in one keystroke.
+A partially typed query never produces an error: unknown fields are treated as bare text and a dangling `OR`/`NOT` is ignored, so the list refines smoothly as you type.
+
+With a filter active, pressing `S` opens an ADS search tab pre-filled with the equivalent ADS query; `OR` groups translate directly (parenthesized where needed), while local-only terms (`is:`, `key:`, and negations) are dropped. This allows you to filter locally and escalate the same query to ADS in one keystroke.
 
 ---
 ## ADS query syntax

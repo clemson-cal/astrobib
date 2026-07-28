@@ -1,22 +1,32 @@
 """Local filter query language: ADS-flavored, evaluated against Entry objects.
 
-Grammar — whitespace-separated terms, all AND'd together:
+Grammar — whitespace-separated terms AND together; uppercase OR separates
+alternative groups (AND binds tighter than OR, as in ADS):
 
-    term         := [-] [field:] value
+    query        := group (OR group)*
+    group        := term+
+    term         := [- | NOT ] [field:] value
     value        := bare-word | "quoted phrase"   (case-insensitive substring)
     field        := author | title | abs/abstract | key | kw/keyword | year | is
+
+Operators are uppercase-only (lowercase or/and/not are ordinary bare terms,
+matching ADS's own convention). AND is a no-op — terms already AND — and
+NOT is an alias for the '-' prefix. There is no parenthesized grouping;
+queries needing it belong on ADS (press S).
 
 Field semantics:
     author:sironi     substring of the full author list
     author:^zrake     first-author surname prefix (ADS ^ convention)
+    ^zrake            bare ^ term: sugar for author:^zrake
     year:2020         exact year;  year:2015-2020 / year:2020- / year:-2015 ranges
     is:starred        starred entries
     is:ms             manuscript-db members    (needs context)
     is:pdf            entries with a cached PDF (needs context)
     <bare term>       substring across author, title, abstract, key, keywords, year
 
-Unknown fields fall back to treating the whole token as a bare term, so a
-half-typed query never errors — this is a live filter.
+Unknown fields fall back to treating the whole token as a bare term, and a
+dangling OR/NOT is ignored, so a half-typed query never errors — this is a
+live filter.
 """
 from __future__ import annotations
 
@@ -49,11 +59,25 @@ _FIELD_ALIASES = {
 }
 
 
-def tokenize(text: str) -> list[tuple[bool, str | None, str]]:
-    """Return (negated, field, value) triples; field is canonical or None."""
-    terms: list[tuple[bool, str | None, str]] = []
+def tokenize(text: str) -> list[list[tuple[bool, str | None, str]]]:
+    """Split a filter string into OR-groups of (negated, field, value)
+    triples; field is canonical or None. Uppercase OR starts a new group,
+    AND is skipped, NOT negates the following term."""
+    groups: list[list[tuple[bool, str | None, str]]] = [[]]
+    pending_not = False
     for m in _TOKEN_RE.finditer(text):
-        neg = m.group("neg") == "-"
+        raw = m.group(0)
+        if raw == "OR":
+            if groups[-1]:  # a leading or doubled OR is ignored
+                groups.append([])
+            continue
+        if raw == "AND":
+            continue
+        if raw == "NOT":
+            pending_not = True
+            continue
+        neg = m.group("neg") == "-" or pending_not
+        pending_not = False
         field = m.group("field")
         value = m.group("value").strip('"')
         if field is not None:
@@ -63,9 +87,11 @@ def tokenize(text: str) -> list[tuple[bool, str | None, str]]:
                 field, value = None, f"{field}:{value}"
             else:
                 field = canon
+        if field is None and value.startswith("^") and len(value) > 1:
+            field = "author"  # bare ^name is first-author sugar
         if value or field:
-            terms.append((neg, field, value))
-    return terms
+            groups[-1].append((neg, field, value))
+    return [g for g in groups if g]
 
 
 def _year_predicate(value: str) -> Callable[[Entry], bool]:
@@ -95,51 +121,47 @@ def compile_query(
 ) -> Callable[[Entry], bool]:
     """Compile a filter string to a predicate over Entry.
 
+    Terms within a group AND together; OR-groups are OR'd.
     in_manuscript / has_pdf supply context for the is:ms / is:pdf terms;
     when absent those terms match nothing.
     """
-    preds: list[tuple[bool, Callable[[Entry], bool]]] = []
-    for neg, fieldname, value in tokenize(text):
+    def term_pred(fieldname: str | None, value: str) -> Callable[[Entry], bool]:
         v = value.lower()
         if fieldname == "year":
-            pred = _year_predicate(value)
-        elif fieldname == "author":
+            return _year_predicate(value)
+        if fieldname == "author":
             if v.startswith("^"):
                 first = v[1:]
-                pred = (lambda e, _f=first: e.search_doc()["first"].startswith(_f))
-            else:
-                pred = (lambda e, _v=v: _v in e.search_doc()["author"])
-        elif fieldname == "title":
-            pred = (lambda e, _v=v: _v in e.search_doc()["title"])
-        elif fieldname == "abs":
-            pred = (lambda e, _v=v: _v in e.search_doc()["abs"])
-        elif fieldname == "key":
-            pred = (lambda e, _v=v: _v in e.search_doc()["key"])
-        elif fieldname == "kw":
-            pred = (lambda e, _v=v: _v in e.search_doc()["kw"])
-        elif fieldname == "is":
+                return (lambda e, _f=first: e.search_doc()["first"].startswith(_f))
+            return (lambda e, _v=v: _v in e.search_doc()["author"])
+        if fieldname == "title":
+            return (lambda e, _v=v: _v in e.search_doc()["title"])
+        if fieldname == "abs":
+            return (lambda e, _v=v: _v in e.search_doc()["abs"])
+        if fieldname == "key":
+            return (lambda e, _v=v: _v in e.search_doc()["key"])
+        if fieldname == "kw":
+            return (lambda e, _v=v: _v in e.search_doc()["kw"])
+        if fieldname == "is":
             if v == "starred":
-                pred = (lambda e: e.starred)
-            elif v == "ms":
-                pred = ((lambda e: in_manuscript(e.key)) if in_manuscript
+                return (lambda e: e.starred)
+            if v == "ms":
+                return ((lambda e: in_manuscript(e.key)) if in_manuscript
                         else (lambda e: False))
-            elif v == "pdf":
-                pred = ((lambda e: has_pdf(e.key)) if has_pdf
+            if v == "pdf":
+                return ((lambda e: has_pdf(e.key)) if has_pdf
                         else (lambda e: False))
-            else:
-                pred = (lambda e: False)
-        else:
-            pred = (lambda e, _v=v: _v in e.search_doc()["all"])
-        preds.append((neg, pred))
+            return (lambda e: False)
+        return (lambda e, _v=v: _v in e.search_doc()["all"])
 
-    if not preds:
+    groups = [[(neg, term_pred(f, v)) for neg, f, v in group]
+              for group in tokenize(text)]
+    if not groups:
         return lambda e: True
 
     def matcher(e: Entry) -> bool:
-        for neg, pred in preds:
-            if pred(e) == neg:
-                return False
-        return True
+        return any(all(pred(e) != neg for neg, pred in preds)
+                   for preds in groups)
 
     return matcher
 
@@ -148,22 +170,30 @@ def to_ads_query(text: str) -> str:
     """Translate a local filter string into an ADS search query.
 
     Drops astrobib-local terms (is:, key:, and negations), quotes field
-    values, and maps kw: to keyword:.
+    values, and maps kw: to keyword:. OR-groups are parenthesized so ADS
+    precedence matches the local semantics.
     """
-    parts: list[str] = []
-    for neg, fieldname, value in tokenize(text):
-        if neg or fieldname in ("is", "key") or not value:
-            continue
-        if fieldname == "year":
-            parts.append(f"year:{value}")
-        elif fieldname == "author":
-            parts.append(f'author:"{value}"')
-        elif fieldname in ("title", "abs"):
-            parts.append(f'{fieldname}:"{value}"')
-        elif fieldname == "kw":
-            parts.append(f'keyword:"{value}"')
-        elif " " in value:
-            parts.append(f'"{value}"')
-        else:
-            parts.append(value)
-    return " ".join(parts)
+    groups: list[list[str]] = []
+    for group in tokenize(text):
+        parts: list[str] = []
+        for neg, fieldname, value in group:
+            if neg or fieldname in ("is", "key") or not value:
+                continue
+            if fieldname == "year":
+                parts.append(f"year:{value}")
+            elif fieldname == "author":
+                parts.append(f'author:"{value}"')
+            elif fieldname in ("title", "abs"):
+                parts.append(f'{fieldname}:"{value}"')
+            elif fieldname == "kw":
+                parts.append(f'keyword:"{value}"')
+            elif " " in value:
+                parts.append(f'"{value}"')
+            else:
+                parts.append(value)
+        if parts:
+            groups.append(parts)
+    if len(groups) > 1:
+        return " OR ".join(" ".join(p) if len(p) == 1 else f"({' '.join(p)})"
+                           for p in groups)
+    return " ".join(groups[0]) if groups else ""
