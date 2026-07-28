@@ -820,8 +820,16 @@ class AdsView(Static):
         self.query = query
         self.tab_id = tab_id
         self._articles: list = []
+        self._library: "Library | None" = None
         self._selected_article = None
         self._selected_bibcodes: set[str] = set()
+
+    def cache_key(self, article) -> str:
+        """PDF-cache key for an article: the library cite key when the
+        paper is in the library, else the raw bibcode — so cache state
+        agrees with the library view for imported papers."""
+        entry = self._library.get_by_bibcode(article.bibcode) if self._library else None
+        return entry.key if entry else article.bibcode
 
     def compose(self) -> ComposeResult:
         yield DataTable(cursor_type="row")
@@ -839,11 +847,12 @@ class AdsView(Static):
     def load_articles(self, articles: list, library: Library | None) -> None:
         from .. import pdf as _pdf
         self._articles = articles
+        self._library = library
         self._selected_bibcodes.clear()
         t = self.query_one(DataTable)
         t.clear()
         for a in articles:
-            cached = "↓" if _pdf.is_cached(a.bibcode) else ""
+            cached = "↓" if _pdf.is_cached(self.cache_key(a)) else ""
             entry = library.get_by_bibcode(a.bibcode) if library else None
             lib_icon = "●" if entry else ""
             star = "★" if entry and entry.starred else ""
@@ -871,6 +880,7 @@ class AdsView(Static):
             pass
 
     def update_lib_status(self, library: Library | None) -> None:
+        self._library = library
         t = self.query_one(DataTable)
         for a in self._articles:
             entry = library.get_by_bibcode(a.bibcode) if library else None
@@ -887,7 +897,7 @@ class AdsView(Static):
         t = self.query_one(DataTable)
         for a in self._articles:
             try:
-                t.update_cell(a.bibcode, "pdf", "↓" if _pdf.is_cached(a.bibcode) else "")
+                t.update_cell(a.bibcode, "pdf", "↓" if _pdf.is_cached(self.cache_key(a)) else "")
             except Exception:
                 pass
 
@@ -1194,6 +1204,7 @@ class AstrobibApp(App):
         self.query_one(LibraryView).load(self._library)
         for av in self._ads_views.values():
             av.update_lib_status(self._library)
+            av.refresh_pdf_status()
         self._refresh_manuscript_view()
 
     # ── Manuscript watching ───────────────────────────────────────────────────
@@ -1397,7 +1408,7 @@ class AstrobibApp(App):
                 return
             eprint = _ac.arxiv_id_from_article(article)
             doi = (article.doi or [""])[0]
-            key = article.bibcode
+            key = ads_view.cache_key(article)
             adsurl = f"https://ui.adsabs.harvard.edu/abs/{article.bibcode}"
         else:
             entry = self.query_one(LibraryView)._highlighted_entry
@@ -1991,13 +2002,13 @@ class AstrobibApp(App):
 
     def _selected_cache_keys(self) -> list[str]:
         """PDF-cache keys for the current selection: library cite keys, or
-        raw bibcodes on ADS tabs (ADS-side downloads are keyed by bibcode)."""
+        raw bibcodes for ADS articles not yet in the library."""
         pane_id = self._active_pane_id()
         if pane_id == "pane-library":
             return self.query_one(LibraryView).get_selected_keys()
         ads_view = self._active_ads_view()
         if ads_view is not None:
-            return [a.bibcode for a in ads_view._articles
+            return [ads_view.cache_key(a) for a in ads_view._articles
                     if a.bibcode in ads_view._selected_bibcodes]
         return []
 
@@ -2017,14 +2028,18 @@ class AstrobibApp(App):
             sz = dest.stat().st_size // 1024
             self._set_status(f"[green]Imported {path.name} for {key}  ({sz} KB)[/green]")
             detail.set_pdf_status(f"[green]✓ {sz} KB[/green]")
-            if ads_view is not None:
-                ads_view.refresh_pdf_status()
-            elif self._active_pane_id() == "pane-library":
-                self.query_one(LibraryView).refresh_pdf_status()
-            self._refresh_detail_pdf()
-            self.refresh_bindings()
+            self._refresh_pdf_indicators()
 
         self.push_screen(FilePickScreen(), callback=_picked)
+
+    def _refresh_pdf_indicators(self) -> None:
+        """Refresh the ↓ column in every view plus the pub card after any
+        PDF-cache change, so no tab is left showing stale status."""
+        self.query_one(LibraryView).refresh_pdf_status()
+        for view in self._ads_views.values():
+            view.refresh_pdf_status()
+        self._refresh_detail_pdf()
+        self.refresh_bindings()
 
     def _refresh_detail_pdf(self) -> None:
         """Sync the pub card's PDF buttons with the cache state of the
@@ -2062,32 +2077,25 @@ class AstrobibApp(App):
                 if path.exists():
                     path.unlink()
                     cleared += 1
-            if ads_view is not None:
-                ads_view.refresh_pdf_status()
-            else:
-                self.query_one(LibraryView).refresh_pdf_status()
-            self._refresh_detail_pdf()
-            self.refresh_bindings()
+            self._refresh_pdf_indicators()
             self._set_status(f"[green]Cleared {cleared} cached PDF(s)[/green]")
             return
         if ads_view is not None:
             article = ads_view._selected_article
             if article:
-                path = _pdf.cache_path(article.bibcode)
+                key = ads_view.cache_key(article)
+                path = _pdf.cache_path(key)
                 if path.exists():
                     path.unlink()
-                    self._refresh_detail_pdf()
-                    self.refresh_bindings()
-                    self._set_status(f"[green]Cleared cached PDF for {article.bibcode}[/green]")
+                    self._refresh_pdf_indicators()
+                    self._set_status(f"[green]Cleared cached PDF for {key}[/green]")
         elif self._active_pane_id() == "pane-library":
             entry = self.query_one(LibraryView)._highlighted_entry
             if entry:
                 path = _pdf.cache_path(entry.key)
                 if path.exists():
                     path.unlink()
-                    self.query_one(LibraryView).refresh_pdf_status()
-                    self._refresh_detail_pdf()
-                    self.refresh_bindings()
+                    self._refresh_pdf_indicators()
                     self._set_status(f"[green]Cleared cached PDF for {entry.key}[/green]")
 
     def action_download_pdf(self) -> None:
@@ -2108,7 +2116,7 @@ class AstrobibApp(App):
                     if not eprint and not doi:
                         skipped += 1
                         continue
-                    items.append((a.bibcode, eprint, doi,
+                    items.append((ads_view.cache_key(a), eprint, doi,
                                   f"https://ui.adsabs.harvard.edu/abs/{a.bibcode}"))
             else:
                 for e in self._selection_entries():
@@ -2130,7 +2138,7 @@ class AstrobibApp(App):
                 return
             eprint = _ac.arxiv_id_from_article(article)
             doi = (article.doi or [""])[0]
-            key = article.bibcode
+            key = ads_view.cache_key(article)
             adsurl = f"https://ui.adsabs.harvard.edu/abs/{article.bibcode}"
         else:
             entry = self.query_one(LibraryView)._highlighted_entry
@@ -2157,12 +2165,7 @@ class AstrobibApp(App):
                 failed.append(key)
             else:
                 done += 1
-        if ads_view is not None:
-            ads_view.refresh_pdf_status()
-        else:
-            self.query_one(LibraryView).refresh_pdf_status()
-        self._refresh_detail_pdf()
-        self.refresh_bindings()
+        self._refresh_pdf_indicators()
         msg = f"[green]Downloaded {done}/{len(items)} PDF(s)[/green]"
         if failed:
             msg += f"  [yellow]failed: {', '.join(failed[:4])}{'…' if len(failed) > 4 else ''}[/yellow]"
@@ -2188,12 +2191,7 @@ class AstrobibApp(App):
             sz = path.stat().st_size // 1024
             self._set_status(f"[green]Downloaded {key}  ({sz} KB)[/green]")
             detail.set_pdf_status(f"[green]✓ {sz} KB[/green]")
-            if ads_view is not None:
-                ads_view.refresh_pdf_status()
-            else:
-                self.query_one(LibraryView).refresh_pdf_status()
-            self._refresh_detail_pdf()
-            self.refresh_bindings()
+            self._refresh_pdf_indicators()
 
     def action_open_pdf(self) -> None:
         import subprocess
@@ -2201,10 +2199,12 @@ class AstrobibApp(App):
         from .. import pdf, ads_client as _ac
         ads_view = self._active_ads_view()
         if ads_view is not None:
-            bcs = {bc for bc in ads_view._selected_bibcodes if pdf.is_cached(bc)}
+            sel_keys = [ads_view.cache_key(a) for a in ads_view._articles
+                        if a.bibcode in ads_view._selected_bibcodes]
+            bcs = {k for k in sel_keys if pdf.is_cached(k)}
             a = ads_view._selected_article
-            if a and pdf.is_cached(a.bibcode):
-                bcs.add(a.bibcode)
+            if a and pdf.is_cached(ads_view.cache_key(a)):
+                bcs.add(ads_view.cache_key(a))
             if bcs:
                 paths = [str(pdf.cache_path(bc)) for bc in bcs]
                 if sys.platform == "darwin":
@@ -2224,7 +2224,7 @@ class AstrobibApp(App):
                 return
             eprint = _ac.arxiv_id_from_article(article)
             doi = (article.doi or [""])[0]
-            key = article.bibcode
+            key = ads_view.cache_key(article)
             adsurl = f"https://ui.adsabs.harvard.edu/abs/{article.bibcode}"
         else:
             lib_view = self.query_one(LibraryView)
@@ -2275,12 +2275,7 @@ class AstrobibApp(App):
         else:
             self._set_status(f"[green]Opened {key}[/green]")
             detail.set_pdf_status("[green]✓ opened[/green]")
-            if ads_view is not None:
-                ads_view.refresh_pdf_status()
-            else:
-                self.query_one(LibraryView).refresh_pdf_status()
-            self._refresh_detail_pdf()
-            self.refresh_bindings()
+            self._refresh_pdf_indicators()
 
     def action_browser_pdf(self) -> None:
         from .. import pdf, ads_client as _ac
@@ -2298,7 +2293,7 @@ class AstrobibApp(App):
             if article is None:
                 return
             doi = (article.doi or [""])[0]
-            key = article.bibcode
+            key = ads_view.cache_key(article)
             adsurl = f"https://ui.adsabs.harvard.edu/abs/{article.bibcode}"
             eprint = _ac.arxiv_id_from_article(article)
         else:
@@ -2353,12 +2348,7 @@ class AstrobibApp(App):
             sz = path.stat().st_size // 1024
             detail.set_pdf_status(f"[green]✓ {sz} KB[/green]")
             self._set_status(f"[green]Downloaded {key}  ({sz} KB)[/green]")
-            if ads_view is not None:
-                ads_view.refresh_pdf_status()
-            else:
-                self.query_one(LibraryView).refresh_pdf_status()
-            self._refresh_detail_pdf()
-            self.refresh_bindings()
+            self._refresh_pdf_indicators()
 
     def action_star(self) -> None:
         if self._library is None:
@@ -2503,8 +2493,7 @@ class AstrobibApp(App):
                 return True if (entry is not None and _pdf.is_cached(entry.key)) else None
             if ads_view and ads_view._selected_article:
                 a = ads_view._selected_article
-                return True if (self._library is not None and self._library.has_bibcode(a.bibcode)
-                                and _pdf.is_cached(a.bibcode)) else None
+                return True if _pdf.is_cached(ads_view.cache_key(a)) else None
             return None
 
         if action == "open_pdf":
@@ -2516,8 +2505,10 @@ class AstrobibApp(App):
                 return (entry is not None and _pdf.is_cached(entry.key)) or None
             if ads_view:
                 a = ads_view._selected_article
-                cursor_cached = a is not None and _pdf.is_cached(a.bibcode)
-                selected_cached = any(_pdf.is_cached(bc) for bc in ads_view._selected_bibcodes)
+                cursor_cached = a is not None and _pdf.is_cached(ads_view.cache_key(a))
+                selected_cached = any(_pdf.is_cached(ads_view.cache_key(x))
+                                      for x in ads_view._articles
+                                      if x.bibcode in ads_view._selected_bibcodes)
                 return (cursor_cached or selected_cached) or None
             return None
 
