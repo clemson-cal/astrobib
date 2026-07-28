@@ -2254,7 +2254,7 @@ impl App {
                     let title_style = if lit {
                         Style::default().fg(Color::White).add_modifier(Modifier::ITALIC)
                     } else {
-                        Style::default().add_modifier(Modifier::ITALIC)
+                        Style::default().fg(Color::Gray).add_modifier(Modifier::ITALIC)
                     };
                     let row = Row::new(vec![
                         Cell::from(Span::styled(
@@ -2339,7 +2339,7 @@ impl App {
                     } else {
                         (
                             Style::default().fg(Color::Gray),
-                            Style::default().add_modifier(Modifier::ITALIC),
+                            Style::default().fg(Color::Gray).add_modifier(Modifier::ITALIC),
                             Style::default().fg(Color::Green).add_modifier(Modifier::DIM),
                         )
                     };
@@ -2507,7 +2507,7 @@ impl App {
                         if lit {
                             Style::default().fg(Color::White).add_modifier(Modifier::ITALIC)
                         } else {
-                            Style::default().add_modifier(Modifier::ITALIC)
+                            Style::default().fg(Color::Gray).add_modifier(Modifier::ITALIC)
                         },
                     )),
                 ];
