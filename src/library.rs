@@ -242,6 +242,113 @@ impl Library {
             .filter(|e| e.key().starts_with(input))
             .collect()
     }
+
+    pub fn has(&self, key: &str) -> bool {
+        self.by_key.contains_key(key)
+    }
+
+    /// Set or clear the personal astrobib_starred flag and rewrite the
+    /// entry file — port of set_starred. shift_remove keeps the field
+    /// order of the remaining entries stable, like Python's dict.pop.
+    pub fn set_starred(&mut self, key: &str, starred: bool) -> std::io::Result<()> {
+        let Some(&i) = self.by_key.get(key) else {
+            return Ok(());
+        };
+        let e = &mut self.entries[i];
+        if starred {
+            e.data
+                .insert("astrobib_starred".to_string(), "true".to_string());
+        } else {
+            e.data.shift_remove("astrobib_starred");
+        }
+        std::fs::write(&e.path, bib::format_entry(&e.data))
+    }
+}
+
+/// Personal library merged with an optional manuscript database — port of
+/// the read side of MergedLibrary. The personal entry wins when a key
+/// exists in both; stars are personal and never written to the manuscript.
+pub struct MergedLibrary {
+    pub personal: Library,
+    pub manuscript: Option<Library>,
+}
+
+impl MergedLibrary {
+    pub fn load(ms_root: Option<&Path>) -> std::io::Result<MergedLibrary> {
+        Ok(MergedLibrary {
+            personal: Library::load(&default_library_root())?,
+            manuscript: match ms_root {
+                Some(r) => Some(Library::load(r)?),
+                None => None,
+            },
+        })
+    }
+
+    /// Merged view: every personal entry, plus manuscript-only entries.
+    pub fn entries(&self) -> Vec<&Entry> {
+        let mut out: Vec<&Entry> = vec![];
+        if let Some(ms) = &self.manuscript {
+            out.extend(ms.entries().iter().filter(|e| !self.personal.has(e.key())));
+        }
+        out.extend(self.personal.entries());
+        out
+    }
+
+    pub fn get(&self, key: &str) -> Option<&Entry> {
+        self.personal
+            .get(key)
+            .or_else(|| self.manuscript.as_ref().and_then(|m| m.get(key)))
+    }
+
+    pub fn resolve(&self, input: &str) -> Option<&Entry> {
+        if let Some(e) = self.get(input) {
+            return Some(e);
+        }
+        let matches = self.possible_matches(input);
+        match matches.len() {
+            1 => Some(matches[0]),
+            0 => self.get_by_bibcode(input),
+            _ => None,
+        }
+    }
+
+    pub fn possible_matches(&self, input: &str) -> Vec<&Entry> {
+        self.entries()
+            .into_iter()
+            .filter(|e| e.key().starts_with(input))
+            .collect()
+    }
+
+    pub fn get_by_bibcode(&self, bibcode: &str) -> Option<&Entry> {
+        self.personal
+            .get_by_bibcode(bibcode)
+            .or_else(|| self.manuscript.as_ref().and_then(|m| m.get_by_bibcode(bibcode)))
+    }
+
+    pub fn in_manuscript(&self, key: &str) -> bool {
+        self.manuscript.as_ref().is_some_and(|m| m.has(key))
+    }
+
+    pub fn set_starred(&mut self, key: &str, starred: bool) -> std::io::Result<()> {
+        self.personal.set_starred(key, starred)
+    }
+}
+
+/// Walk up from cwd to find a manuscript database: a directory holding
+/// both bib/ and .git, excluding the active library root — port of
+/// state.find_manuscript_db.
+pub fn find_manuscript_db() -> Option<PathBuf> {
+    let lib_root = default_library_root();
+    let lib_root = lib_root.canonicalize().unwrap_or(lib_root);
+    let mut dir = std::env::current_dir().ok()?;
+    loop {
+        if dir.join("bib").is_dir() && dir.join(".git").exists() && dir != lib_root {
+            return Some(dir);
+        }
+        if !dir.pop() {
+            return None;
+        }
+    }
 }
 
 /// Library root: $ASTROBIB_LIBRARY, else $ASTROBIB_STATE_DIR/library, else

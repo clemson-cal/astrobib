@@ -55,9 +55,7 @@ pub fn parse_entry(text: &str) -> Option<Data> {
     let key = text[i..key_end].trim().to_string();
     i = key_end + 1;
 
-    let mut data = Data::new();
-    data.insert("ENTRYTYPE".to_string(), etype);
-    data.insert("ID".to_string(), key);
+    let mut fields: Vec<(String, String)> = vec![];
 
     loop {
         while i < bytes.len() && (bytes[i].is_ascii_whitespace() || bytes[i] == b',') {
@@ -101,8 +99,17 @@ pub fn parse_entry(text: &str) -> Option<Data> {
             }
         };
         if !name.is_empty() {
-            data.insert(name, latex_to_unicode(&raw));
+            fields.push((name, latex_to_unicode(&raw)));
         }
+    }
+    // bibtexparser v1 stores fields in reverse file order; serialization
+    // writes unknown fields in dict order, so reproduce the reversal or
+    // rewritten files shuffle their trailing fields vs. the Python tool.
+    let mut data = Data::new();
+    data.insert("ENTRYTYPE".to_string(), etype);
+    data.insert("ID".to_string(), key);
+    for (name, value) in fields.into_iter().rev() {
+        data.insert(name, value);
     }
     Some(data)
 }

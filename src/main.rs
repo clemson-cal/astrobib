@@ -1,4 +1,4 @@
-use astrobib::library::{default_library_root, Library};
+use astrobib::library::{find_manuscript_db, MergedLibrary};
 use astrobib::query::{self, QueryContext};
 use clap::{Parser, Subcommand};
 
@@ -24,11 +24,18 @@ enum Command {
     },
     /// Print the BibTeX entry for a cite key (full or shortened)
     Show { key: String },
+    /// Star an entry (personal library only); --off unstars
+    Star {
+        key: String,
+        #[arg(long)]
+        off: bool,
+    },
 }
 
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
-    let lib = Library::load(&default_library_root())?;
+    let ms_root = find_manuscript_db();
+    let mut lib = MergedLibrary::load(ms_root.as_deref())?;
     match cli.command {
         None => astrobib::tui::run(lib),
         Some(Command::List { limit }) => {
@@ -59,15 +66,24 @@ fn main() -> anyhow::Result<()> {
                 std::process::exit(1);
             }
         },
+        Some(Command::Star { key, off }) => {
+            let Some(full) = lib.resolve(&key).map(|e| e.key().to_string()) else {
+                eprintln!("{key} not found.");
+                std::process::exit(1);
+            };
+            lib.set_starred(&full, !off)?;
+            println!("{} {full}", if off { "Unstarred" } else { "★ Starred" });
+            Ok(())
+        }
     }
 }
 
 fn print_entries(
-    lib: &Library,
+    lib: &MergedLibrary,
     pred: impl Fn(&astrobib::library::Entry) -> bool,
     limit: usize,
 ) {
-    let mut shown: Vec<_> = lib.entries().iter().filter(|e| pred(e)).collect();
+    let mut shown: Vec<_> = lib.entries().into_iter().filter(|e| pred(e)).collect();
     shown.sort_by(|a, b| b.year().cmp(&a.year()).then(a.key().cmp(b.key())));
     for e in shown.iter().take(limit) {
         println!(
