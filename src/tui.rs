@@ -1543,6 +1543,9 @@ impl App {
         let c_year = Style::default().fg(Color::Green).add_modifier(Modifier::DIM);
         let c_author = Style::default().fg(Color::Gray);
         let c_key = Style::default().fg(Color::Cyan).add_modifier(Modifier::DIM);
+        // author column scales with the table; text picks the densest
+        // description that fits
+        let author_w = (area.width / 6).clamp(14, 30);
         let hov_row = if hit(area, self.hover.0, self.hover.1) && self.hover.1 > area.y + 1 {
             Some(self.table.offset() + (self.hover.1 - area.y - 2) as usize)
         } else {
@@ -1573,7 +1576,7 @@ impl App {
                     )),
                     Cell::from(Span::styled(e.year(), c_year)),
                     Cell::from(Span::styled(
-                        e.first_author_last().trim_start_matches('{').to_string(),
+                        fit_authors(e.author(), author_w as usize),
                         c_author,
                     )),
                     Cell::from(Span::styled(
@@ -1591,7 +1594,7 @@ impl App {
             .collect();
 
         // header: sortable columns get a click rect and a ▲/▼ marker
-        let widths: [u16; 7] = [2, 2, 2, 6, 18, 0, 20];
+        let widths: [u16; 7] = [2, 2, 2, 6, author_w, 0, 20];
         let (sort_col, asc) = self.sort;
         let mut hx = area.x;
         let mut header_cells: Vec<Cell> = vec![];
@@ -1637,7 +1640,7 @@ impl App {
                 Constraint::Length(2),
                 Constraint::Length(2),
                 Constraint::Length(6),
-                Constraint::Length(18),
+                Constraint::Length(author_w),
                 Constraint::Min(20),
                 Constraint::Length(20),
             ],
@@ -2104,6 +2107,27 @@ fn base64(data: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn fit_authors_candidates() {
+        let a3 = "{Zrake}, J. and {Clyburn}, M. and {Fearing}, S.";
+        assert_eq!(super::fit_authors(a3, 40), "Zrake, Clyburn, and Fearing");
+        assert_eq!(super::fit_authors(a3, 20), "Zrake, Clyburn, +1");
+        assert_eq!(super::fit_authors(a3, 14), "Zrake, +2");
+        assert_eq!(super::fit_authors(a3, 9), "Zrake, +2");
+        assert_eq!(super::fit_authors("{Zrake}, J.", 20), "Zrake");
+        assert_eq!(
+            super::fit_authors("{Zrake}, J. and {MacFadyen}, A.", 30),
+            "Zrake and MacFadyen"
+        );
+        let many = (0..13)
+            .map(|i| format!("{{A{i}}}, X."))
+            .collect::<Vec<_>>()
+            .join(" and ");
+        assert_eq!(super::fit_authors(&many, 14), "A0, A1, +11");
+        assert_eq!(super::fit_authors(&many, 10), "A0, +12");
+        assert_eq!(super::fit_authors("{Verylongsurname}, Q. and {B}, C.", 8), "Verylon…");
+    }
+
+    #[test]
     fn base64_rfc4648_vectors() {
         for (input, want) in [
             ("", ""),
@@ -2118,6 +2142,48 @@ mod tests {
             assert_eq!(super::base64(input.as_bytes()), want);
         }
     }
+}
+
+/// Densest author description that fits `width`. Candidates from most
+/// to least verbose — the full "A, B, and C" list, then "A, B, +N"
+/// prefixes with a count, then "A et al." — and the first that fits
+/// wins; a truncated surname is the last resort.
+fn fit_authors(author: &str, width: usize) -> String {
+    let surnames: Vec<String> = author
+        .split(" and ")
+        .map(|a| {
+            a.trim()
+                .split(',')
+                .next()
+                .unwrap_or("")
+                .trim_matches(['{', '}'])
+                .to_string()
+        })
+        .filter(|s| !s.is_empty())
+        .collect();
+    let n = surnames.len();
+    if n == 0 {
+        return String::new();
+    }
+    let mut candidates: Vec<String> = vec![match n {
+        1 => surnames[0].clone(),
+        2 => format!("{} and {}", surnames[0], surnames[1]),
+        _ => format!("{}, and {}", surnames[..n - 1].join(", "), surnames[n - 1]),
+    }];
+    for k in (1..n).rev() {
+        candidates.push(format!("{}, +{}", surnames[..k].join(", "), n - k));
+    }
+    if n > 1 {
+        candidates.push(format!("{} et al.", surnames[0]));
+    }
+    for c in &candidates {
+        if c.chars().count() <= width {
+            return c.clone();
+        }
+    }
+    let mut s: String = surnames[0].chars().take(width.saturating_sub(1)).collect();
+    s.push('…');
+    s
 }
 
 /// "Zrake, J. and MacFadyen, A." → "Zrake, MacFadyen" (surnames, truncated).
