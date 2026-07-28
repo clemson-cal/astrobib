@@ -1,10 +1,6 @@
+/target
+.DS_Store
 .venv/
 __pycache__/
-*.pyc
-*.pyo
-*.egg-info/
-dist/
-build/
-.DS_Store
+tests/tui/.venv/
 astrobib-export.bib
-/target

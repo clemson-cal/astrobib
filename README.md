@@ -2,7 +2,7 @@
 
 An ADS-native BibTeX library manager for astrophysics manuscripts, written in Rust (ratatui). This is the official implementation; the earlier Python/Textual version is preserved at tag [`v0.4.0`](https://github.com/clemson-cal/astrobib/tree/v0.4.0) and as the latest [PyPI release](https://pypi.org/project/astrobib/).
 
-See [RUST.md](RUST.md) for current features and status, and [DESIGN.md](DESIGN.md) for the data-format contract. A fuller user guide will replace this stub once the CLI/TUI surface settles.
+See [docs/STATUS.md](docs/STATUS.md) for current features and status, and [docs/DESIGN.md](docs/DESIGN.md) for the data-format contract. A fuller user guide will replace this stub once the CLI/TUI surface settles.
 
 <details><summary>Python 0.4.0 documentation (historical)</summary>
 

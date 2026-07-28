@@ -16,7 +16,7 @@ astrobib releases to PyPI as maturin `bindings = "bin"` wheels: the compiled Rus
 
    The two must match; CI wheels are named from pyproject while the binary reports Cargo's number. Patch = fixes only, minor = features.
 
-2. **Write the CHANGELOG entry.** Add a `## X.Y.Z — YYYY-MM-DD` section at the top of `CHANGELOG.md`, with `### Added` / `### Changed` / `### Fixed` subsections as applicable and one bullet per user-visible change, in the same prose style as the existing entries.
+2. **Write the CHANGELOG entry.** Add a `## X.Y.Z — YYYY-MM-DD` section at the top of `docs/CHANGELOG.md`, with `### Added` / `### Changed` / `### Fixed` subsections as applicable and one bullet per user-visible change, in the same prose style as the existing entries.
 
 3. **Verify locally.**
 

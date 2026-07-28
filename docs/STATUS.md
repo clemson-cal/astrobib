@@ -50,4 +50,4 @@ The `refs.bib` generation/sync flow and export, UAT browser/keyword tree, the `u
 
 ## Parity rules
 
-Anything both implementations write must be byte-identical: cite keys (golden-tested), short keys (diff-tested), `.bib` serialization (FIELD_ORDER). The bib database format is the contract — see DESIGN.md.
+Anything both implementations write must be byte-identical: cite keys (golden-tested), short keys (diff-tested), `.bib` serialization (FIELD_ORDER). The bib database format is the contract — see docs/DESIGN.md.
