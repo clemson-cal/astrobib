@@ -144,7 +144,7 @@ impl App {
             selected: HashSet::new(),
             table_area: Rect::default(),
             dl_rx: None,
-            show_actions: false,
+            show_actions: true,
             panel_rows: vec![],
             panel_area: Rect::default(),
             card_buttons: vec![],
