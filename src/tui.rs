@@ -226,6 +226,8 @@ struct App {
     poll_cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     pick_area: Rect,
     confirm_btns: Vec<(Rect, bool)>, // (rect, is_confirm)
+    // plain clicks on the same row within 400ms form a double-click
+    last_click: Option<(std::time::Instant, usize, usize)>, // (t, scope, pos)
 }
 
 fn hit(r: Rect, x: u16, y: u16) -> bool {
@@ -364,6 +366,22 @@ impl App {
             poll_cancel: None,
             pick_area: Rect::default(),
             confirm_btns: vec![],
+            last_click: None,
+        }
+    }
+
+    /// The PDF-cache key for a table row, per scope (cite key when the
+    /// paper is in the library, bibcode for unimported ADS rows).
+    fn row_cache_key(&self, pos: usize) -> Option<String> {
+        match self.scopes.get(self.active_scope) {
+            Some(Scope::Ads { articles, .. }) => articles.get(pos).map(|a| {
+                self.lib
+                    .get_by_bibcode(&a.bibcode)
+                    .map(|e| e.key().to_string())
+                    .unwrap_or_else(|| a.bibcode.clone())
+            }),
+            Some(Scope::Manuscript { rows }) => rows.get(pos).and_then(|r| r.key.clone()),
+            _ => self.filtered.get(pos).map(|&i| self.order[i].clone()),
         }
     }
 
@@ -1579,6 +1597,28 @@ impl App {
         if (modified || x < a.x + 2) && selectable {
             self.select_mode = true;
             self.toggle_row_selected(pos);
+            self.last_click = None;
+            return;
+        }
+        // plain body click: arm/complete a double-click → open cached PDF
+        let now = std::time::Instant::now();
+        let is_double = matches!(
+            self.last_click,
+            Some((t, s, p)) if s == self.active_scope && p == pos
+                && now.duration_since(t) < std::time::Duration::from_millis(400)
+        );
+        if is_double {
+            self.last_click = None;
+            if let Some(key) = self.row_cache_key(pos) {
+                if pdf::is_cached(&key) {
+                    pdf::open_paths(&[pdf::cache_path(&key)]);
+                    self.note(MsgCat::Ok, format!("Opened {key}"));
+                } else {
+                    self.note(MsgCat::Warn, "no cached PDF — p downloads".to_string());
+                }
+            }
+        } else {
+            self.last_click = Some((now, self.active_scope, pos));
         }
     }
 
@@ -1899,7 +1939,7 @@ impl App {
         let detail_area = self.show_detail.then(|| *it.next().unwrap());
 
         let (strip_area, table_area) = {
-            let [s, t] = Layout::vertical([Constraint::Length(1), Constraint::Min(1)])
+            let [s, t] = Layout::vertical([Constraint::Length(2), Constraint::Min(1)])
                 .areas(table_area);
             (s, t)
         };
@@ -2185,16 +2225,43 @@ impl App {
     /// One-line scope strip: Library │ query │ query …, clickable, the
     /// active scope bold cyan; [ and ] cycle, ctrl+w closes, r refreshes.
     fn draw_scope_strip(&mut self, f: &mut Frame, area: Rect) {
+        // two rows: a ▂ "lip" in each pill's fill color sits above the
+        // text row, so capsules read ~25% taller than the font
         self.scope_rects.clear();
+        let lip_y = area.y;
+        let text_y = area.y + 1;
+        let mut lips: Vec<Span> = vec![];
         let mut spans: Vec<Span> = vec![];
         let mut x = area.x;
-        for (i, scope) in self.scopes.iter().enumerate() {
-            let label = scope.label().to_string();
-            let wl = pill_width(&label);
-            let r = Rect { x, y: area.y, width: wl, height: 1 };
-            self.scope_rects.push((r, i));
+        let ascii = ascii_chips();
+        let mut push_one = |label: &str, bg: Color, fg: Color, idx: usize,
+                            x: &mut u16,
+                            lips: &mut Vec<Span>,
+                            spans: &mut Vec<Span>,
+                            rects: &mut Vec<(Rect, usize)>| {
+            let wl = pill_width(label);
+            rects.push((Rect { x: *x, y: lip_y, width: wl, height: 2 }, idx));
+            if ascii {
+                lips.push(Span::raw(" ".repeat(wl as usize + 1)));
+            } else {
+                // lip spans the label only, inset from the rounded caps
+                lips.push(Span::raw(" "));
+                lips.push(Span::styled(
+                    "▂".repeat(label.chars().count()),
+                    Style::default().fg(bg),
+                ));
+                lips.push(Span::raw("  "));
+            }
+            push_pill(spans, label, bg, fg);
+            spans.push(Span::raw(" "));
+            *x += wl + 1;
+        };
+        let scope_labels: Vec<String> =
+            self.scopes.iter().map(|s| s.label().to_string()).collect();
+        for (i, label) in scope_labels.iter().enumerate() {
             let active = i == self.active_scope;
-            let hov = hit(r, self.hover.0, self.hover.1);
+            let probe = Rect { x, y: lip_y, width: pill_width(label), height: 2 };
+            let hov = hit(probe, self.hover.0, self.hover.1);
             let (bg, fg) = if active {
                 (Color::Cyan, Color::Black)
             } else if hov {
@@ -2202,23 +2269,25 @@ impl App {
             } else {
                 (Color::Rgb(40, 44, 52), Color::Gray)
             };
-            push_pill(&mut spans, &label, bg, fg);
-            spans.push(Span::raw(" "));
-            x += wl + 1;
+            push_one(label, bg, fg, i, &mut x, &mut lips, &mut spans, &mut self.scope_rects);
         }
-        // the + pill starts a new query (also on S; the cheat-sheet documents it)
         let label = "+ new";
-        let wl = pill_width(label);
-        let r = Rect { x, y: area.y, width: wl, height: 1 };
-        self.scope_rects.push((r, usize::MAX));
-        let hov = hit(r, self.hover.0, self.hover.1);
+        let probe = Rect { x, y: lip_y, width: pill_width(label), height: 2 };
+        let hov = hit(probe, self.hover.0, self.hover.1);
         let (bg, fg) = if hov {
             (Color::Rgb(58, 63, 72), Color::White)
         } else {
             (Color::Rgb(40, 44, 52), Color::DarkGray)
         };
-        push_pill(&mut spans, label, bg, fg);
-        f.render_widget(Paragraph::new(Line::from(spans)), area);
+        push_one(label, bg, fg, usize::MAX, &mut x, &mut lips, &mut spans, &mut self.scope_rects);
+        f.render_widget(
+            Paragraph::new(Line::from(lips)),
+            Rect { x: area.x, y: lip_y, width: area.width, height: 1 },
+        );
+        f.render_widget(
+            Paragraph::new(Line::from(spans)),
+            Rect { x: area.x, y: text_y, width: area.width, height: 1 },
+        );
     }
 
     fn draw_table(&mut self, f: &mut Frame, area: Rect) {
