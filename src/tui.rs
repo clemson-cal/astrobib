@@ -43,7 +43,7 @@ enum Mode {
     /// Confirm modal for removing papers (Delete key).
     Confirm { keys: Vec<String> },
     /// S — compose an ADS query; ↑/↓ steps the result limit, ⏎ runs it.
-    AdsPrompt { input: String, cursor: usize, limit: usize },
+    AdsPrompt { input: tui_input::Input, limit: usize },
     /// y pressed — the next key picks what to copy (the Copy panel tab
     /// shows the menu, which-key style); Esc cancels.
     Copy,
@@ -176,8 +176,7 @@ struct App {
     lib: MergedLibrary,
     order: Vec<String>,   // entry keys, year-descending
     filtered: Vec<usize>, // positions into `order` that pass the filter
-    filter: String,
-    filter_cursor: usize,
+    filter: tui_input::Input,
     mode: Mode,
     table: TableState,
     show_detail: bool,
@@ -229,99 +228,6 @@ struct App {
     confirm_btns: Vec<(Rect, bool)>, // (rect, is_confirm)
     // plain clicks on the same row within 400ms form a double-click
     last_click: Option<(std::time::Instant, usize, usize)>, // (t, scope, pos)
-}
-
-/// Standard terminal line-editing over (text, char-index cursor):
-/// ctrl+a/e home/end, ctrl+b/f and arrows, alt+b/f word motion,
-/// ctrl+w delete-word-back, ctrl+u/k kill to start/end, ctrl+d
-/// delete-forward, backspace and insertion at the cursor. Returns
-/// true when the key was consumed.
-fn edit_key(text: &mut String, cur: &mut usize, code: KeyCode, mods: KeyModifiers) -> bool {
-    let n = text.chars().count();
-    *cur = (*cur).min(n);
-    let byte_at = |s: &str, ci: usize| s.char_indices().nth(ci).map(|(b, _)| b).unwrap_or(s.len());
-    let is_word = |c: char| c.is_alphanumeric();
-    let word_back = |s: &str, mut ci: usize| {
-        let cs: Vec<char> = s.chars().collect();
-        while ci > 0 && !is_word(cs[ci - 1]) { ci -= 1; }
-        while ci > 0 && is_word(cs[ci - 1]) { ci -= 1; }
-        ci
-    };
-    let word_fwd = |s: &str, mut ci: usize| {
-        let cs: Vec<char> = s.chars().collect();
-        while ci < cs.len() && !is_word(cs[ci]) { ci += 1; }
-        while ci < cs.len() && is_word(cs[ci]) { ci += 1; }
-        ci
-    };
-    let ctrl = mods.contains(KeyModifiers::CONTROL);
-    let alt = mods.contains(KeyModifiers::ALT);
-    match (code, ctrl, alt) {
-        (KeyCode::Char('a'), true, _) | (KeyCode::Home, ..) => *cur = 0,
-        (KeyCode::Char('e'), true, _) | (KeyCode::End, ..) => *cur = n,
-        (KeyCode::Char('b'), true, _) | (KeyCode::Left, false, false) => {
-            *cur = cur.saturating_sub(1)
-        }
-        (KeyCode::Char('f'), true, _) | (KeyCode::Right, false, false) => {
-            *cur = (*cur + 1).min(n)
-        }
-        (KeyCode::Char('b'), false, true) | (KeyCode::Left, _, true) => {
-            *cur = word_back(text, *cur)
-        }
-        (KeyCode::Char('f'), false, true) | (KeyCode::Right, _, true) => {
-            *cur = word_fwd(text, *cur)
-        }
-        (KeyCode::Char('w'), true, _) => {
-            let to = word_back(text, *cur);
-            let (b0, b1) = (byte_at(text, to), byte_at(text, *cur));
-            text.replace_range(b0..b1, "");
-            *cur = to;
-        }
-        (KeyCode::Char('u'), true, _) => {
-            let b1 = byte_at(text, *cur);
-            text.replace_range(..b1, "");
-            *cur = 0;
-        }
-        (KeyCode::Char('k'), true, _) => {
-            let b0 = byte_at(text, *cur);
-            text.truncate(b0);
-        }
-        (KeyCode::Char('d'), true, _) | (KeyCode::Delete, false, false) => {
-            if *cur < n {
-                let b0 = byte_at(text, *cur);
-                let b1 = byte_at(text, *cur + 1);
-                text.replace_range(b0..b1, "");
-            }
-        }
-        (KeyCode::Backspace, ..) => {
-            if *cur > 0 {
-                let b0 = byte_at(text, *cur - 1);
-                let b1 = byte_at(text, *cur);
-                text.replace_range(b0..b1, "");
-                *cur -= 1;
-            }
-        }
-        (KeyCode::Char(c), false, false) => {
-            let b = byte_at(text, *cur);
-            text.insert(b, c);
-            *cur += 1;
-        }
-        _ => return false,
-    }
-    true
-}
-
-/// Caret-split rendering: text with ▏ at the cursor position.
-fn caret_spans(text: &str, cur: usize) -> [Span<'static>; 3] {
-    let b = text
-        .char_indices()
-        .nth(cur)
-        .map(|(i, _)| i)
-        .unwrap_or(text.len());
-    [
-        Span::raw(text[..b].to_string()),
-        Span::styled("▏", Style::default().fg(Color::Cyan)),
-        Span::raw(text[b..].to_string()),
-    ]
 }
 
 fn hit(r: Rect, x: u16, y: u16) -> bool {
@@ -427,8 +333,7 @@ impl App {
             lib,
             order,
             filtered,
-            filter: String::new(),
-            filter_cursor: 0,
+            filter: tui_input::Input::default(),
             mode: Mode::Normal,
             table,
             show_detail: true,
@@ -526,10 +431,10 @@ impl App {
             );
             return;
         }
-        let mut input = if self.filter.is_empty() {
+        let mut input = if self.filter.value().is_empty() {
             String::new()
         } else {
-            query::to_ads_query(&self.filter)
+            query::to_ads_query(self.filter.value())
         };
         if let Some(Scope::Manuscript { rows }) = self.scopes.get(self.active_scope) {
             if let Some(r) = self.table.selected().and_then(|p| rows.get(p)) {
@@ -538,8 +443,7 @@ impl App {
                 }
             }
         }
-        let cursor = input.chars().count();
-        self.mode = Mode::AdsPrompt { input, cursor, limit: 20 };
+        self.mode = Mode::AdsPrompt { input: tui_input::Input::from(input), limit: 20 };
     }
 
     /// Run a query on a worker thread into a scope. A pasted DOI or ADS
@@ -1148,7 +1052,7 @@ impl App {
     }
 
     fn refilter(&mut self) {
-        let groups = query::tokenize(&self.filter);
+        let groups = query::tokenize(self.filter.value());
         let in_ms: Vec<String> = self
             .lib
             .manuscript
@@ -1846,19 +1750,15 @@ impl App {
         match &mut self.mode {
             Mode::Filter => match code {
                 KeyCode::Esc => {
-                    self.filter.clear();
-                    self.filter_cursor = 0;
+                    self.filter = tui_input::Input::default();
                     self.mode = Mode::Normal;
                     self.refilter();
                 }
                 KeyCode::Enter => self.mode = Mode::Normal,
                 _ => {
-                    let mut text = std::mem::take(&mut self.filter);
-                    let mut cur = self.filter_cursor;
-                    let consumed = edit_key(&mut text, &mut cur, code, mods);
-                    self.filter = text;
-                    self.filter_cursor = cur;
-                    if consumed {
+                    use tui_input::backend::crossterm::EventHandler;
+                    let ev = Event::Key(ratatui::crossterm::event::KeyEvent::new(code, mods));
+                    if self.filter.handle_event(&ev).is_some() {
                         self.refilter();
                     }
                 }
@@ -1897,10 +1797,10 @@ impl App {
                     }
                 }
             }
-            Mode::AdsPrompt { input, cursor, limit } => match code {
+            Mode::AdsPrompt { input, limit } => match code {
                 KeyCode::Esc => self.mode = Mode::Normal,
                 KeyCode::Enter => {
-                    let (q, l) = (input.clone(), *limit);
+                    let (q, l) = (input.value().to_string(), *limit);
                     self.mode = Mode::Normal;
                     self.run_ads_query_limit(q, None, l);
                 }
@@ -1915,7 +1815,9 @@ impl App {
                     *limit = STEPS[i.saturating_sub(1)];
                 }
                 _ => {
-                    edit_key(input, cursor, code, mods);
+                    use tui_input::backend::crossterm::EventHandler;
+                    let ev = Event::Key(ratatui::crossterm::event::KeyEvent::new(code, mods));
+                    input.handle_event(&ev);
                 }
             },
             Mode::Confirm { keys } => match code {
@@ -1970,8 +1872,8 @@ impl App {
                 KeyCode::Esc => {
                     if self.select_mode {
                         self.exit_select_mode();
-                    } else if !self.filter.is_empty() {
-                        self.filter.clear();
+                    } else if !self.filter.value().is_empty() {
+                        self.filter = tui_input::Input::default();
                         self.refilter();
                     }
                 }
@@ -3275,21 +3177,30 @@ impl App {
     fn draw_status(&mut self, f: &mut Frame, area: Rect) {
         let line = match self.mode {
             Mode::Filter => {
-                let [a, b, c] = caret_spans(&self.filter, self.filter_cursor);
+                let avail = area.width.saturating_sub(2) as usize;
+                let scroll = self.filter.visual_scroll(avail);
+                let shown: String = self.filter.value().chars().skip(scroll).collect();
+                f.set_cursor_position((
+                    area.x + 1 + (self.filter.visual_cursor().saturating_sub(scroll)) as u16,
+                    area.y,
+                ));
                 Line::from(vec![
                     Span::styled("/", Style::default().fg(Color::Cyan)),
-                    a,
-                    b,
-                    c,
+                    Span::raw(shown),
                 ])
             }
-            Mode::AdsPrompt { ref input, cursor, limit } => {
-                let [a, b, c] = caret_spans(input, cursor);
+            Mode::AdsPrompt { ref input, limit } => {
+                let prefix = 11u16; // "ADS query: "
+                let avail = area.width.saturating_sub(prefix + 30) as usize;
+                let scroll = input.visual_scroll(avail.max(10));
+                let shown: String = input.value().chars().skip(scroll).collect();
+                f.set_cursor_position((
+                    area.x + prefix + (input.visual_cursor().saturating_sub(scroll)) as u16,
+                    area.y,
+                ));
                 Line::from(vec![
                 Span::styled("ADS query: ", Style::default().fg(Color::Cyan)),
-                a,
-                b,
-                c,
+                Span::raw(shown),
                 Span::styled(
                     format!("   n={limit} ↑↓"),
                     Style::default().fg(Color::Gray),
@@ -3320,10 +3231,10 @@ impl App {
             Mode::Normal | Mode::Pick { .. } | Mode::Confirm { .. } => {
                 let n = self.filtered.len();
                 let total = self.order.len();
-                let filt = if self.filter.is_empty() {
+                let filt = if self.filter.value().is_empty() {
                     String::new()
                 } else {
-                    format!("  ·  /{}", self.filter)
+                    format!("  ·  /{}", self.filter.value())
                 };
                 // logged messages show for ~5s then clear (a fresh one
                 // outranks the hover hint); unlogged transient status —
