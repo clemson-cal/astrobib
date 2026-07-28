@@ -109,6 +109,34 @@ fn hit(r: Rect, x: u16, y: u16) -> bool {
     x >= r.x && x < r.x + r.width && y >= r.y && y < r.y + r.height
 }
 
+/// Plain chips instead of powerline pills, for terminals without Nerd
+/// Font glyphs (set ASTROBIB_ASCII=1).
+fn ascii_chips() -> bool {
+    static ASCII: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ASCII.get_or_init(|| std::env::var("ASTROBIB_ASCII").is_ok_and(|v| v != "0"))
+}
+
+/// Rendered cell width of a pill/chip: end caps (or padding) + label.
+fn pill_width(label: &str) -> u16 {
+    label.chars().count() as u16 + 2
+}
+
+/// A clickable rounded chip: powerline semicircle caps drawn in the chip
+/// color around the label, so the row reads as a pill. ASCII mode renders
+/// a plain padded chip of identical width, keeping click rects valid.
+fn push_pill<'a>(spans: &mut Vec<Span<'a>>, label: &str, bg: Color, fg: Color) {
+    if ascii_chips() {
+        spans.push(Span::styled(
+            format!(" {label} "),
+            Style::default().bg(bg).fg(fg),
+        ));
+    } else {
+        spans.push(Span::styled("\u{e0b6}".to_string(), Style::default().fg(bg)));
+        spans.push(Span::styled(label.to_string(), Style::default().bg(bg).fg(fg)));
+        spans.push(Span::styled("\u{e0b4}".to_string(), Style::default().fg(bg)));
+    }
+}
+
 /// Greedy word wrap producing the exact lines we render — placement math
 /// (links/buttons following variable-height text) depends on the count.
 fn wrap_text(s: &str, w: usize) -> Vec<String> {
@@ -384,6 +412,7 @@ impl App {
     }
 
     /// Toggle selection membership of the row at a filtered position.
+    /// A selection emptied by toggling exits selection mode, same as Esc.
     fn toggle_row_selected(&mut self, pos: usize) {
         let Some(&idx) = self.filtered.get(pos) else {
             return;
@@ -392,7 +421,11 @@ impl App {
         if !self.selected.remove(&key) {
             self.selected.insert(key);
         }
-        self.status = format!("{} selected", self.selected.len());
+        if self.select_mode && self.selected.is_empty() {
+            self.exit_select_mode();
+        } else {
+            self.status = format!("{} selected", self.selected.len());
+        }
     }
 
     fn exit_select_mode(&mut self) {
@@ -682,12 +715,14 @@ impl App {
         match m.kind {
             MouseEventKind::ScrollDown => self.move_sel(3),
             MouseEventKind::ScrollUp => self.move_sel(-3),
-            MouseEventKind::Down(MouseButton::Left) => self.on_click(m.column, m.row),
+            MouseEventKind::Down(MouseButton::Left) => {
+                self.on_click(m.column, m.row, m.modifiers)
+            }
             _ => {}
         }
     }
 
-    fn on_click(&mut self, x: u16, y: u16) {
+    fn on_click(&mut self, x: u16, y: u16, mods: KeyModifiers) {
         // modal picker swallows all clicks: row click imports, outside closes
         if let Mode::Pick { key, files, .. } = &self.mode {
             if hit(self.pick_area, x, y) && y > self.pick_area.y {
@@ -756,8 +791,14 @@ impl App {
             return;
         }
         self.table.select(Some(pos));
-        if x < a.x + 2 {
-            // the ◯/◉ gutter: enter selection mode if needed, then toggle
+        // cmd/option/ctrl+click anywhere on a row enters multi-select and
+        // toggles it (the SGR mouse protocol has no dedicated cmd bit, so
+        // accept whichever modifier the terminal forwards); a plain click
+        // does the same in the ◯/◉ gutter only.
+        let modified = mods.intersects(
+            KeyModifiers::SUPER | KeyModifiers::ALT | KeyModifiers::CONTROL,
+        );
+        if modified || x < a.x + 2 {
             self.select_mode = true;
             self.toggle_row_selected(pos);
         }
@@ -1005,26 +1046,18 @@ impl App {
         lines.push(Line::default());
         let by = area.y + h.saturating_sub(2);
         let bx = area.x + 1;
-        let remove_label = " remove ";
-        let cancel_label = " cancel ";
+        let (rw, cw) = (pill_width("remove"), pill_width("cancel"));
+        self.confirm_btns
+            .push((Rect { x: bx, y: by, width: rw, height: 1 }, true));
         self.confirm_btns.push((
-            Rect { x: bx, y: by, width: remove_label.len() as u16, height: 1 },
-            true,
-        ));
-        self.confirm_btns.push((
-            Rect {
-                x: bx + remove_label.len() as u16 + 2,
-                y: by,
-                width: cancel_label.len() as u16,
-                height: 1,
-            },
+            Rect { x: bx + rw + 2, y: by, width: cw, height: 1 },
             false,
         ));
-        lines.push(Line::from(vec![
-            Span::styled(remove_label, Style::default().bg(Color::Red).fg(Color::White)),
-            Span::raw("  "),
-            Span::styled(cancel_label, Style::default().bg(Color::DarkGray)),
-        ]));
+        let mut bspans: Vec<Span> = vec![];
+        push_pill(&mut bspans, "remove", Color::Red, Color::White);
+        bspans.push(Span::raw("  "));
+        push_pill(&mut bspans, "cancel", Color::DarkGray, Color::White);
+        lines.push(Line::from(bspans));
         let title = format!(
             " Remove {} paper(s) from the library? ",
             keys.len()
@@ -1284,35 +1317,35 @@ impl App {
         line_at(f, y, Line::from(Span::styled(sep, dimsep)));
         y += 1;
 
-        // ── PDF buttons (Python labels, colors, and visibility rules) ─
+        // ── PDF buttons (Python labels, colors, and visibility rules),
+        //    drawn as rounded pills ─────────────────────────────────────
         let cached = pdf::is_cached(&key);
         let muted = Style::default().fg(Color::Gray);
-        let raised = Style::default().bg(Color::DarkGray);
-        let mut buttons: Vec<(&str, CardBtn, Style)> = vec![];
+        let mut buttons: Vec<(&str, CardBtn, Color)> = vec![];
         if !cached && !eprint.is_empty() {
-            buttons.push((" arXiv ↓ ", CardBtn::Arxiv, raised.fg(Color::Cyan)));
+            buttons.push(("arXiv ↓", CardBtn::Arxiv, Color::Cyan));
         }
         if !cached && !adsurl.is_empty() {
-            buttons.push((" ADS OA ↓ ", CardBtn::Oa, raised.fg(Color::Cyan)));
+            buttons.push(("ADS OA ↓", CardBtn::Oa, Color::Cyan));
         }
         if !cached && (!doi.is_empty() || !adsurl.is_empty()) {
-            buttons.push((" browser ↓ ", CardBtn::Browser, raised.fg(Color::Yellow)));
+            buttons.push(("browser ↓", CardBtn::Browser, Color::Yellow));
         }
         if !cached {
-            buttons.push((" pick … ", CardBtn::Pick, raised.fg(Color::Magenta)));
+            buttons.push(("pick …", CardBtn::Pick, Color::Magenta));
         }
         if cached {
-            buttons.push((" Open ↗ ", CardBtn::Open, raised.fg(Color::Green)));
-            buttons.push((" Clear ✕ ", CardBtn::Clear, raised.patch(muted)));
+            buttons.push(("Open ↗", CardBtn::Open, Color::Green));
+            buttons.push(("Clear ✕", CardBtn::Clear, Color::Gray));
         }
         let mut spans: Vec<Span> = vec![];
         let mut bx = x0;
-        for (label, btn, style) in buttons {
-            let wl = label.chars().count() as u16;
+        for (label, btn, fg) in buttons {
+            let wl = pill_width(label);
             if y < bottom {
                 self.card_buttons.push((Rect { x: bx, y, width: wl, height: 1 }, btn));
             }
-            spans.push(Span::styled(label.to_string(), style));
+            push_pill(&mut spans, label, Color::DarkGray, fg);
             spans.push(Span::raw(" "));
             bx += wl + 1;
         }
