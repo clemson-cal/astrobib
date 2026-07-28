@@ -94,13 +94,20 @@ impl App {
         let t0 = std::time::Instant::now();
         while !self.quit {
             terminal.draw(|f| self.draw(f))?;
+            // Poll fast while the terminal settles: some terminals (Warp)
+            // resize the pty just after alt-screen entry, before crossterm's
+            // SIGWINCH handler exists, so no Resize event ever arrives —
+            // the size change is only visible to the next draw. A quick
+            // cadence for the first second turns that half-second width
+            // jump into an imperceptible one-frame reflow.
+            let tick = if t0.elapsed() < Duration::from_secs(1) { 25 } else { 250 };
             debug_layout(&format!(
                 "{:>6}ms draw frame={:?} table={:?}",
                 t0.elapsed().as_millis(),
                 terminal.get_frame().area(),
                 self.table_area,
             ));
-            if event::poll(Duration::from_millis(250))? {
+            if event::poll(Duration::from_millis(tick))? {
                 let ev = event::read()?;
                 debug_layout(&format!("{:>6}ms event {ev:?}", t0.elapsed().as_millis()));
                 match ev {
