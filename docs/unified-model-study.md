@@ -11,6 +11,7 @@
 - **Model 1 (status quo).** Global personal library, plus an optional manuscript `bib/` discovered by walk-up (`bib/` + `.git`). `MergedLibrary` reads span both (personal wins on key collision); imports write to both; `m` / the `◆` card chip toggle membership; removing the last copy from a manuscript rescues it into the personal library first.
 - **Model 2 (fully local).** No global store at all. astrobib operates on the `bib/` found by walk-up (or cwd), optionally with `main.tex` for citation classification. Every paper directory is self-contained; there is no cross-directory anything.
 - **Model 3 (single active library).** Exactly one library is active at a time: the walk-up result inside a manuscript repo, else the global default directory. No merging, no membership, no `●`; imports write only the active library. Cross-project reuse happens by re-fetching from ADS (which, thanks to identity-derived keys, acts as the true global library) or an explicit copy command.
+- **Model 4 (inheritance with promotion).** Local bibs *inherit* more global ones: inside a paper repo the visible collection is the local `bib/` overlaid on the personal library (local wins), and the chain generalizes to any depth (paper ← group ← personal). Writes automatically target the **local** db only. Explicit commands move entries *outward* — `promote <key>` copies a locally-imported entry into a more global library — and inherited entries materialize *inward* on demand (cite-and-localize, the analogue of today's `m`). Removal of a sole local copy auto-promotes instead of destroying (rescue and promotion become one primitive).
 
 ---
 
@@ -112,9 +113,23 @@ The clean migration story for Models 2/3 is a genuine point in their favor — a
 
 ---
 
+## Model 4 examined: is it basically what we have already?
+
+**On the read side — yes, almost exactly.** `MergedLibrary` *is* single-level inheritance: inside a paper repo you see the local `bib/` overlaid on the personal collection, the `○ library` classification is precisely "inherited but not yet materialized," and `m` / the `◇` chip is the localize step. Nothing about Model 4's visibility story requires new machinery; the audit in section (a) already prices it.
+
+**Three things are genuinely different**, all on the write side:
+
+1. **Write targeting.** Today an import inside a manuscript dual-writes (local *and* personal, atomically); Model 4 writes local-only and makes the personal library grow **only through explicit `promote`**. This converts the split's one implicit behavior ("importing here also writes over there") into two explicit ones — more predictable, but it reintroduces Model 3's erosion hazard in softened form: the collection accrues only as diligently as you promote. A `promote --review` (list local-only entries across recent repos) would be the countermeasure, and is itself new surface.
+2. **Precedence.** Today personal wins on key collision; Model 4's nearest-wins is the natural inheritance rule. Since starring was removed, the copies can differ only in curated keywords — personal-wins existed to protect personal fields, and with those gone the inversion is nearly moot. (Worth deciding deliberately if Model 4 is ever adopted: nearest-wins means a paper repo can shadow your curated keywords with a coauthor's copy.)
+3. **Depth.** Model 1 hardcodes exactly two levels; Model 4 generalizes to chains (paper ← group ← personal). Nobody has asked for level three; the generality is free conceptually but not free in resolution rules, `tabs.json` contexting, or the scope strip.
+
+**Net assessment.** Model 4 = Model 1's read model + Model 3's write model + an explicit promotion verb, with rescue elegantly absorbed into promotion. It is the strongest *refinement* candidate: it deletes no safety (rescue survives as auto-promote), keeps the offline-reuse journey intact (inheritance preserves `○ → localize`), and replaces the one behavior users must currently be told about (dual writes) with commands they invoke. What it does **not** do is reduce the machinery this study audited — the merged view, membership classification, and copy plumbing all remain; a second write path (`promote`) is added while one implicit write is removed. So the honest answer to "is this basically what we have?" is: **yes for reads and membership; the difference is purely who decides when the personal library grows — the tool (today) or you (Model 4).** If the dual-write ever feels surprising or wrong in practice, Model 4 is the adjustment to make; it is reachable from Model 1 by changing the import target and adding `promote`, with zero on-disk migration, and is therefore — like Model 3 — an option that never expires.
+
+---
+
 ## Recommendation
 
-**Keep Model 1.** The split is ~300 lines and four concepts, purchased against the tool's two defining journeys: one-keystroke offline reuse of a decade of collected papers, and a browsable personal collection that accrues as a side effect of writing. The bug tail that justified this study was real but is now structurally closed — dual writes go through one path, removal goes through the rescue invariant, and identity-derived keys make content divergence impossible (the stores can differ only in *presence*, never in *what a key means*). The Rust port reproduced the whole feature against those invariants without incident, which is evidence the complexity is now specified rather than exploratory.
+**Keep Model 1** (with Model 4 as the designated refinement if dual-write ever chafes — see above). The split is ~300 lines and four concepts, purchased against the tool's two defining journeys: one-keystroke offline reuse of a decade of collected papers, and a browsable personal collection that accrues as a side effect of writing. The bug tail that justified this study was real but is now structurally closed — dual writes go through one path, removal goes through the rescue invariant, and identity-derived keys make content divergence impossible (the stores can differ only in *presence*, never in *what a key means*). The Rust port reproduced the whole feature against those invariants without incident, which is evidence the complexity is now specified rather than exploratory.
 
 Two consolations for the simplicity instinct that motivated this study:
 
