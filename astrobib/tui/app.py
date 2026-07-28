@@ -32,6 +32,39 @@ from ..uat import UAT, Concept, get_uat
 from . import tabs_state
 
 
+async def to_thread(fn, /, *args, **kwargs):
+    """asyncio.to_thread on a daemon thread, so quitting never blocks.
+
+    The interpreter joins non-daemon threads at exit, which made quitting
+    wait out any in-flight network call (up to its timeout). Daemon threads
+    are dropped instead: the request dies with the process. All calls routed
+    here are reads whose results are only applied back on the event loop, so
+    a dropped thread can never leave partial state behind.
+    """
+    import asyncio
+    loop = asyncio.get_running_loop()
+    fut = loop.create_future()
+
+    def deliver(method: str, value) -> None:
+        if not fut.done():  # discarded if the awaiting worker was cancelled
+            getattr(fut, method)(value)
+
+    def run() -> None:
+        try:
+            result = fn(*args, **kwargs)
+        except BaseException as exc:
+            outcome = ("set_exception", exc)
+        else:
+            outcome = ("set_result", result)
+        try:
+            loop.call_soon_threadsafe(deliver, *outcome)
+        except RuntimeError:
+            pass  # loop already closed — we are mid-shutdown
+
+    threading.Thread(target=run, daemon=True, name="astrobib-io").start()
+    return await fut
+
+
 # ── PDF action button ─────────────────────────────────────────────────────────
 
 class PdfButton(Static, can_focus=True):
@@ -1178,7 +1211,6 @@ class AstrobibApp(App):
         return ads_view
 
     async def _do_refresh(self, ads_view: AdsView, tab_data: dict) -> None:
-        import asyncio
         def _is_active() -> bool:
             return self._active_ads_view() is ads_view
         limit = tab_data.get("limit", tabs_state.DEFAULT_LIMIT)
@@ -1186,7 +1218,7 @@ class AstrobibApp(App):
             self._set_status(f"Searching ADS for '{ads_view.query}' (n={limit})…")
         try:
             from .. import ads_client
-            articles = await asyncio.to_thread(ads_client.search, ads_view.query, limit)
+            articles = await to_thread(ads_client.search, ads_view.query, limit)
             ads_view.load_articles(articles, self._library)
             tab_data["bibcodes"] = [a.bibcode for a in articles]
             tab_data["refreshed"] = int(time.time())
@@ -1442,6 +1474,9 @@ class AstrobibApp(App):
         if self._poll_cancel is not None:
             self._poll_cancel.set()
             self._poll_cancel = None
+
+    def on_unmount(self) -> None:
+        self._cancel_poll()
 
     # ── Actions ───────────────────────────────────────────────────────────────
 
@@ -1898,11 +1933,10 @@ class AstrobibApp(App):
             self.push_screen(AddModal(), handle)
 
     async def _fetch_and_add(self, bibcode: str, ads_view: "AdsView | None") -> None:
-        import asyncio
         import shutil
         try:
             from .. import ads_client, pdf as _pdf
-            data = await asyncio.to_thread(ads_client.fetch_bibtex, bibcode)
+            data = await to_thread(ads_client.fetch_bibtex, bibcode)
             if data is None:
                 self._set_status(f"[red]Could not fetch {bibcode}[/red]")
                 return
@@ -1921,7 +1955,6 @@ class AstrobibApp(App):
             self._set_status(f"[red]{exc}[/red]")
 
     async def _fetch_and_add_batch(self, bibcodes: list[str], ads_view: AdsView) -> None:
-        import asyncio
         import shutil
         from .. import ads_client, pdf as _pdf
         added: list[str] = []
@@ -1934,7 +1967,7 @@ class AstrobibApp(App):
                 continue
             self._set_status(f"Fetching [{i+1}/{total}] {bibcode}…")
             try:
-                data = await asyncio.to_thread(ads_client.fetch_bibtex, bibcode)
+                data = await to_thread(ads_client.fetch_bibtex, bibcode)
                 if data is None:
                     skipped.append(bibcode)
                     self._set_status(f"[yellow]Could not fetch {bibcode} ({i+1}/{total})[/yellow]")
@@ -2154,12 +2187,11 @@ class AstrobibApp(App):
 
     async def _do_download_pdf_batch(self, items: "list[tuple[str, str, str, str]]",
                                      ads_view: "AdsView | None") -> None:
-        import asyncio
         from .. import pdf
         done, failed = 0, []
         for i, (key, eprint, doi, adsurl) in enumerate(items, 1):
             self._set_status(f"Downloading [{i}/{len(items)}] {key}…")
-            path = await asyncio.to_thread(
+            path = await to_thread(
                 pdf.fetch, key, eprint=eprint, doi=doi, adsurl=adsurl)
             if path is None:
                 failed.append(key)
@@ -2174,10 +2206,9 @@ class AstrobibApp(App):
     async def _do_download_pdf(self, key: str, eprint: str, doi: str,
                                 adsurl: str, ads_view: "AdsView | None",
                                 source: str = "auto") -> None:
-        import asyncio
         from .. import pdf
         detail = self.query_one(DetailPanel)
-        path = await asyncio.to_thread(
+        path = await to_thread(
             pdf.fetch, key, eprint=eprint, doi=doi, adsurl=adsurl, source=source, force=True
         )
         if path is None:
@@ -2259,10 +2290,9 @@ class AstrobibApp(App):
 
     async def _do_open_pdf(self, key: str, eprint: str, doi: str,
                             adsurl: str, ads_view: "AdsView | None") -> None:
-        import asyncio
         from .. import pdf
         detail = self.query_one(DetailPanel)
-        opened = await asyncio.to_thread(
+        opened = await to_thread(
             pdf.open_pdf, key, eprint=eprint, doi=doi, adsurl=adsurl
         )
         if not opened:
@@ -2310,17 +2340,16 @@ class AstrobibApp(App):
 
     async def _do_browser_pdf(self, key: str, doi: str, adsurl: str, eprint: str | None,
                                ads_view: "AdsView | None") -> None:
-        import asyncio
         from .. import pdf
         self._set_status(f"Resolving browser source for {key}…")
-        url = await asyncio.to_thread(
+        url = await to_thread(
             lambda: pdf.browser_resolve_url(doi=doi, adsurl=adsurl, eprint=eprint)
         )
         if url is None:
             self._set_status(f"[red]No browser source found for {key}[/red]")
             return
         detail = self.query_one(DetailPanel)
-        watch_err = await asyncio.to_thread(pdf.downloads_error)
+        watch_err = await to_thread(pdf.downloads_error)
         if watch_err is not None:
             pdf.browser_open(url)
             detail.set_pdf_status("[red]✗ can't watch ~/Downloads — use pick … when done[/red]")
@@ -2332,7 +2361,7 @@ class AstrobibApp(App):
         self._poll_cancel = cancel
         detail.set_pdf_status("[yellow]⏳ Waiting for download…  [dim](X to cancel)[/dim][/yellow]")
         self._set_status(f"[yellow]Browser opened — waiting for PDF in ~/Downloads (60s)…[/yellow]")
-        path = await asyncio.to_thread(pdf.poll_downloads, key, before, 60, cancel)
+        path = await to_thread(pdf.poll_downloads, key, before, 60, cancel)
         self._poll_cancel = None
         if path is None:
             if cancel.is_set():
@@ -2340,7 +2369,7 @@ class AstrobibApp(App):
                 self._set_status("[dim]Browser download cancelled[/dim]")
             else:
                 detail.set_pdf_status("[red]✗ Timed out (60s)[/red]")
-                why = await asyncio.to_thread(pdf.downloads_diagnosis, before)
+                why = await to_thread(pdf.downloads_diagnosis, before)
                 self._set_status(
                     f"[red]{why}[/red]" if why
                     else "[red]No PDF appeared in ~/Downloads within 60s[/red]")
