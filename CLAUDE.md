@@ -15,9 +15,10 @@ cargo build --release        # binary at target/release/astrobib
 cargo test                   # includes golden parity vectors
 cargo run --release          # TUI
 cargo run --release -- list  # CLI
+tests/tui/run.py             # TUI integration scenarios (see tests/tui/README.md)
 ```
 
-Verify TUI changes headlessly with the pyte pty harness (drive the real binary in a pseudo-terminal against a scratch `ASTROBIB_LIBRARY` / `ASTROBIB_STATE_DIR` — never the real library; reconstruct screens with pyte, do not grep raw bytes).
+Verify TUI changes headlessly with the committed pyte pty harness (`tests/tui/run.py`): it drives the real binary in a pseudo-terminal against a scratch `ASTROBIB_LIBRARY` / `ASTROBIB_STATE_DIR` built from `tests/tui/fixtures/` — never the real library — and reconstructs screens with pyte rather than grepping raw bytes. It bootstraps its own venv; add new scenarios under `tests/tui/scenarios/`.
 
 ---
 
