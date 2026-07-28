@@ -5,6 +5,10 @@ use clap::{Parser, Subcommand};
 #[derive(Parser)]
 #[command(name = "astrobib", version, about = "ADS-native BibTeX library manager (Rust port)")]
 struct Cli {
+    /// Use a different personal library root (wins over $ASTROBIB_LIBRARY).
+    /// Caches and state.json are unaffected — they are machine-local.
+    #[arg(long, global = true, value_name = "PATH")]
+    library: Option<std::path::PathBuf>,
     #[command(subcommand)]
     command: Option<Command>,
 }
@@ -36,6 +40,11 @@ enum Command {
 
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
+    if let Some(p) = &cli.library {
+        // one resolution path: the flag wins by shadowing the env var
+        // (read before any thread starts)
+        std::env::set_var("ASTROBIB_LIBRARY", p);
+    }
     let ms_root = find_manuscript_db();
     let mut lib = MergedLibrary::load(ms_root.as_deref())?;
     match cli.command {
