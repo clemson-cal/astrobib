@@ -303,8 +303,15 @@ impl Library {
 /// the read side of MergedLibrary. The personal entry wins when a key
 /// exists in both; stars are personal and never written to the manuscript.
 pub struct MergedLibrary {
+    /// Tier 1: the global personal library.
     pub personal: Library,
+    /// Tier 2: the pointed-to local bib library (historically the
+    /// manuscript db; now first-class with or without a manuscript).
     pub manuscript: Option<Library>,
+    /// Two-tier switch: when false (and a local tier exists), the global
+    /// tier is hidden from reads and excluded from normal writes. The
+    /// rescue path still writes to it — safety beats visibility.
+    pub global_on: bool,
 }
 
 impl MergedLibrary {
@@ -315,11 +322,22 @@ impl MergedLibrary {
                 Some(r) => Some(Library::load(r)?),
                 None => None,
             },
+            global_on: true,
         })
     }
 
-    /// Merged view: every personal entry, plus manuscript-only entries.
+    /// True when the global tier participates in reads/writes: either
+    /// it is enabled, or there is no local tier to fall back to.
+    fn global_active(&self) -> bool {
+        self.global_on || self.manuscript.is_none()
+    }
+
+    /// Merged view: every personal entry plus manuscript-only entries —
+    /// or the local tier alone when the global tier is toggled off.
     pub fn entries(&self) -> Vec<&Entry> {
+        if !self.global_active() {
+            return self.manuscript.as_ref().map(|m| m.entries().iter().collect()).unwrap_or_default();
+        }
         let mut out: Vec<&Entry> = vec![];
         if let Some(ms) = &self.manuscript {
             out.extend(ms.entries().iter().filter(|e| !self.personal.has(e.key())));
@@ -329,6 +347,9 @@ impl MergedLibrary {
     }
 
     pub fn get(&self, key: &str) -> Option<&Entry> {
+        if !self.global_active() {
+            return self.manuscript.as_ref().and_then(|m| m.get(key));
+        }
         self.personal
             .get(key)
             .or_else(|| self.manuscript.as_ref().and_then(|m| m.get(key)))
@@ -354,6 +375,9 @@ impl MergedLibrary {
     }
 
     pub fn get_by_bibcode(&self, bibcode: &str) -> Option<&Entry> {
+        if !self.global_active() {
+            return self.manuscript.as_ref().and_then(|m| m.get_by_bibcode(bibcode));
+        }
         self.personal
             .get_by_bibcode(bibcode)
             .or_else(|| self.manuscript.as_ref().and_then(|m| m.get_by_bibcode(bibcode)))
@@ -363,8 +387,12 @@ impl MergedLibrary {
         self.manuscript.as_ref().is_some_and(|m| m.has(key))
     }
 
-    /// Import: write to the personal library and the manuscript db (if any).
+    /// Import: write to both tiers — or only the local tier when the
+    /// global tier is toggled off.
     pub fn save_entry(&mut self, data: &crate::bib::Data) -> std::io::Result<String> {
+        if !self.global_active() {
+            return self.manuscript.as_mut().unwrap().save_entry(data);
+        }
         let key = self.personal.save_entry(data)?;
         if let Some(ms) = &mut self.manuscript {
             ms.save_entry(data)?;
@@ -467,18 +495,20 @@ impl MergedLibrary {
     }
 }
 
-/// Walk up from cwd to find a manuscript database: a directory holding
-/// both bib/ and .git, excluding the active library root — port of
-/// state.find_manuscript_db.
+/// Walk up from cwd to find the tier-2 local bib root: any ancestor
+/// holding a bib/ directory, excluding the global library root. Under
+/// the two-tier model a .git is no longer required — bare bib dirs are
+/// first-class. The walk stops at $HOME (exclusive of anything above).
 pub fn find_manuscript_db() -> Option<PathBuf> {
     let lib_root = default_library_root();
     let lib_root = lib_root.canonicalize().unwrap_or(lib_root);
+    let home = std::env::var("HOME").map(PathBuf::from).ok();
     let mut dir = std::env::current_dir().ok()?;
     loop {
-        if dir.join("bib").is_dir() && dir.join(".git").exists() && dir != lib_root {
+        if dir.join("bib").is_dir() && dir != lib_root {
             return Some(dir);
         }
-        if !dir.pop() {
+        if home.as_deref() == Some(dir.as_path()) || !dir.pop() {
             return None;
         }
     }

@@ -4,11 +4,19 @@ use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
 #[command(name = "astrobib", version, about = "ADS-native BibTeX library manager (Rust port)")]
+#[command(args_conflicts_with_subcommands = false)]
 struct Cli {
-    /// Use a different personal library root (wins over $ASTROBIB_LIBRARY).
-    /// Caches and state.json are unaffected — they are machine-local.
+    /// Tier-2 local bib root to operate on (a directory holding bib/,
+    /// created lazily on first write). Defaults to walk-up from cwd.
+    #[arg(value_name = "LIBRARY_DIR")]
+    path: Option<std::path::PathBuf>,
+    /// Use a different GLOBAL (tier-1) library root (wins over
+    /// $ASTROBIB_LIBRARY). Caches and state.json are unaffected.
     #[arg(long, global = true, value_name = "PATH")]
     library: Option<std::path::PathBuf>,
+    /// Start with the global tier hidden (local-only reads and writes).
+    #[arg(long, global = true)]
+    no_global: bool,
     #[command(subcommand)]
     command: Option<Command>,
 }
@@ -45,8 +53,17 @@ fn main() -> anyhow::Result<()> {
         // (read before any thread starts)
         std::env::set_var("ASTROBIB_LIBRARY", p);
     }
-    let ms_root = find_manuscript_db();
+    let ms_root = match &cli.path {
+        Some(p) => {
+            let p = p.canonicalize().unwrap_or_else(|_| p.clone());
+            Some(p) // explicit tier-2 root; bib/ is created lazily on write
+        }
+        None => find_manuscript_db(),
+    };
     let mut lib = MergedLibrary::load(ms_root.as_deref())?;
+    if cli.no_global && lib.manuscript.is_some() {
+        lib.global_on = false;
+    }
     match cli.command {
         None => astrobib::tui::run(lib),
         Some(Command::List { limit }) => {

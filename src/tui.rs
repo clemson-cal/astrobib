@@ -64,6 +64,7 @@ enum Action {
     Card,
     Log,
     Help,
+    GlobalTier,
     Quit,
 }
 
@@ -706,6 +707,25 @@ impl App {
         }
     }
 
+    /// t — show/hide the global (tier-1) library. Hidden means: global
+    /// entries invisible, imports write only the local tier; the rescue
+    /// path still protects sole copies by writing to the global tier.
+    fn toggle_global(&mut self) {
+        self.lib.global_on = !self.lib.global_on;
+        if self.select_mode {
+            self.exit_select_mode();
+        }
+        self.rebuild_order();
+        self.note(
+            MsgCat::Info,
+            if self.lib.global_on {
+                format!("global tier shown — {} papers merged", self.order.len())
+            } else {
+                format!("global tier hidden — {} local papers", self.order.len())
+            },
+        );
+    }
+
     /// Emit an event message: color-coded in the log pane and shown in
     /// the footer while it is the newest entry. A new message snaps the
     /// log pane back to the tail; the log keeps at most 500 entries.
@@ -736,7 +756,10 @@ impl App {
         match a {
             Action::Select | Action::Filter | Action::Card | Action::Log | Action::Help
             | Action::Quit => true,
-            Action::Manuscript => self.lib.manuscript.is_some() && !keys.is_empty(),
+            Action::GlobalTier => self.lib.manuscript.is_some(),
+            Action::Manuscript => {
+                self.lib.manuscript.is_some() && self.lib.global_on && !keys.is_empty()
+            }
             Action::Download => {
                 self.dl_rx.is_none()
                     && keys.iter().any(|k| {
@@ -795,6 +818,7 @@ impl App {
             Action::Card => self.show_detail = !self.show_detail,
             Action::Log => self.show_log = !self.show_log,
             Action::Help => self.show_help = !self.show_help,
+            Action::GlobalTier => self.toggle_global(),
             Action::Quit => self.quit = true,
         }
     }
@@ -1149,11 +1173,19 @@ impl App {
         }
     }
 
-    /// Confirmed removal from both databases; exits selection mode after.
+    /// Confirmed removal: both tiers normally; with the global tier
+    /// hidden, only the local tier — sole copies rescue to the (hidden)
+    /// global tier rather than being destroyed.
     fn remove_confirmed(&mut self, keys: &[String]) {
+        let local_only = self.lib.manuscript.is_some() && !self.lib.global_on;
         let mut n = 0;
         for k in keys {
-            if self.lib.remove_entry(k).is_ok() {
+            let ok = if local_only {
+                matches!(self.lib.remove_from_manuscript(k), Ok(true))
+            } else {
+                self.lib.remove_entry(k).is_ok()
+            };
+            if ok {
                 n += 1;
             }
         }
@@ -1730,6 +1762,7 @@ impl App {
                 KeyCode::Char('B') => self.run_action(Action::BrowserDl),
                 KeyCode::Char('D') | KeyCode::Char('z') => self.run_action(Action::Card),
                 KeyCode::Char('?') => self.run_action(Action::Help),
+                KeyCode::Char('t') => self.run_action(Action::GlobalTier),
                 KeyCode::Char('S') => self.open_ads_prompt(),
                 KeyCode::Char('[') => self.cycle_scope(-1),
                 KeyCode::Char(']') => self.cycle_scope(1),
@@ -2026,6 +2059,7 @@ impl App {
             ("/", "filter", Some(Action::Filter)),
             ("D", "pub card", Some(Action::Card)),
             ("L", "event log", Some(Action::Log)),
+            ("t", "global tier", Some(Action::GlobalTier)),
             ("?", "this cheat-sheet", Some(Action::Help)),
             ("q", "quit", Some(Action::Quit)),
         ];
@@ -2381,6 +2415,7 @@ impl App {
         let show_key = show_key || self.show_detail;
         let hov_row = self.hovered_table_pos();
         let cursor = self.table.selected();
+        let show_membership = self.lib.manuscript.is_some() && self.lib.global_on;
         let rows: Vec<Row> = self
             .filtered
             .iter()
@@ -2412,7 +2447,7 @@ impl App {
                         c_pdf,
                     )),
                     Cell::from(Span::styled(
-                        if self.lib.in_manuscript(e.key()) { "●" } else { "" },
+                        if show_membership && self.lib.in_manuscript(e.key()) { "●" } else { "" },
                         c_ms,
                     )),
                     Cell::from(Span::styled(e.year(), c_year)),
@@ -2452,7 +2487,7 @@ impl App {
         let title_w = area
             .width
             .saturating_sub(widths.iter().sum::<u16>() + ncols);
-        let ms_header = if self.lib.manuscript.is_some() { "●" } else { "" };
+        let ms_header = if show_membership { "●" } else { "" };
         let mut headers: Vec<&str> = vec!["", "↓", ms_header, "Year", "Author", "Title"];
         if show_key {
             headers.push("Key");
@@ -2754,7 +2789,7 @@ impl App {
         // footer + links/buttons need this much room below the abstract
         let kws = e.keywords().join(" · ");
         let kw_lines = if kws.is_empty() { 0 } else { wrap_text(&kws, w).len() as u16 + 1 };
-        let has_ms = self.lib.manuscript.is_some();
+        let has_ms = self.lib.manuscript.is_some() && self.lib.global_on;
         // links block (sep + links + sep + air) + buttons + ms chip +
         // status (line + blank) + keywords + key line
         let rest = 4 + 1 + u16::from(has_ms) + 2 + kw_lines + 1;
@@ -2952,11 +2987,15 @@ impl App {
     /// Right-aligned clickable show/hide badges for each app-wide view.
     fn draw_badges(&mut self, f: &mut Frame, area: Rect) {
         self.footer_badges.clear();
-        let badges: [(&str, bool, Action); 3] = [
+        let mut badges: Vec<(&str, bool, Action)> = vec![];
+        if self.lib.manuscript.is_some() {
+            badges.push(("global", self.lib.global_on, Action::GlobalTier));
+        }
+        badges.extend([
             ("card", self.show_detail, Action::Card),
             ("log", self.show_log, Action::Log),
             ("keys", self.show_help, Action::Help),
-        ];
+        ]);
         let total: u16 = badges.iter().map(|(l, _, _)| l.chars().count() as u16 + 3).sum();
         let mut bx = (area.x + area.width).saturating_sub(total);
         let mut spans: Vec<Span> = vec![];
