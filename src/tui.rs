@@ -55,13 +55,12 @@ enum Action {
     OpenPdf,
     ClearPdf,
     BrowserDl,
-    PickPdf,
     Remove,
     Copy,
     Filter,
     Card,
     Log,
-    Panel,
+    Help,
     Quit,
 }
 
@@ -122,6 +121,7 @@ enum CardBtn {
     Open,
     Clear,
     Cancel,
+    MsToggle,
 }
 
 struct App {
@@ -140,15 +140,11 @@ struct App {
     selected: HashSet<String>,
     table_area: Rect, // last drawn table region, for mouse hit-testing
     dl_rx: Option<std::sync::mpsc::Receiver<DlMsg>>,
-    // ctrl+p actions panel: every action listed, unavailable ones dimmed,
-    // rows clickable (hit-tested via panel_rows rebuilt each draw)
-    show_actions: bool,
-    panel_rows: Vec<(Rect, Action)>,
+    // ctrl+p keyboard cheat-sheet overlay; any key or click dismisses
+    show_help: bool,
+    // copy-chord modal region and its clickable rows
     panel_area: Rect,
     panel_copy_rows: Vec<(Rect, CopyItem)>,
-    // panel visibility to restore when the y-chord finishes — the chord
-    // force-shows the panel as a which-key menu, which shouldn't stick
-    copy_restore: Option<(bool, bool)>,
     // last known mouse position, for roll-over styling of clickables
     hover: (u16, u16),
     // transient footer hint while hovering a copy-region (never logged)
@@ -275,11 +271,9 @@ impl App {
             selected: HashSet::new(),
             table_area: Rect::default(),
             dl_rx: None,
-            show_actions: true,
-            panel_rows: vec![],
+            show_help: false,
             panel_area: Rect::default(),
             panel_copy_rows: vec![],
-            copy_restore: None,
             hover: (u16::MAX, u16::MAX),
             hover_hint: None,
             log: vec![],
@@ -312,7 +306,7 @@ impl App {
         let single = keys.len() == 1;
         let entry = |k: &String| self.lib.get(k);
         match a {
-            Action::Select | Action::Filter | Action::Card | Action::Log | Action::Panel
+            Action::Select | Action::Filter | Action::Card | Action::Log | Action::Help
             | Action::Quit => true,
             Action::Manuscript => self.lib.manuscript.is_some() && !keys.is_empty(),
             Action::Download => {
@@ -335,7 +329,6 @@ impl App {
                         !e.doi().is_empty() || !e.adsurl().is_empty() || !e.eprint().is_empty()
                     })
             }
-            Action::PickPdf => single,
             Action::Remove => !keys.is_empty(),
             Action::Copy => !keys.is_empty(),
         }
@@ -359,18 +352,12 @@ impl App {
             Action::OpenPdf => self.open_pdfs(),
             Action::ClearPdf => self.clear_pdfs(),
             Action::BrowserDl => self.browser_download(),
-            Action::PickPdf => self.open_picker(),
             Action::Remove => self.remove_papers(),
             Action::Copy => self.enter_copy_mode(),
             Action::Filter => self.mode = Mode::Filter,
             Action::Card => self.show_detail = !self.show_detail,
             Action::Log => self.show_log = !self.show_log,
-            Action::Panel => {
-                self.show_actions = !self.show_actions;
-                if self.show_actions {
-                    self.show_detail = true; // the panel lives in the card
-                }
-            }
+            Action::Help => self.show_help = !self.show_help,
             Action::Quit => self.quit = true,
         }
     }
@@ -763,12 +750,6 @@ impl App {
         });
     }
 
-    fn open_picker(&mut self) {
-        if let Some(k) = self.action_keys().into_iter().next() {
-            self.open_picker_for(k);
-        }
-    }
-
     /// pick … — open the modal ~/Downloads PDF picker for one entry.
     fn open_picker_for(&mut self, key: String) {
         let files = pdf::downloads_pdfs();
@@ -887,6 +868,10 @@ impl App {
             self.mode = Mode::Normal;
             return;
         }
+        if self.show_help {
+            self.show_help = false; // any click dismisses the cheat-sheet
+            return;
+        }
         // confirm modal: only its two buttons act; other clicks are inert
         if let Mode::Confirm { keys } = &self.mode {
             if let Some(&(_, is_confirm)) = self.confirm_btns.iter().find(|(r, _)| hit(*r, x, y)) {
@@ -916,17 +901,13 @@ impl App {
         }
         // control panel rows: the copy menu while the y-chord is active,
         // the actions list otherwise
-        if hit(self.panel_area, x, y) {
-            if matches!(self.mode, Mode::Copy) {
-                if let Some(&(_, item)) =
-                    self.panel_copy_rows.iter().find(|(r, _)| hit(*r, x, y))
-                {
-                    self.do_copy(item);
-                }
-            } else if let Some(&(_, action)) =
-                self.panel_rows.iter().find(|(r, _)| hit(*r, x, y))
-            {
-                self.run_action(action);
+        // copy-chord modal: a row copies, anything else cancels the chord
+        if matches!(self.mode, Mode::Copy) {
+            if let Some(&(_, item)) = self.panel_copy_rows.iter().find(|(r, _)| hit(*r, x, y)) {
+                self.do_copy(item);
+            } else {
+                self.exit_copy_mode();
+                self.note(MsgCat::Warn, "copy cancelled".to_string());
             }
             return;
         }
@@ -943,6 +924,27 @@ impl App {
                         self.note(MsgCat::Ok, format!("Opened {key}"));
                     }
                     CardBtn::Clear | CardBtn::Cancel => self.clear_card_pdf(&key),
+                    CardBtn::MsToggle => {
+                        let res = if self.lib.in_manuscript(&key) {
+                            let rescued = !self.lib.in_personal(&key);
+                            match self.lib.remove_from_manuscript(&key) {
+                                Ok(true) => Some(format!(
+                                    "Removed {key} from manuscript db{}",
+                                    if rescued { "  (copied to personal library)" } else { "" }
+                                )),
+                                _ => None,
+                            }
+                        } else {
+                            match self.lib.add_to_manuscript(&key) {
+                                Ok(true) => Some(format!("◆ Added {key} to manuscript db")),
+                                _ => None,
+                            }
+                        };
+                        if let Some(msg) = res {
+                            self.note(MsgCat::Ok, msg);
+                            self.rebuild_order();
+                        }
+                    }
                 }
             }
             return;
@@ -1002,17 +1004,10 @@ impl App {
             self.note(MsgCat::Warn, "nothing to copy".to_string());
             return;
         }
-        self.copy_restore = Some((self.show_actions, self.show_detail));
-        self.show_actions = true;
-        self.show_detail = true;
         self.mode = Mode::Copy;
     }
 
     fn exit_copy_mode(&mut self) {
-        if let Some((actions, detail)) = self.copy_restore.take() {
-            self.show_actions = actions;
-            self.show_detail = detail;
-        }
         if matches!(self.mode, Mode::Copy) {
             self.mode = Mode::Normal;
         }
@@ -1105,7 +1100,11 @@ impl App {
             return;
         }
         if mods.contains(KeyModifiers::CONTROL) && code == KeyCode::Char('p') {
-            self.run_action(Action::Panel);
+            self.show_help = !self.show_help;
+            return;
+        }
+        if self.show_help {
+            self.show_help = false; // any key dismisses the cheat-sheet
             return;
         }
         match &mut self.mode {
@@ -1231,7 +1230,6 @@ impl App {
 
     fn draw(&mut self, f: &mut Frame) {
         self.card_buttons.clear();
-        self.panel_rows.clear();
         self.hover_hint = None;
         self.panel_copy_rows.clear();
         let log_h = if self.show_log {
@@ -1258,8 +1256,15 @@ impl App {
         if let Some(area) = detail_area {
             self.draw_detail(f, area);
         } else {
-            self.panel_area = Rect::default();
             self.card_yanks.clear();
+        }
+        if matches!(self.mode, Mode::Copy) {
+            self.draw_copy_modal(f);
+        } else {
+            self.panel_area = Rect::default();
+        }
+        if self.show_help {
+            self.draw_help(f);
         }
         if self.show_log {
             self.draw_log(f, log_area);
@@ -1353,142 +1358,127 @@ impl App {
     /// key, label, and click target, unavailable ones dimmed (the Python
     /// key panel's behavior); Copy lists the clipboard targets of the
     /// y-chord the same way. Tab headers are clickable.
-    /// Height the actions/copy block needs at the card bottom (0 when
-    /// hidden): a separator plus items laid out in two columns.
-    fn panel_block_height(&self) -> u16 {
-        if matches!(self.mode, Mode::Copy) {
-            1 + 1 + 5 + 1 // separator, heading, 9 items / 2 cols, Esc hint
-        } else if self.show_actions {
-            1 + 8 // separator, 15 items / 2 cols
-        } else {
-            0
+    /// Centered which-key modal for the y chord: clickable rows, items
+    /// without a value dimmed; clicking elsewhere or Esc cancels.
+    fn draw_copy_modal(&mut self, f: &mut Frame) {
+        self.panel_copy_rows.clear();
+        let entries: &[(&str, &str, CopyItem)] = &[
+            ("y", "cite key", CopyItem::Key),
+            ("Y", "full key", CopyItem::FullKey),
+            ("b", "bibcode", CopyItem::Bibcode),
+            ("a", "ADS URL", CopyItem::AdsUrl),
+            ("x", "arXiv URL", CopyItem::ArxivUrl),
+            ("d", "DOI URL", CopyItem::DoiUrl),
+            ("p", "PDF path", CopyItem::PdfPath),
+            ("t", "title", CopyItem::Title),
+            ("A", "abstract", CopyItem::Abstract),
+        ];
+        let frame = f.area();
+        let h = entries.len() as u16 + 3;
+        let w = 30.min(frame.width.saturating_sub(4));
+        let area = Rect {
+            x: frame.width.saturating_sub(w) / 2,
+            y: frame.height.saturating_sub(h) / 2,
+            width: w,
+            height: h.min(frame.height),
+        };
+        self.panel_area = area;
+        f.render_widget(ratatui::widgets::Clear, area);
+        let mut lines: Vec<Line> = vec![];
+        for (i, (key, label, item)) in entries.iter().enumerate() {
+            let y = area.y + 1 + i as u16;
+            let avail = self.copy_value(*item).is_some();
+            if avail {
+                self.panel_copy_rows.push((
+                    Rect { x: area.x + 1, y, width: w.saturating_sub(2), height: 1 },
+                    *item,
+                ));
+            }
+            let hov = avail && hit(
+                Rect { x: area.x + 1, y, width: w.saturating_sub(2), height: 1 },
+                self.hover.0,
+                self.hover.1,
+            );
+            let (mut ks, mut ls) = if avail {
+                (Style::default().fg(Color::Cyan), Style::default())
+            } else {
+                (
+                    Style::default().fg(Color::DarkGray),
+                    Style::default().fg(Color::DarkGray),
+                )
+            };
+            if hov {
+                ks = ks.bg(Color::Rgb(50, 54, 62));
+                ls = ls.bg(Color::Rgb(50, 54, 62)).add_modifier(Modifier::BOLD);
+            }
+            lines.push(Line::from(vec![
+                Span::styled(format!(" {key:>2}  "), ks),
+                Span::styled((*label).to_string(), ls),
+            ]));
         }
+        lines.push(Line::default());
+        lines.push(Line::from(Span::styled(
+            " Esc cancel",
+            Style::default().fg(Color::DarkGray),
+        )));
+        let p = Paragraph::new(Text::from(lines)).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(" copy → clipboard "),
+        );
+        f.render_widget(p, area);
     }
 
-    /// The actions (or copy-chord) block at the bottom of the pub card:
-    /// two columns, no title, every item clickable, unavailable dimmed.
-    fn draw_panel(&mut self, f: &mut Frame, area: Rect) {
-        self.panel_area = area;
-        let copy_menu = matches!(self.mode, Mode::Copy);
-        let x0 = area.x + 3;
-        let w = area.width.saturating_sub(5);
-        let colw = w / 2;
-        let hv = self.hover;
-        let line_at = |f: &mut Frame, y: u16, line: Line| {
-            if y < area.y + area.height {
-                f.render_widget(
-                    Paragraph::new(line),
-                    Rect { x: x0, y, width: w, height: 1 },
-                );
-            }
+    /// Centered keyboard cheat-sheet (ctrl+p); any key or click dismisses.
+    fn draw_help(&mut self, f: &mut Frame) {
+        let entries: &[(&str, &str)] = &[
+            ("␣", "select / toggle row"),
+            ("j k", "move cursor"),
+            ("g G", "first / last row"),
+            ("m", "manuscript ± (selection)"),
+            ("p", "download PDF"),
+            ("B", "browser download"),
+            ("o", "open PDF"),
+            ("X", "clear PDF / cancel DL"),
+            ("y", "copy…"),
+            ("⌫", "remove…"),
+            ("/", "filter"),
+            ("D", "pub card"),
+            ("L", "event log"),
+            ("^p", "this cheat-sheet"),
+            ("q", "quit"),
+        ];
+        let frame = f.area();
+        let rows = entries.len().div_ceil(2) as u16;
+        let h = rows + 2;
+        let w = 62.min(frame.width.saturating_sub(4));
+        let colw = (w - 2) / 2;
+        let area = Rect {
+            x: frame.width.saturating_sub(w) / 2,
+            y: frame.height.saturating_sub(h) / 2,
+            width: w,
+            height: h.min(frame.height),
         };
-        f.render_widget(Block::default().borders(Borders::LEFT), area);
-        line_at(
-            f,
-            area.y,
-            Line::from(Span::styled(
-                "─".repeat(w as usize),
-                Style::default().fg(Color::DarkGray),
-            )),
-        );
-        let mut y = area.y + 1;
-        if copy_menu {
-            line_at(
-                f,
-                y,
-                Line::from(Span::styled(
-                    "copy → clipboard",
-                    Style::default().add_modifier(Modifier::BOLD),
-                )),
-            );
-            y += 1;
-        }
-
-        // (key, label, avail, panel row payload)
-        enum Payload {
-            Act(Action),
-            Cp(CopyItem),
-        }
-        let items: Vec<(String, String, bool, Payload)> = if copy_menu {
-            [
-                ("y", "cite key", CopyItem::Key),
-                ("Y", "full key", CopyItem::FullKey),
-                ("b", "bibcode", CopyItem::Bibcode),
-                ("a", "ADS URL", CopyItem::AdsUrl),
-                ("x", "arXiv URL", CopyItem::ArxivUrl),
-                ("d", "DOI URL", CopyItem::DoiUrl),
-                ("p", "PDF path", CopyItem::PdfPath),
-                ("t", "title", CopyItem::Title),
-                ("A", "abstract", CopyItem::Abstract),
-            ]
-            .into_iter()
-            .map(|(k, l, it)| {
-                (k.to_string(), l.to_string(), self.copy_value(it).is_some(), Payload::Cp(it))
-            })
-            .collect()
-        } else {
-            let sel_label = if self.select_mode { "done" } else { "select" };
-            let clear_label = if self.poll_cancel.is_some() { "cancel DL" } else { "clear PDF" };
-            [
-                ("␣", sel_label, Action::Select),
-                ("m", "manuscr. ◆", Action::Manuscript),
-                ("p", "get PDF", Action::Download),
-                ("B", "browser DL", Action::BrowserDl),
-                ("", "pick PDF…", Action::PickPdf),
-                ("o", "open PDF", Action::OpenPdf),
-                ("X", clear_label, Action::ClearPdf),
-                ("y", "copy…", Action::Copy),
-                ("⌫", "remove…", Action::Remove),
-                ("/", "filter", Action::Filter),
-                ("D", "pub card", Action::Card),
-                ("L", "event log", Action::Log),
-                ("q", "quit", Action::Quit),
-            ]
-            .into_iter()
-            .map(|(k, l, a)| (k.to_string(), l.to_string(), self.available(a), Payload::Act(a)))
-            .collect()
-        };
-
-        for pair in items.chunks(2) {
+        f.render_widget(ratatui::widgets::Clear, area);
+        let mut lines: Vec<Line> = vec![];
+        for r in 0..rows as usize {
             let mut spans: Vec<Span> = vec![];
-            for (ci, (key, label, avail, payload)) in pair.iter().enumerate() {
-                let cx = x0 + ci as u16 * (colw + 1);
-                let r = Rect { x: cx, y, width: colw, height: 1 };
-                if *avail {
-                    match payload {
-                        Payload::Act(a) => self.panel_rows.push((r, *a)),
-                        Payload::Cp(it) => self.panel_copy_rows.push((r, *it)),
-                    }
+            for c in 0..2usize {
+                if let Some((key, label)) = entries.get(r + c * rows as usize) {
+                    let text = format!(" {key:>3}  {label}");
+                    let pad = (colw as usize).saturating_sub(text.chars().count());
+                    spans.push(Span::styled(
+                        format!(" {key:>3}  "),
+                        Style::default().fg(Color::Cyan),
+                    ));
+                    spans.push(Span::raw(format!("{label}{}", " ".repeat(pad))));
                 }
-                let hov = *avail && hit(r, hv.0, hv.1);
-                let (mut ks, mut ls) = if *avail {
-                    (Style::default().fg(Color::Cyan), Style::default())
-                } else {
-                    (
-                        Style::default().fg(Color::DarkGray),
-                        Style::default().fg(Color::DarkGray),
-                    )
-                };
-                if hov {
-                    ks = ks.bg(Color::Rgb(50, 54, 62));
-                    ls = ls.bg(Color::Rgb(50, 54, 62)).add_modifier(Modifier::BOLD);
-                }
-                let text = format!("{key:>2} {label}");
-                let pad = (colw as usize).saturating_sub(text.chars().count());
-                spans.push(Span::styled(format!("{key:>2} "), ks));
-                spans.push(Span::styled(format!("{label}{}", " ".repeat(pad)), ls));
-                spans.push(Span::raw(" "));
             }
-            line_at(f, y, Line::from(spans));
-            y += 1;
+            lines.push(Line::from(spans));
         }
-        if copy_menu {
-            line_at(
-                f,
-                y,
-                Line::from(Span::styled("Esc cancel", Style::default().fg(Color::DarkGray))),
-            );
-        }
+        let p = Paragraph::new(Text::from(lines))
+            .block(Block::default().borders(Borders::ALL).title(" keys "));
+        f.render_widget(p, area);
     }
 
     /// Centered modal list of ~/Downloads PDFs for the pick action.
@@ -1685,26 +1675,6 @@ impl App {
         let Some(key) = self.card_key().map(str::to_string) else {
             return;
         };
-        // actions/copy menu occupies the card bottom, as tall as needed
-        let block_h = self.panel_block_height().min(area.height.saturating_sub(6));
-        let (area, panel_rect) = if block_h > 0 {
-            (
-                Rect { height: area.height - block_h, ..area },
-                Some(Rect {
-                    x: area.x,
-                    y: area.y + area.height - block_h,
-                    width: area.width,
-                    height: block_h,
-                }),
-            )
-        } else {
-            (area, None)
-        };
-        if let Some(pr) = panel_rect {
-            self.draw_panel(f, pr);
-        } else {
-            self.panel_area = Rect::default();
-        }
         let Some(e) = self.lib.get(&key) else { return };
         let x0 = area.x + 3; // border + 2 padding
         let w = area.width.saturating_sub(5) as usize;
@@ -1783,7 +1753,8 @@ impl App {
         // footer + links/buttons need this much room below the abstract
         let kws = e.keywords().join(" · ");
         let kw_lines = if kws.is_empty() { 0 } else { wrap_text(&kws, w).len() as u16 + 1 };
-        let rest = 3 + 1 + 1 + kw_lines + 2;
+        let has_ms = self.lib.manuscript.is_some();
+        let rest = 3 + 1 + u16::from(has_ms) + 1 + kw_lines + 2;
         let abs = e.abstract_();
         if !abs.is_empty() && y + rest < bottom {
             y += 1;
@@ -1891,6 +1862,29 @@ impl App {
         line_at(f, y, Line::from(spans));
         y += 1;
 
+        // ── manuscript membership chip (acts on the card's entry) ────
+        if has_ms {
+            let in_ms = self.lib.in_manuscript(&key);
+            let label = if in_ms { "◆ in manuscript" } else { "◇ add to manuscript" };
+            let wl = pill_width(label);
+            let r = Rect { x: x0, y, width: wl, height: 1 };
+            self.card_buttons.push((r, CardBtn::MsToggle));
+            let bg = if hit(r, hv.0, hv.1) {
+                Color::Rgb(58, 63, 72)
+            } else {
+                Color::Rgb(40, 44, 52)
+            };
+            let mut spans: Vec<Span> = vec![];
+            push_pill(
+                &mut spans,
+                label,
+                bg,
+                if in_ms { Color::Magenta } else { Color::Gray },
+            );
+            line_at(f, y, Line::from(spans));
+            y += 1;
+        }
+
         // ── PDF status (⏳ waiting…, ✓/✗ results) ────────────────────
         if self.poll_cancel.is_some() {
             let label = "⏳ waiting for download…  cancel ✕";
@@ -1944,9 +1938,9 @@ impl App {
     fn draw_badges(&mut self, f: &mut Frame, area: Rect) {
         self.footer_badges.clear();
         let badges: [(&str, bool, Action); 3] = [
-            ("card", self.show_detail, Action::Card),
-            ("keys", self.show_actions, Action::Panel),
-            ("log", self.show_log, Action::Log),
+            ("card[D]", self.show_detail, Action::Card),
+            ("keys[^p]", self.show_help, Action::Help),
+            ("log[L]", self.show_log, Action::Log),
         ];
         let total: u16 = badges.iter().map(|(l, _, _)| l.chars().count() as u16 + 3).sum();
         let mut bx = (area.x + area.width).saturating_sub(total);
