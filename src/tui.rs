@@ -43,7 +43,7 @@ enum Mode {
     /// Confirm modal for removing papers (Delete key).
     Confirm { keys: Vec<String> },
     /// S — compose an ADS query; ↑/↓ steps the result limit, ⏎ runs it.
-    AdsPrompt { input: String, limit: usize },
+    AdsPrompt { input: String, cursor: usize, limit: usize },
     /// y pressed — the next key picks what to copy (the Copy panel tab
     /// shows the menu, which-key style); Esc cancels.
     Copy,
@@ -177,6 +177,7 @@ struct App {
     order: Vec<String>,   // entry keys, year-descending
     filtered: Vec<usize>, // positions into `order` that pass the filter
     filter: String,
+    filter_cursor: usize,
     mode: Mode,
     table: TableState,
     show_detail: bool,
@@ -228,6 +229,99 @@ struct App {
     confirm_btns: Vec<(Rect, bool)>, // (rect, is_confirm)
     // plain clicks on the same row within 400ms form a double-click
     last_click: Option<(std::time::Instant, usize, usize)>, // (t, scope, pos)
+}
+
+/// Standard terminal line-editing over (text, char-index cursor):
+/// ctrl+a/e home/end, ctrl+b/f and arrows, alt+b/f word motion,
+/// ctrl+w delete-word-back, ctrl+u/k kill to start/end, ctrl+d
+/// delete-forward, backspace and insertion at the cursor. Returns
+/// true when the key was consumed.
+fn edit_key(text: &mut String, cur: &mut usize, code: KeyCode, mods: KeyModifiers) -> bool {
+    let n = text.chars().count();
+    *cur = (*cur).min(n);
+    let byte_at = |s: &str, ci: usize| s.char_indices().nth(ci).map(|(b, _)| b).unwrap_or(s.len());
+    let is_word = |c: char| c.is_alphanumeric();
+    let word_back = |s: &str, mut ci: usize| {
+        let cs: Vec<char> = s.chars().collect();
+        while ci > 0 && !is_word(cs[ci - 1]) { ci -= 1; }
+        while ci > 0 && is_word(cs[ci - 1]) { ci -= 1; }
+        ci
+    };
+    let word_fwd = |s: &str, mut ci: usize| {
+        let cs: Vec<char> = s.chars().collect();
+        while ci < cs.len() && !is_word(cs[ci]) { ci += 1; }
+        while ci < cs.len() && is_word(cs[ci]) { ci += 1; }
+        ci
+    };
+    let ctrl = mods.contains(KeyModifiers::CONTROL);
+    let alt = mods.contains(KeyModifiers::ALT);
+    match (code, ctrl, alt) {
+        (KeyCode::Char('a'), true, _) | (KeyCode::Home, ..) => *cur = 0,
+        (KeyCode::Char('e'), true, _) | (KeyCode::End, ..) => *cur = n,
+        (KeyCode::Char('b'), true, _) | (KeyCode::Left, false, false) => {
+            *cur = cur.saturating_sub(1)
+        }
+        (KeyCode::Char('f'), true, _) | (KeyCode::Right, false, false) => {
+            *cur = (*cur + 1).min(n)
+        }
+        (KeyCode::Char('b'), false, true) | (KeyCode::Left, _, true) => {
+            *cur = word_back(text, *cur)
+        }
+        (KeyCode::Char('f'), false, true) | (KeyCode::Right, _, true) => {
+            *cur = word_fwd(text, *cur)
+        }
+        (KeyCode::Char('w'), true, _) => {
+            let to = word_back(text, *cur);
+            let (b0, b1) = (byte_at(text, to), byte_at(text, *cur));
+            text.replace_range(b0..b1, "");
+            *cur = to;
+        }
+        (KeyCode::Char('u'), true, _) => {
+            let b1 = byte_at(text, *cur);
+            text.replace_range(..b1, "");
+            *cur = 0;
+        }
+        (KeyCode::Char('k'), true, _) => {
+            let b0 = byte_at(text, *cur);
+            text.truncate(b0);
+        }
+        (KeyCode::Char('d'), true, _) | (KeyCode::Delete, false, false) => {
+            if *cur < n {
+                let b0 = byte_at(text, *cur);
+                let b1 = byte_at(text, *cur + 1);
+                text.replace_range(b0..b1, "");
+            }
+        }
+        (KeyCode::Backspace, ..) => {
+            if *cur > 0 {
+                let b0 = byte_at(text, *cur - 1);
+                let b1 = byte_at(text, *cur);
+                text.replace_range(b0..b1, "");
+                *cur -= 1;
+            }
+        }
+        (KeyCode::Char(c), false, false) => {
+            let b = byte_at(text, *cur);
+            text.insert(b, c);
+            *cur += 1;
+        }
+        _ => return false,
+    }
+    true
+}
+
+/// Caret-split rendering: text with ▏ at the cursor position.
+fn caret_spans(text: &str, cur: usize) -> [Span<'static>; 3] {
+    let b = text
+        .char_indices()
+        .nth(cur)
+        .map(|(i, _)| i)
+        .unwrap_or(text.len());
+    [
+        Span::raw(text[..b].to_string()),
+        Span::styled("▏", Style::default().fg(Color::Cyan)),
+        Span::raw(text[b..].to_string()),
+    ]
 }
 
 fn hit(r: Rect, x: u16, y: u16) -> bool {
@@ -334,6 +428,7 @@ impl App {
             order,
             filtered,
             filter: String::new(),
+            filter_cursor: 0,
             mode: Mode::Normal,
             table,
             show_detail: true,
@@ -443,7 +538,8 @@ impl App {
                 }
             }
         }
-        self.mode = Mode::AdsPrompt { input, limit: 20 };
+        let cursor = input.chars().count();
+        self.mode = Mode::AdsPrompt { input, cursor, limit: 20 };
     }
 
     /// Run a query on a worker thread into a scope. A pasted DOI or ADS
@@ -1751,19 +1847,21 @@ impl App {
             Mode::Filter => match code {
                 KeyCode::Esc => {
                     self.filter.clear();
+                    self.filter_cursor = 0;
                     self.mode = Mode::Normal;
                     self.refilter();
                 }
                 KeyCode::Enter => self.mode = Mode::Normal,
-                KeyCode::Backspace => {
-                    self.filter.pop();
-                    self.refilter();
+                _ => {
+                    let mut text = std::mem::take(&mut self.filter);
+                    let mut cur = self.filter_cursor;
+                    let consumed = edit_key(&mut text, &mut cur, code, mods);
+                    self.filter = text;
+                    self.filter_cursor = cur;
+                    if consumed {
+                        self.refilter();
+                    }
                 }
-                KeyCode::Char(c) => {
-                    self.filter.push(c);
-                    self.refilter();
-                }
-                _ => {}
             },
             Mode::Pick { key, files, sel } => match code {
                 KeyCode::Esc => self.mode = Mode::Normal,
@@ -1799,7 +1897,7 @@ impl App {
                     }
                 }
             }
-            Mode::AdsPrompt { input, limit } => match code {
+            Mode::AdsPrompt { input, cursor, limit } => match code {
                 KeyCode::Esc => self.mode = Mode::Normal,
                 KeyCode::Enter => {
                     let (q, l) = (input.clone(), *limit);
@@ -1816,11 +1914,9 @@ impl App {
                     let i = STEPS.iter().position(|&s| s >= *limit).unwrap_or(0);
                     *limit = STEPS[i.saturating_sub(1)];
                 }
-                KeyCode::Backspace => {
-                    input.pop();
+                _ => {
+                    edit_key(input, cursor, code, mods);
                 }
-                KeyCode::Char(c) => input.push(c),
-                _ => {}
             },
             Mode::Confirm { keys } => match code {
                 KeyCode::Enter | KeyCode::Char('y') => {
@@ -1835,6 +1931,15 @@ impl App {
                 _ => {}
             },
             Mode::Normal => match code {
+                // plain-letter bindings must not fire on ctrl/alt chords
+                // (ctrl+a once triggered select-all); ctrl+w is the one
+                // deliberate chord below
+                KeyCode::Char(c)
+                    if mods.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+                        && !(c == 'w' && mods.contains(KeyModifiers::CONTROL)) =>
+                {
+                    // ignored
+                }
                 KeyCode::Char('q') => self.run_action(Action::Quit),
                 KeyCode::Char('/') => self.run_action(Action::Filter),
                 KeyCode::Char('m') => self.run_action(Action::Manuscript),
@@ -1944,7 +2049,7 @@ impl App {
         let detail_area = self.show_detail.then(|| *it.next().unwrap());
 
         let (strip_area, table_area) = {
-            let [s, t] = Layout::vertical([Constraint::Length(2), Constraint::Min(1)])
+            let [s, t] = Layout::vertical([Constraint::Length(1), Constraint::Min(1)])
                 .areas(table_area);
             (s, t)
         };
@@ -2230,42 +2335,26 @@ impl App {
     /// One-line scope strip: Library │ query │ query …, clickable, the
     /// active scope bold cyan; [ and ] cycle, ctrl+w closes, r refreshes.
     fn draw_scope_strip(&mut self, f: &mut Frame, area: Rect) {
-        // two rows: a ▂ "lip" in each pill's fill color sits above the
-        // text row, so capsules read ~25% taller than the font
+        // single-row pills: the cell grid cannot render a fractionally
+        // taller *rounded* capsule, so no lip tricks
         self.scope_rects.clear();
-        let lip_y = area.y;
-        let text_y = area.y + 1;
-        let mut lips: Vec<Span> = vec![];
         let mut spans: Vec<Span> = vec![];
         let mut x = area.x;
-        let ascii = ascii_chips();
+        let scope_labels: Vec<String> =
+            self.scopes.iter().map(|s| s.label().to_string()).collect();
         let mut push_one = |label: &str, bg: Color, fg: Color, idx: usize,
                             x: &mut u16,
-                            lips: &mut Vec<Span>,
                             spans: &mut Vec<Span>,
                             rects: &mut Vec<(Rect, usize)>| {
             let wl = pill_width(label);
-            rects.push((Rect { x: *x, y: lip_y, width: wl, height: 2 }, idx));
-            if ascii {
-                lips.push(Span::raw(" ".repeat(wl as usize + 1)));
-            } else {
-                // lip spans the label only, inset from the rounded caps
-                lips.push(Span::raw(" "));
-                lips.push(Span::styled(
-                    "▂".repeat(label.chars().count()),
-                    Style::default().fg(bg),
-                ));
-                lips.push(Span::raw("  "));
-            }
+            rects.push((Rect { x: *x, y: area.y, width: wl, height: 1 }, idx));
             push_pill(spans, label, bg, fg);
             spans.push(Span::raw(" "));
             *x += wl + 1;
         };
-        let scope_labels: Vec<String> =
-            self.scopes.iter().map(|s| s.label().to_string()).collect();
         for (i, label) in scope_labels.iter().enumerate() {
             let active = i == self.active_scope;
-            let probe = Rect { x, y: lip_y, width: pill_width(label), height: 2 };
+            let probe = Rect { x, y: area.y, width: pill_width(label), height: 1 };
             let hov = hit(probe, self.hover.0, self.hover.1);
             let (bg, fg) = if active {
                 (Color::Cyan, Color::Black)
@@ -2274,25 +2363,18 @@ impl App {
             } else {
                 (Color::Rgb(40, 44, 52), Color::Gray)
             };
-            push_one(label, bg, fg, i, &mut x, &mut lips, &mut spans, &mut self.scope_rects);
+            push_one(label, bg, fg, i, &mut x, &mut spans, &mut self.scope_rects);
         }
         let label = "+ new";
-        let probe = Rect { x, y: lip_y, width: pill_width(label), height: 2 };
+        let probe = Rect { x, y: area.y, width: pill_width(label), height: 1 };
         let hov = hit(probe, self.hover.0, self.hover.1);
         let (bg, fg) = if hov {
             (Color::Rgb(58, 63, 72), Color::White)
         } else {
             (Color::Rgb(40, 44, 52), Color::DarkGray)
         };
-        push_one(label, bg, fg, usize::MAX, &mut x, &mut lips, &mut spans, &mut self.scope_rects);
-        f.render_widget(
-            Paragraph::new(Line::from(lips)),
-            Rect { x: area.x, y: lip_y, width: area.width, height: 1 },
-        );
-        f.render_widget(
-            Paragraph::new(Line::from(spans)),
-            Rect { x: area.x, y: text_y, width: area.width, height: 1 },
-        );
+        push_one(label, bg, fg, usize::MAX, &mut x, &mut spans, &mut self.scope_rects);
+        f.render_widget(Paragraph::new(Line::from(spans)), area);
     }
 
     fn draw_table(&mut self, f: &mut Frame, area: Rect) {
@@ -3180,15 +3262,22 @@ impl App {
 
     fn draw_status(&mut self, f: &mut Frame, area: Rect) {
         let line = match self.mode {
-            Mode::Filter => Line::from(vec![
-                Span::styled("/", Style::default().fg(Color::Cyan)),
-                Span::raw(self.filter.clone()),
-                Span::styled("▏", Style::default().fg(Color::Cyan)),
-            ]),
-            Mode::AdsPrompt { ref input, limit } => Line::from(vec![
+            Mode::Filter => {
+                let [a, b, c] = caret_spans(&self.filter, self.filter_cursor);
+                Line::from(vec![
+                    Span::styled("/", Style::default().fg(Color::Cyan)),
+                    a,
+                    b,
+                    c,
+                ])
+            }
+            Mode::AdsPrompt { ref input, cursor, limit } => {
+                let [a, b, c] = caret_spans(input, cursor);
+                Line::from(vec![
                 Span::styled("ADS query: ", Style::default().fg(Color::Cyan)),
-                Span::raw(input.clone()),
-                Span::styled("▏", Style::default().fg(Color::Cyan)),
+                a,
+                b,
+                c,
                 Span::styled(
                     format!("   n={limit} ↑↓"),
                     Style::default().fg(Color::Gray),
@@ -3197,7 +3286,8 @@ impl App {
                     "   ⏎ search · Esc cancel · paste DOI/ADS URL to import",
                     Style::default().fg(Color::DarkGray),
                 ),
-            ]),
+                ])
+            }
             Mode::Copy => Line::from(vec![
                 Span::styled("copy: ", Style::default().fg(Color::Cyan)),
                 Span::styled(
