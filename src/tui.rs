@@ -199,6 +199,9 @@ struct App {
     // pane, the footer always shows the newest entry color-coded
     log: Vec<(MsgCat, u64, String)>,
     show_log: bool,
+    // scrollback offset from the tail (0 = newest); PageUp/PageDown move
+    // it while the pane is open, any new message snaps back to the tail
+    log_scroll: usize,
     started: std::time::Instant,
     // table scopes: index 0 is always Library; ADS query results follow
     scopes: Vec<Scope>,
@@ -329,6 +332,7 @@ impl App {
             hover_hint: None,
             log: vec![],
             show_log: false,
+            log_scroll: 0,
             started: std::time::Instant::now(),
             scopes: vec![Scope::Library],
             active_scope: 0,
@@ -688,10 +692,24 @@ impl App {
     }
 
     /// Emit an event message: color-coded in the log pane and shown in
-    /// the footer while it is the newest entry.
+    /// the footer while it is the newest entry. A new message snaps the
+    /// log pane back to the tail; the log keeps at most 500 entries.
     fn note(&mut self, cat: MsgCat, msg: String) {
         self.status = msg.clone();
         self.log.push((cat, self.started.elapsed().as_secs(), msg));
+        self.log_scroll = 0;
+        if self.log.len() > 500 {
+            let cut = self.log.len() - 500;
+            self.log.drain(..cut);
+        }
+    }
+
+    /// PageUp/PageDown while the log pane is open: page through history,
+    /// clamped to the stored entries (positive = older).
+    fn scroll_log(&mut self, delta: isize) {
+        let visible = self.log.len().min(8);
+        let max = self.log.len().saturating_sub(visible) as isize;
+        self.log_scroll = (self.log_scroll as isize + delta).clamp(0, max) as usize;
     }
 
     /// Availability policy: single-target actions dim under multi-selection,
@@ -1727,8 +1745,22 @@ impl App {
                 KeyCode::Char('G') | KeyCode::End => {
                     self.table.select(self.row_count().checked_sub(1))
                 }
-                KeyCode::PageDown => self.move_sel(20),
-                KeyCode::PageUp => self.move_sel(-20),
+                KeyCode::PageDown => {
+                    if self.show_log {
+                        let page = self.log.len().min(8) as isize;
+                        self.scroll_log(-page);
+                    } else {
+                        self.move_sel(20);
+                    }
+                }
+                KeyCode::PageUp => {
+                    if self.show_log {
+                        let page = self.log.len().min(8) as isize;
+                        self.scroll_log(page);
+                    } else {
+                        self.move_sel(-20);
+                    }
+                }
                 _ => {}
             },
         }
@@ -2930,12 +2962,16 @@ impl App {
     }
 
     /// The event-log pane: newest entries at the bottom, one line each,
-    /// color-coded by category, mm:ss timestamps since launch.
+    /// color-coded by category, mm:ss timestamps since launch. PageUp
+    /// pages into history (the title shows how far back); any new
+    /// message snaps back to the tail.
     fn draw_log(&self, f: &mut Frame, area: Rect) {
         let n = area.height.saturating_sub(2) as usize;
-        let start = self.log.len().saturating_sub(n);
+        let scroll = self.log_scroll.min(self.log.len().saturating_sub(n));
+        let start = self.log.len().saturating_sub(n + scroll);
+        let end = (start + n).min(self.log.len());
         let mut lines: Vec<Line> = vec![];
-        for (cat, secs, msg) in &self.log[start..] {
+        for (cat, secs, msg) in &self.log[start..end] {
             lines.push(Line::from(vec![
                 Span::styled(
                     format!("{:02}:{:02}  ", secs / 60, secs % 60),
@@ -2944,9 +2980,14 @@ impl App {
                 Span::styled(msg.clone(), Style::default().fg(cat.color())),
             ]));
         }
+        let title = if scroll > 0 {
+            format!(" Log ↑{scroll} ")
+        } else {
+            " Log ".to_string()
+        };
         let block = Block::default()
             .borders(Borders::TOP | Borders::BOTTOM)
-            .title(Span::styled(" Log ", Style::default().fg(Color::DarkGray)));
+            .title(Span::styled(title, Style::default().fg(Color::DarkGray)));
         f.render_widget(Paragraph::new(Text::from(lines)).block(block), area);
     }
 
