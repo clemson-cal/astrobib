@@ -33,6 +33,41 @@ pub fn run(lib: MergedLibrary) -> anyhow::Result<()> {
 enum Mode {
     Normal,
     Filter,
+    /// Modal ~/Downloads PDF picker (pub card "pick …").
+    Pick {
+        key: String,
+        files: Vec<std::path::PathBuf>,
+        sel: usize,
+    },
+}
+
+/// Every user action; the panel lists them all, dimming the unavailable.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Action {
+    Select,
+    Star,
+    Manuscript,
+    Download,
+    OpenPdf,
+    ClearPdf,
+    BrowserDl,
+    PickPdf,
+    Remove,
+    Filter,
+    Card,
+    Quit,
+}
+
+/// Pub card buttons; they act on the card's (highlighted) entry.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CardBtn {
+    Arxiv,
+    Oa,
+    Browser,
+    Pick,
+    Open,
+    Clear,
+    Cancel,
 }
 
 struct App {
@@ -51,6 +86,20 @@ struct App {
     selected: HashSet<String>,
     table_area: Rect, // last drawn table region, for mouse hit-testing
     dl_rx: Option<std::sync::mpsc::Receiver<DlMsg>>,
+    // ctrl+p actions panel: every action listed, unavailable ones dimmed,
+    // rows clickable (hit-tested via panel_rows rebuilt each draw)
+    show_actions: bool,
+    panel_rows: Vec<(u16, Action)>,
+    panel_area: Rect,
+    // pub card button row rects, rebuilt each draw
+    card_buttons: Vec<(Rect, CardBtn)>,
+    // browser-download watcher cancel flag (X / clear cancels the poll)
+    poll_cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+    pick_area: Rect,
+}
+
+fn hit(r: Rect, x: u16, y: u16) -> bool {
+    x >= r.x && x < r.x + r.width && y >= r.y && y < r.y + r.height
 }
 
 enum DlMsg {
@@ -95,6 +144,74 @@ impl App {
             selected: HashSet::new(),
             table_area: Rect::default(),
             dl_rx: None,
+            show_actions: false,
+            panel_rows: vec![],
+            panel_area: Rect::default(),
+            card_buttons: vec![],
+            poll_cancel: None,
+            pick_area: Rect::default(),
+        }
+    }
+
+    /// Availability policy: single-target actions dim under multi-selection,
+    /// content-dependent actions dim when no target qualifies.
+    fn available(&self, a: Action) -> bool {
+        let keys = self.action_keys();
+        let single = keys.len() == 1;
+        let entry = |k: &String| self.lib.get(k);
+        match a {
+            Action::Select | Action::Filter | Action::Card | Action::Quit => true,
+            Action::Star => keys.iter().any(|k| self.lib.in_personal(k)),
+            Action::Manuscript => self.lib.manuscript.is_some() && !keys.is_empty(),
+            Action::Download => {
+                self.dl_rx.is_none()
+                    && keys.iter().any(|k| {
+                        !pdf::is_cached(k)
+                            && entry(k).is_some_and(|e| {
+                                !e.eprint().is_empty() || !e.adsurl().is_empty()
+                            })
+                    })
+            }
+            Action::OpenPdf => keys.iter().any(|k| pdf::is_cached(k)),
+            Action::ClearPdf => {
+                self.poll_cancel.is_some() || keys.iter().any(|k| pdf::is_cached(k))
+            }
+            Action::BrowserDl => {
+                single
+                    && self.dl_rx.is_none()
+                    && entry(&keys[0]).is_some_and(|e| {
+                        !e.doi().is_empty() || !e.adsurl().is_empty() || !e.eprint().is_empty()
+                    })
+            }
+            Action::PickPdf => single,
+            Action::Remove => !keys.is_empty(),
+        }
+    }
+
+    /// Run an action if available — shared by shortcut keys, panel clicks,
+    /// and pub card buttons.
+    fn run_action(&mut self, a: Action) {
+        if !self.available(a) {
+            return;
+        }
+        match a {
+            Action::Select => {
+                self.select_mode = true;
+                if let Some(pos) = self.table.selected() {
+                    self.toggle_row_selected(pos);
+                }
+            }
+            Action::Star => self.toggle_star(),
+            Action::Manuscript => self.toggle_manuscript(),
+            Action::Download => self.download_pdfs(),
+            Action::OpenPdf => self.open_pdfs(),
+            Action::ClearPdf => self.clear_pdfs(),
+            Action::BrowserDl => self.browser_download(),
+            Action::PickPdf => self.open_picker(),
+            Action::Remove => self.remove_papers(),
+            Action::Filter => self.mode = Mode::Filter,
+            Action::Card => self.show_detail = !self.show_detail,
+            Action::Quit => self.quit = true,
         }
     }
 
@@ -344,8 +461,13 @@ impl App {
         self.status = format!("Opened {n} PDF(s)");
     }
 
-    /// X — clear cached PDFs among the targets.
+    /// X — cancel a running browser-download watch, else clear cached PDFs.
     fn clear_pdfs(&mut self) {
+        if let Some(cancel) = self.poll_cancel.take() {
+            cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+            self.status = "browser download cancelled".to_string();
+            return;
+        }
         let mut n = 0;
         for k in self.action_keys() {
             let p = pdf::cache_path(&k);
@@ -354,6 +476,88 @@ impl App {
             }
         }
         self.status = format!("Cleared {n} cached PDF(s)");
+    }
+
+    /// Fetch one entry's PDF from a specific source (pub card buttons),
+    /// on the download worker channel.
+    fn download_single(&mut self, key: String, source: pdf::Source) {
+        if self.dl_rx.is_some() {
+            self.status = "a download is already running".to_string();
+            return;
+        }
+        let Some(e) = self.lib.get(&key) else { return };
+        let (eprint, adsurl) = (e.eprint().to_string(), e.adsurl().to_string());
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.dl_rx = Some(rx);
+        self.status = format!("Downloading {key}…");
+        std::thread::spawn(move || {
+            let ok = pdf::fetch_source(&key, &eprint, &adsurl, source).is_some();
+            let _ = tx.send(DlMsg::Done {
+                done: ok as usize,
+                failed: if ok { vec![] } else { vec![key] },
+            });
+        });
+    }
+
+    fn browser_download(&mut self) {
+        if let Some(k) = self.action_keys().into_iter().next() {
+            self.browser_download_for(k);
+        }
+    }
+
+    /// B — resolve the best manual-download URL, open the browser, and
+    /// watch ~/Downloads for the PDF (60s, cancellable with X).
+    fn browser_download_for(&mut self, key: String) {
+        if self.dl_rx.is_some() {
+            self.status = "a download is already running".to_string();
+            return;
+        }
+        let Some(e) = self.lib.get(&key) else {
+            return;
+        };
+        let (key, doi, adsurl, eprint) = (
+            e.key().to_string(),
+            e.doi().to_string(),
+            e.adsurl().to_string(),
+            e.eprint().to_string(),
+        );
+        let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        self.poll_cancel = Some(cancel.clone());
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.dl_rx = Some(rx);
+        self.status = format!("Resolving browser source for {key}…");
+        std::thread::spawn(move || {
+            let Some(url) = pdf::browser_resolve_url(&doi, &adsurl, &eprint) else {
+                let _ = tx.send(DlMsg::Done { done: 0, failed: vec![key] });
+                return;
+            };
+            let before = pdf::downloads_snapshot();
+            pdf::browser_open(&url);
+            let _ = tx.send(DlMsg::Progress(format!(
+                "Browser opened — waiting for {key} in ~/Downloads (60s, X cancels)…"
+            )));
+            let got = pdf::poll_downloads(&key, &before, 60, &cancel);
+            let _ = tx.send(DlMsg::Done {
+                done: got.is_some() as usize,
+                failed: if got.is_some() { vec![] } else { vec![key] },
+            });
+        });
+    }
+
+    fn open_picker(&mut self) {
+        if let Some(k) = self.action_keys().into_iter().next() {
+            self.open_picker_for(k);
+        }
+    }
+
+    /// pick … — open the modal ~/Downloads PDF picker for one entry.
+    fn open_picker_for(&mut self, key: String) {
+        let files = pdf::downloads_pdfs();
+        if files.is_empty() {
+            self.status = "no PDFs in ~/Downloads".to_string();
+            return;
+        }
+        self.mode = Mode::Pick { key, files, sel: 0 };
     }
 
     /// p — download PDFs for targets not yet cached, on a background
@@ -422,6 +626,7 @@ impl App {
                         )
                     };
                     self.dl_rx = None;
+                    self.poll_cancel = None;
                 }
             }
         }
@@ -437,9 +642,47 @@ impl App {
     }
 
     fn on_click(&mut self, x: u16, y: u16) {
+        // modal picker swallows all clicks: row click imports, outside closes
+        if let Mode::Pick { key, files, .. } = &self.mode {
+            if hit(self.pick_area, x, y) && y > self.pick_area.y {
+                let i = (y - self.pick_area.y - 1) as usize;
+                if i < files.len() {
+                    let (key, file) = (key.clone(), files[i].clone());
+                    self.mode = Mode::Normal;
+                    self.import_picked(&key, &file);
+                    return;
+                }
+            }
+            self.mode = Mode::Normal;
+            return;
+        }
+        // actions panel rows
+        if self.show_actions && hit(self.panel_area, x, y) {
+            if let Some(&(_, action)) = self.panel_rows.iter().find(|(ry, _)| *ry == y) {
+                self.run_action(action);
+            }
+            return;
+        }
+        // pub card buttons (act on the card's entry)
+        if let Some(&(_, btn)) = self.card_buttons.iter().find(|(r, _)| hit(*r, x, y)) {
+            if let Some(key) = self.selected_key().map(str::to_string) {
+                match btn {
+                    CardBtn::Arxiv => self.download_single(key, pdf::Source::Arxiv),
+                    CardBtn::Oa => self.download_single(key, pdf::Source::Oa),
+                    CardBtn::Browser => self.browser_download_for(key),
+                    CardBtn::Pick => self.open_picker_for(key),
+                    CardBtn::Open => {
+                        pdf::open_paths(&[pdf::cache_path(&key)]);
+                        self.status = format!("Opened {key}");
+                    }
+                    CardBtn::Clear | CardBtn::Cancel => self.clear_card_pdf(&key),
+                }
+            }
+            return;
+        }
+        // table: header at a.y, data rows below
         let a = self.table_area;
-        // y == a.y is the header row; data rows start one line below
-        if x < a.x || x >= a.x + a.width || y <= a.y || y >= a.y + a.height {
+        if !hit(a, x, y) || y <= a.y {
             return;
         }
         let pos = self.table.offset() + (y - a.y - 1) as usize;
@@ -451,6 +694,19 @@ impl App {
             // the ◯/◉ gutter: enter selection mode if needed, then toggle
             self.select_mode = true;
             self.toggle_row_selected(pos);
+        }
+    }
+
+    /// Clear (or cancel a pending browser watch for) the card entry's PDF.
+    fn clear_card_pdf(&mut self, key: &str) {
+        if let Some(cancel) = self.poll_cancel.take() {
+            cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+            self.status = "browser download cancelled".to_string();
+            return;
+        }
+        let p = pdf::cache_path(key);
+        if p.exists() && std::fs::remove_file(&p).is_ok() {
+            self.status = format!("Cleared cached PDF for {key}");
         }
     }
 
@@ -510,7 +766,11 @@ impl App {
             self.quit = true;
             return;
         }
-        match self.mode {
+        if mods.contains(KeyModifiers::CONTROL) && code == KeyCode::Char('p') {
+            self.show_actions = !self.show_actions;
+            return;
+        }
+        match &mut self.mode {
             Mode::Filter => match code {
                 KeyCode::Esc => {
                     self.filter.clear();
@@ -528,23 +788,31 @@ impl App {
                 }
                 _ => {}
             },
-            Mode::Normal => match code {
-                KeyCode::Char('q') => self.quit = true,
-                KeyCode::Char('/') => self.mode = Mode::Filter,
-                KeyCode::Char('s') => self.toggle_star(),
-                KeyCode::Char('m') => self.toggle_manuscript(),
-                KeyCode::Char('d') => self.remove_papers(),
-                KeyCode::Char('p') => self.download_pdfs(),
-                KeyCode::Char('o') => self.open_pdfs(),
-                KeyCode::Char('X') => self.clear_pdfs(),
-                KeyCode::Char('D') | KeyCode::Char('z') => self.show_detail = !self.show_detail,
-                KeyCode::Char(' ') => {
-                    // first Space enters selection mode and selects the row
-                    self.select_mode = true;
-                    if let Some(pos) = self.table.selected() {
-                        self.toggle_row_selected(pos);
-                    }
+            Mode::Pick { key, files, sel } => match code {
+                KeyCode::Esc => self.mode = Mode::Normal,
+                KeyCode::Char('j') | KeyCode::Down => {
+                    *sel = (*sel + 1).min(files.len().saturating_sub(1))
                 }
+                KeyCode::Char('k') | KeyCode::Up => *sel = sel.saturating_sub(1),
+                KeyCode::Enter => {
+                    let (key, file) = (key.clone(), files[*sel].clone());
+                    self.mode = Mode::Normal;
+                    self.import_picked(&key, &file);
+                }
+                _ => {}
+            },
+            Mode::Normal => match code {
+                KeyCode::Char('q') => self.run_action(Action::Quit),
+                KeyCode::Char('/') => self.run_action(Action::Filter),
+                KeyCode::Char('s') => self.run_action(Action::Star),
+                KeyCode::Char('m') => self.run_action(Action::Manuscript),
+                KeyCode::Char('d') => self.run_action(Action::Remove),
+                KeyCode::Char('p') => self.run_action(Action::Download),
+                KeyCode::Char('o') => self.run_action(Action::OpenPdf),
+                KeyCode::Char('X') => self.run_action(Action::ClearPdf),
+                KeyCode::Char('B') => self.run_action(Action::BrowserDl),
+                KeyCode::Char('D') | KeyCode::Char('z') => self.run_action(Action::Card),
+                KeyCode::Char(' ') => self.run_action(Action::Select),
                 KeyCode::Esc => {
                     if self.select_mode {
                         self.exit_select_mode();
@@ -568,22 +836,148 @@ impl App {
         }
     }
 
+    fn import_picked(&mut self, key: &str, file: &std::path::Path) {
+        match pdf::import_file(key, file) {
+            Some(dest) => {
+                let kb = dest.metadata().map(|m| m.len() / 1024).unwrap_or(0);
+                self.status = format!(
+                    "Imported {} for {key}  ({kb} KB)",
+                    file.file_name().unwrap_or_default().to_string_lossy()
+                );
+            }
+            None => {
+                self.status = format!(
+                    "{} does not look like a PDF",
+                    file.file_name().unwrap_or_default().to_string_lossy()
+                );
+            }
+        }
+    }
+
     fn draw(&mut self, f: &mut Frame) {
+        self.card_buttons.clear();
+        self.panel_rows.clear();
         let [main, status] =
             Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).areas(f.area());
-        let (table_area, detail_area) = if self.show_detail {
-            let [t, d] =
-                Layout::horizontal([Constraint::Min(40), Constraint::Length(48)]).areas(main);
-            (t, Some(d))
-        } else {
-            (main, None)
-        };
+        let mut constraints = vec![Constraint::Min(40)];
+        if self.show_detail {
+            constraints.push(Constraint::Length(48));
+        }
+        if self.show_actions {
+            constraints.push(Constraint::Length(20));
+        }
+        let areas = Layout::horizontal(constraints).split(main);
+        let mut it = areas.iter();
+        let table_area = *it.next().unwrap();
+        let detail_area = self.show_detail.then(|| *it.next().unwrap());
+        let panel_area = self.show_actions.then(|| *it.next().unwrap());
 
         self.draw_table(f, table_area);
         if let Some(area) = detail_area {
             self.draw_detail(f, area);
         }
+        if let Some(area) = panel_area {
+            self.draw_panel(f, area);
+        } else {
+            self.panel_area = Rect::default();
+        }
         self.draw_status(f, status);
+        if let Mode::Pick { .. } = self.mode {
+            self.draw_picker(f);
+        } else {
+            self.pick_area = Rect::default();
+        }
+    }
+
+    /// The ctrl+p actions panel: every action, with key, label, and click
+    /// target; unavailable actions render dimmed (the Python key panel's
+    /// behavior).
+    fn draw_panel(&mut self, f: &mut Frame, area: Rect) {
+        self.panel_area = area;
+        let entries: &[(&str, &str, Action)] = &[
+            ("Spc", if self.select_mode { "sel. done (Esc)" } else { "select" }, Action::Select),
+            ("s", "star ★", Action::Star),
+            ("m", "manuscript ◆", Action::Manuscript),
+            ("p", "download PDF", Action::Download),
+            ("B", "browser DL", Action::BrowserDl),
+            ("", "pick PDF…", Action::PickPdf),
+            ("o", "open PDF", Action::OpenPdf),
+            (
+                "X",
+                if self.poll_cancel.is_some() { "cancel DL" } else { "clear PDF" },
+                Action::ClearPdf,
+            ),
+            ("d", "remove", Action::Remove),
+            ("/", "filter", Action::Filter),
+            ("D", "pub card", Action::Card),
+            ("q", "quit", Action::Quit),
+        ];
+        let mut lines: Vec<Line> = vec![Line::from(Span::styled(
+            "Actions",
+            Style::default().add_modifier(Modifier::BOLD),
+        ))];
+        for (i, (key, label, action)) in entries.iter().enumerate() {
+            let y = area.y + 1 + i as u16;
+            let avail = self.available(*action);
+            if avail && y < area.y + area.height {
+                self.panel_rows.push((y, *action));
+            }
+            let (key_style, label_style) = if avail {
+                (
+                    Style::default().fg(Color::Cyan),
+                    Style::default(),
+                )
+            } else {
+                (
+                    Style::default().fg(Color::DarkGray),
+                    Style::default().fg(Color::DarkGray),
+                )
+            };
+            lines.push(Line::from(vec![
+                Span::styled(format!("{key:>3} "), key_style),
+                Span::styled((*label).to_string(), label_style),
+            ]));
+        }
+        let p = Paragraph::new(Text::from(lines)).block(
+            Block::default()
+                .borders(Borders::LEFT)
+                .padding(ratatui::widgets::Padding::horizontal(1)),
+        );
+        f.render_widget(p, area);
+    }
+
+    /// Centered modal list of ~/Downloads PDFs for the pick action.
+    fn draw_picker(&mut self, f: &mut Frame) {
+        let Mode::Pick { files, sel, key } = &self.mode else {
+            return;
+        };
+        let frame = f.area();
+        let h = (files.len().min(15) + 2) as u16;
+        let w = 64.min(frame.width.saturating_sub(4));
+        let area = Rect {
+            x: frame.width.saturating_sub(w) / 2,
+            y: frame.height.saturating_sub(h) / 2,
+            width: w,
+            height: h.min(frame.height),
+        };
+        self.pick_area = area;
+        f.render_widget(ratatui::widgets::Clear, area);
+        let mut lines: Vec<Line> = vec![];
+        for (i, p) in files.iter().take(15).enumerate() {
+            let name = p.file_name().unwrap_or_default().to_string_lossy().to_string();
+            let style = if i == *sel {
+                Style::default().bg(Color::DarkGray).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default()
+            };
+            lines.push(Line::from(Span::styled(name, style)));
+        }
+        let p = Paragraph::new(Text::from(lines)).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(format!(" pick PDF for {key} — ⏎ import · Esc cancel ")),
+        );
+        f.render_widget(p, area);
     }
 
     fn draw_table(&mut self, f: &mut Frame, area: Rect) {
@@ -639,13 +1033,16 @@ impl App {
         f.render_stateful_widget(table, area, &mut self.table);
     }
 
-    fn draw_detail(&self, f: &mut Frame, area: Rect) {
+    fn draw_detail(&mut self, f: &mut Frame, area: Rect) {
         let block = Block::default().borders(Borders::LEFT);
-        let Some(key) = self.selected_key() else {
+        let Some(key) = self.selected_key().map(str::to_string) else {
             f.render_widget(block, area);
             return;
         };
-        let e = self.lib.get(key).unwrap();
+        let [area, btn_area] =
+            Layout::vertical([Constraint::Min(1), Constraint::Length(2)]).areas(area);
+        self.draw_card_buttons(f, btn_area, &key);
+        let e = self.lib.get(&key).unwrap();
         let mut lines: Vec<Line> = vec![];
         lines.push(Line::from(Span::styled(
             e.title().trim_matches(['{', '}']).to_string(),
@@ -691,6 +1088,55 @@ impl App {
         f.render_widget(p, area);
     }
 
+    /// The pub card's PDF button row: source buttons when uncached
+    /// (arXiv/OA/browser/pick, individually dimmed when their prerequisite
+    /// is missing), open/clear when cached, cancel while a browser watch
+    /// is pending. Clickable — rects recorded into card_buttons.
+    fn draw_card_buttons(&mut self, f: &mut Frame, area: Rect, key: &str) {
+        let Some(e) = self.lib.get(key) else { return };
+        let (eprint, adsurl, doi) = (e.eprint(), e.adsurl(), e.doi());
+        let buttons: Vec<(&str, CardBtn, bool)> = if self.poll_cancel.is_some() {
+            vec![("⏳ waiting…", CardBtn::Cancel, false), (" cancel ", CardBtn::Cancel, true)]
+        } else if pdf::is_cached(key) {
+            vec![(" open ", CardBtn::Open, true), (" clear ", CardBtn::Clear, true)]
+        } else {
+            vec![
+                (" arXiv ↓ ", CardBtn::Arxiv, !eprint.is_empty()),
+                (" OA ↓ ", CardBtn::Oa, !adsurl.is_empty()),
+                (
+                    " browser ↓ ",
+                    CardBtn::Browser,
+                    !doi.is_empty() || !adsurl.is_empty() || !eprint.is_empty(),
+                ),
+                (" pick … ", CardBtn::Pick, true),
+            ]
+        };
+        let y = area.y + 1;
+        let mut x = area.x + 2;
+        let mut spans = vec![];
+        for (label, btn, enabled) in buttons {
+            let w = label.chars().count() as u16;
+            if enabled {
+                self.card_buttons
+                    .push((Rect { x, y, width: w, height: 1 }, btn));
+            }
+            let style = if enabled {
+                Style::default().bg(Color::DarkGray)
+            } else {
+                Style::default().fg(Color::DarkGray)
+            };
+            spans.push(Span::styled(label.to_string(), style));
+            spans.push(Span::raw("  "));
+            x += w + 2;
+        }
+        let p = Paragraph::new(Line::from(spans)).block(
+            Block::default()
+                .borders(Borders::LEFT)
+                .padding(ratatui::widgets::Padding::horizontal(1)),
+        );
+        f.render_widget(p, area);
+    }
+
     fn draw_status(&self, f: &mut Frame, area: Rect) {
         let line = match self.mode {
             Mode::Filter => Line::from(vec![
@@ -698,18 +1144,17 @@ impl App {
                 Span::raw(self.filter.clone()),
                 Span::styled("▏", Style::default().fg(Color::Cyan)),
             ]),
-            Mode::Normal if self.select_mode => Line::from(vec![
+            Mode::Normal | Mode::Pick { .. } if self.select_mode => Line::from(vec![
                 Span::styled(
                     format!("◉ {} selected", self.selected.len()),
                     Style::default().fg(Color::Cyan),
                 ),
                 Span::styled(
-                    "  ·  Space/click ◯ toggle · s★ m◆ p↓ o open X clear d remove · Esc done"
-                        .to_string(),
+                    "  ·  Space/click ◯ toggle · Esc done · ctrl+p actions".to_string(),
                     Style::default().fg(Color::DarkGray),
                 ),
             ]),
-            Mode::Normal => {
+            Mode::Normal | Mode::Pick { .. } => {
                 let n = self.filtered.len();
                 let total = self.order.len();
                 let filt = if self.filter.is_empty() {
@@ -718,10 +1163,7 @@ impl App {
                     format!("  ·  /{}", self.filter)
                 };
                 Line::from(Span::styled(
-                    format!(
-                        "{n}/{total}  ·  {}{filt}  ·  / filter · Space select · s★ m◆ p↓ o open · D card · q quit",
-                        self.status
-                    ),
+                    format!("{n}/{total}  ·  {}{filt}  ·  ctrl+p actions", self.status),
                     Style::default().fg(Color::DarkGray),
                 ))
             }

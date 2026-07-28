@@ -1,8 +1,17 @@
-//! Ephemeral PDF cache — port of the download side of astrobib/pdf.py
-//! (browser-watch flow comes later).
+//! Ephemeral PDF cache — port of the download side of astrobib/pdf.py,
+//! including the browser-watch flow and user-file import.
 
-use std::path::PathBuf;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Source {
+    Auto,
+    Arxiv,
+    Oa,
+}
 
 pub fn cache_dir() -> PathBuf {
     PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".cache/astrobib/pdfs")
@@ -35,30 +44,166 @@ fn download_url(path: &PathBuf, url: &str) -> Option<PathBuf> {
     Some(path.clone())
 }
 
-/// Return the cached PDF path, downloading if needed — port of fetch()
-/// source='auto': ADS OA_PDF resolver first, then arXiv fallback.
+pub fn bibcode_from_adsurl(adsurl: &str) -> Option<&str> {
+    if adsurl.is_empty() {
+        return None;
+    }
+    let t = adsurl.trim_end_matches('/');
+    t.rsplit('/').next().filter(|s| !s.is_empty())
+}
+
+/// Return the cached PDF path, downloading if needed — port of fetch().
+/// Auto: ADS OA_PDF resolver first, then arXiv fallback.
 pub fn fetch(key: &str, eprint: &str, adsurl: &str) -> Option<PathBuf> {
     let path = cache_path(key);
     if path.exists() {
         return Some(path);
     }
-    let bibcode = if adsurl.is_empty() {
-        None
-    } else {
-        let t = adsurl.trim_end_matches('/');
-        t.rsplit('/').next()
+    fetch_source(key, eprint, adsurl, Source::Auto)
+}
+
+/// Source-specific fetch, forcing a re-download (the pub card's per-source
+/// buttons, matching Python's force=True).
+pub fn fetch_source(key: &str, eprint: &str, adsurl: &str, source: Source) -> Option<PathBuf> {
+    let path = cache_path(key);
+    if path.exists() {
+        std::fs::remove_file(&path).ok()?;
+    }
+    let try_oa = || -> Option<PathBuf> {
+        let bc = bibcode_from_adsurl(adsurl)?;
+        let url = crate::ads::resolve_pdf_url(bc, "OA_PDF")?;
+        download_url(&path, &url)
     };
-    if let Some(bc) = bibcode {
-        if let Some(url) = crate::ads::resolve_pdf_url(bc, "OA_PDF") {
-            if let Some(p) = download_url(&path, &url) {
-                return Some(p);
+    let try_arxiv = || -> Option<PathBuf> {
+        if eprint.is_empty() {
+            return None;
+        }
+        download_url(&path, &format!("https://arxiv.org/pdf/{}", eprint.trim()))
+    };
+    match source {
+        Source::Arxiv => try_arxiv(),
+        Source::Oa => try_oa(),
+        Source::Auto => try_oa().or_else(try_arxiv),
+    }
+}
+
+/// Best URL for manual PDF download, verified against the ADS resolver —
+/// port of browser_resolve_url. Makes a network call; run off the UI thread.
+pub fn browser_resolve_url(doi: &str, adsurl: &str, eprint: &str) -> Option<String> {
+    if let Some(bc) = bibcode_from_adsurl(adsurl) {
+        if let Some(url) = crate::ads::resolve_pdf_url(bc, "PUB_PDF") {
+            return Some(url);
+        }
+    }
+    if !doi.is_empty() {
+        return Some(format!("https://doi.org/{doi}"));
+    }
+    if !eprint.is_empty() {
+        return Some(format!("https://arxiv.org/abs/{}", eprint.trim()));
+    }
+    None
+}
+
+/// Open a URL in the system browser.
+pub fn browser_open(url: &str) {
+    #[cfg(target_os = "macos")]
+    let _ = std::process::Command::new("open").arg(url).spawn();
+    #[cfg(not(target_os = "macos"))]
+    let _ = std::process::Command::new("xdg-open").arg(url).spawn();
+}
+
+fn downloads_dir() -> PathBuf {
+    PathBuf::from(std::env::var("HOME").unwrap_or_default()).join("Downloads")
+}
+
+/// PDFs currently in ~/Downloads: path → (size, mtime_ns). Size+mtime
+/// lets the poller catch a download overwriting a same-named file.
+pub fn downloads_snapshot() -> HashMap<PathBuf, (u64, i64)> {
+    let mut out = HashMap::new();
+    if let Ok(rd) = std::fs::read_dir(downloads_dir()) {
+        for f in rd.flatten() {
+            let p = f.path();
+            let is_pdf = p
+                .extension()
+                .is_some_and(|x| x.eq_ignore_ascii_case("pdf"));
+            if is_pdf && p.is_file() {
+                if let Ok(st) = p.metadata() {
+                    use std::os::unix::fs::MetadataExt;
+                    out.insert(p, (st.len(), st.mtime_nsec() + st.mtime() * 1_000_000_000));
+                }
             }
         }
     }
-    if !eprint.is_empty() {
-        return download_url(&path, &format!("https://arxiv.org/pdf/{}", eprint.trim()));
+    out
+}
+
+fn looks_like_pdf(path: &Path) -> bool {
+    let Ok(bytes) = std::fs::read(path) else {
+        return false;
+    };
+    bytes
+        .windows(4)
+        .take(1021)
+        .any(|w| w == b"%PDF") // header may follow a short preamble
+}
+
+/// Watch ~/Downloads for a new or rewritten PDF; move it into the cache
+/// on arrival — port of poll_downloads (two-poll size-stability check so
+/// a partial download is never grabbed).
+pub fn poll_downloads(
+    key: &str,
+    before: &HashMap<PathBuf, (u64, i64)>,
+    timeout_secs: u64,
+    cancel: &AtomicBool,
+) -> Option<PathBuf> {
+    let deadline = std::time::Instant::now() + Duration::from_secs(timeout_secs);
+    let mut prev_sizes: HashMap<PathBuf, u64> = HashMap::new();
+    while std::time::Instant::now() < deadline {
+        if cancel.load(Ordering::Relaxed) {
+            return None;
+        }
+        std::thread::sleep(Duration::from_secs(1));
+        for (f, (size, mtime)) in downloads_snapshot() {
+            if before.get(&f) == Some(&(size, mtime)) {
+                continue; // pre-existing file, unchanged
+            }
+            if prev_sizes.get(&f) == Some(&size) && size > 0 {
+                if !looks_like_pdf(&f) {
+                    continue;
+                }
+                let dest = cache_path(key);
+                std::fs::create_dir_all(dest.parent()?).ok()?;
+                std::fs::rename(&f, &dest)
+                    .or_else(|_| std::fs::copy(&f, &dest).map(|_| ()).and_then(|_| std::fs::remove_file(&f)))
+                    .ok()?;
+                return Some(dest);
+            }
+            prev_sizes.insert(f, size);
+        }
     }
     None
+}
+
+/// Copy a user-chosen PDF into the cache — port of import_file. Copies
+/// rather than moves; rejects files without a %PDF header.
+pub fn import_file(key: &str, source: &Path) -> Option<PathBuf> {
+    if !looks_like_pdf(source) {
+        return None;
+    }
+    let dest = cache_path(key);
+    std::fs::create_dir_all(dest.parent()?).ok()?;
+    std::fs::copy(source, &dest).ok()?;
+    Some(dest)
+}
+
+/// PDFs in ~/Downloads, newest first — the pick-file candidate list.
+pub fn downloads_pdfs() -> Vec<PathBuf> {
+    let mut files: Vec<(PathBuf, i64)> = downloads_snapshot()
+        .into_iter()
+        .map(|(p, (_, m))| (p, m))
+        .collect();
+    files.sort_by_key(|(_, m)| -*m);
+    files.into_iter().map(|(p, _)| p).collect()
 }
 
 /// Open cached PDFs with the platform opener.

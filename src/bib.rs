@@ -90,7 +90,7 @@ pub fn parse_entry(text: &str) -> Option<Data> {
             }
             _ => {
                 let end = text[i..]
-                    .find(|c| c == ',' || c == '}')
+                    .find([',', '}'])
                     .map(|o| i + o)
                     .unwrap_or(bytes.len());
                 let val = text[i..end].trim();
