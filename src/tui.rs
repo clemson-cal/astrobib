@@ -41,8 +41,8 @@ enum Mode {
     },
     /// Confirm modal for removing papers (Delete key).
     Confirm { keys: Vec<String> },
-    /// S — compose an ADS query; ⏎ runs it into a new scope.
-    AdsPrompt { input: String },
+    /// S — compose an ADS query; ↑/↓ steps the result limit, ⏎ runs it.
+    AdsPrompt { input: String, limit: usize },
     /// y pressed — the next key picks what to copy (the Copy panel tab
     /// shows the menu, which-key style); Esc cancels.
     Copy,
@@ -405,7 +405,7 @@ impl App {
                 }
             }
         }
-        self.mode = Mode::AdsPrompt { input };
+        self.mode = Mode::AdsPrompt { input, limit: 20 };
     }
 
     /// Run a query on a worker thread into a scope. A pasted DOI or ADS
@@ -539,10 +539,6 @@ impl App {
                 let _ = tx.send(AdsMsg::Done { tab, refresh_of: Some(idx), result });
             }
         });
-    }
-
-    fn run_ads_query(&mut self, raw: String, refresh_of: Option<usize>) {
-        self.run_ads_query_limit(raw, refresh_of, 20);
     }
 
     /// +/- — step the active ADS scope's result limit through the
@@ -1626,12 +1622,22 @@ impl App {
                     }
                 }
             }
-            Mode::AdsPrompt { input } => match code {
+            Mode::AdsPrompt { input, limit } => match code {
                 KeyCode::Esc => self.mode = Mode::Normal,
                 KeyCode::Enter => {
-                    let q = input.clone();
+                    let (q, l) = (input.clone(), *limit);
                     self.mode = Mode::Normal;
-                    self.run_ads_query(q, None);
+                    self.run_ads_query_limit(q, None, l);
+                }
+                KeyCode::Up => {
+                    const STEPS: [usize; 4] = [20, 50, 100, 200];
+                    let i = STEPS.iter().position(|&s| s >= *limit).unwrap_or(0);
+                    *limit = STEPS[(i + 1).min(STEPS.len() - 1)];
+                }
+                KeyCode::Down => {
+                    const STEPS: [usize; 4] = [20, 50, 100, 200];
+                    let i = STEPS.iter().position(|&s| s >= *limit).unwrap_or(0);
+                    *limit = STEPS[i.saturating_sub(1)];
                 }
                 KeyCode::Backspace => {
                     input.pop();
@@ -2024,36 +2030,34 @@ impl App {
         let mut x = area.x;
         for (i, scope) in self.scopes.iter().enumerate() {
             let label = scope.label().to_string();
-            let wl = label.chars().count() as u16;
+            let wl = pill_width(&label);
             let r = Rect { x, y: area.y, width: wl, height: 1 };
             self.scope_rects.push((r, i));
             let active = i == self.active_scope;
             let hov = hit(r, self.hover.0, self.hover.1);
-            let mut style = if active {
-                Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
+            let (bg, fg) = if active {
+                (Color::Cyan, Color::Black)
+            } else if hov {
+                (Color::Rgb(58, 63, 72), Color::White)
             } else {
-                Style::default().fg(Color::DarkGray)
+                (Color::Rgb(40, 44, 52), Color::Gray)
             };
-            if hov && !active {
-                style = style.fg(Color::Gray).add_modifier(Modifier::UNDERLINED);
-            }
-            spans.push(Span::styled(label, style));
-            spans.push(Span::styled(" │ ", Style::default().fg(Color::DarkGray)));
-            x += wl + 3;
+            push_pill(&mut spans, &label, bg, fg);
+            spans.push(Span::raw(" "));
+            x += wl + 1;
         }
-        let label = "new query[S]";
-        let r = Rect { x, y: area.y, width: label.chars().count() as u16, height: 1 };
-        // usize::MAX marks the new-query pseudo-scope for the click handler
+        // the + pill starts a new query (also on S; the cheat-sheet documents it)
+        let label = "+ new";
+        let wl = pill_width(label);
+        let r = Rect { x, y: area.y, width: wl, height: 1 };
         self.scope_rects.push((r, usize::MAX));
         let hov = hit(r, self.hover.0, self.hover.1);
-        spans.push(Span::styled(
-            label,
-            if hov {
-                Style::default().fg(Color::Gray).add_modifier(Modifier::UNDERLINED)
-            } else {
-                Style::default().fg(Color::DarkGray)
-            },
-        ));
+        let (bg, fg) = if hov {
+            (Color::Rgb(58, 63, 72), Color::White)
+        } else {
+            (Color::Rgb(40, 44, 52), Color::DarkGray)
+        };
+        push_pill(&mut spans, label, bg, fg);
         f.render_widget(Paragraph::new(Line::from(spans)), area);
     }
 
@@ -2853,9 +2857,9 @@ impl App {
     fn draw_badges(&mut self, f: &mut Frame, area: Rect) {
         self.footer_badges.clear();
         let badges: [(&str, bool, Action); 3] = [
-            ("card[D]", self.show_detail, Action::Card),
-            ("log[L]", self.show_log, Action::Log),
-            ("keys[?]", self.show_help, Action::Help),
+            ("card", self.show_detail, Action::Card),
+            ("log", self.show_log, Action::Log),
+            ("keys", self.show_help, Action::Help),
         ];
         let total: u16 = badges.iter().map(|(l, _, _)| l.chars().count() as u16 + 3).sum();
         let mut bx = (area.x + area.width).saturating_sub(total);
@@ -2916,10 +2920,14 @@ impl App {
                 Span::raw(self.filter.clone()),
                 Span::styled("▏", Style::default().fg(Color::Cyan)),
             ]),
-            Mode::AdsPrompt { ref input } => Line::from(vec![
+            Mode::AdsPrompt { ref input, limit } => Line::from(vec![
                 Span::styled("ADS query: ", Style::default().fg(Color::Cyan)),
                 Span::raw(input.clone()),
                 Span::styled("▏", Style::default().fg(Color::Cyan)),
+                Span::styled(
+                    format!("   n={limit} ↑↓"),
+                    Style::default().fg(Color::Gray),
+                ),
                 Span::styled(
                     "   ⏎ search · Esc cancel · paste DOI/ADS URL to import",
                     Style::default().fg(Color::DarkGray),
