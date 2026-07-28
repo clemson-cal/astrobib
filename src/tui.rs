@@ -1563,9 +1563,8 @@ impl App {
         let c_year = Style::default().fg(Color::Green).add_modifier(Modifier::DIM);
         let c_author = Style::default().fg(Color::Gray);
         let c_key = Style::default().fg(Color::Cyan).add_modifier(Modifier::DIM);
-        // author column scales with the table; text picks the densest
-        // description that fits
-        let author_w = (area.width / 6).clamp(14, 30);
+        // responsive columns: author scales, Key drops first when tight
+        let (author_w, show_key) = column_layout(area.width);
         let hov_row = self.hovered_table_pos();
         let rows: Vec<Row> = self
             .filtered
@@ -1580,7 +1579,7 @@ impl App {
                 } else {
                     "◯"
                 };
-                let row = Row::new(vec![
+                let mut cells = vec![
                     Cell::from(Span::styled(circle, c_ind)),
                     Cell::from(Span::styled(
                         if has_cached_pdf(e.key()) { "↓" } else { "" },
@@ -1599,8 +1598,11 @@ impl App {
                         e.title().trim_matches(['{', '}']).to_string(),
                         Style::default().add_modifier(Modifier::ITALIC),
                     )),
-                    Cell::from(Span::styled(e.short_key.clone(), c_key)),
-                ]);
+                ];
+                if show_key {
+                    cells.push(Cell::from(Span::styled(e.short_key.clone(), c_key)));
+                }
+                let row = Row::new(cells);
                 if hov_row == Some(pos) {
                     row.style(Style::default().bg(Color::Rgb(38, 42, 50)))
                 } else {
@@ -1610,18 +1612,23 @@ impl App {
             .collect();
 
         // header: sortable columns get a click rect and a ▲/▼ marker
-        let widths: [u16; 7] = [2, 2, 2, 6, author_w, 0, 20];
+        let mut widths: Vec<u16> = vec![2, 2, 2, 6, author_w, 0];
+        if show_key {
+            widths.push(20);
+        }
+        let ncols = widths.len() as u16;
         let (sort_col, asc) = self.sort;
         let mut hx = area.x;
-        let mut header_cells: Vec<Cell> = vec![];
         let title_w = area
             .width
-            .saturating_sub(widths.iter().sum::<u16>() + 7); // 7 col spacers
+            .saturating_sub(widths.iter().sum::<u16>() + ncols);
         let ms_header = if self.lib.manuscript.is_some() { "●" } else { "" };
-        for (ci, base) in ["", "↓", ms_header, "Year", "Author", "Title", "Key"]
-            .iter()
-            .enumerate()
-        {
+        let mut headers: Vec<&str> = vec!["", "↓", ms_header, "Year", "Author", "Title"];
+        if show_key {
+            headers.push("Key");
+        }
+        let mut header_spans: Vec<Span> = vec![];
+        for (ci, base) in headers.iter().enumerate() {
             let cw = if ci == 5 { title_w } else { widths[ci] };
             let col = match ci {
                 1 => Some(SortCol::Pdf),
@@ -1645,40 +1652,48 @@ impl App {
                     style = style.fg(Color::Cyan).add_modifier(Modifier::UNDERLINED);
                 }
             }
-            header_cells.push(Cell::from(Span::styled(label, style)));
+            let pad = (cw as usize).saturating_sub(label.chars().count());
+            header_spans.push(Span::styled(label, style));
+            header_spans.push(Span::raw(" ".repeat(pad + 1)));
             hx += cw + 1;
         }
+        f.render_widget(
+            Paragraph::new(Line::from(header_spans)),
+            Rect { x: area.x, y: area.y, width: area.width, height: 1 },
+        );
+        f.render_widget(
+            Paragraph::new(Span::styled(
+                "─".repeat(area.width as usize),
+                Style::default().fg(Color::DarkGray),
+            )),
+            Rect { x: area.x, y: area.y + 1, width: area.width, height: 1 },
+        );
+        let data_area = Rect {
+            x: area.x,
+            y: area.y + 2,
+            width: area.width,
+            height: area.height.saturating_sub(2),
+        };
 
-        let table = Table::new(
-            rows,
-            [
-                Constraint::Length(2),
-                Constraint::Length(2),
-                Constraint::Length(2),
-                Constraint::Length(6),
-                Constraint::Length(author_w),
-                Constraint::Min(20),
-                Constraint::Length(20),
-            ],
-        )
-        .header(Row::new(header_cells).bottom_margin(1))
+        let mut constraints = vec![
+            Constraint::Length(2),
+            Constraint::Length(2),
+            Constraint::Length(2),
+            Constraint::Length(6),
+            Constraint::Length(author_w),
+            Constraint::Min(20),
+        ];
+        if show_key {
+            constraints.push(Constraint::Length(20));
+        }
+        let table = Table::new(rows, constraints)
         .row_highlight_style(
             Style::default()
                 .bg(Color::DarkGray)
                 .add_modifier(Modifier::BOLD),
         )
         .block(Block::default().borders(Borders::NONE));
-        f.render_stateful_widget(table, area, &mut self.table);
-        // thin rule in the header's bottom margin
-        if area.height > 1 {
-            f.render_widget(
-                Paragraph::new(Span::styled(
-                    "─".repeat(area.width as usize),
-                    Style::default().fg(Color::DarkGray),
-                )),
-                Rect { x: area.x, y: area.y + 1, width: area.width, height: 1 },
-            );
-        }
+        f.render_stateful_widget(table, data_area, &mut self.table);
     }
 
     /// The pub card, emulating the Python DetailPanel's flow: body (title,
@@ -2123,6 +2138,22 @@ fn base64(data: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn column_layout_priorities() {
+        // wide: scaled author, Key visible
+        assert_eq!(super::column_layout(150), (25, true));
+        assert_eq!(super::column_layout(100), (16, true));
+        // tight: Key drops first, author keeps its scaled width
+        let (a, key) = super::column_layout(84);
+        assert!(!key);
+        assert!(a >= 14);
+        // very tight: author sits at its floor, Key still gone
+        assert_eq!(super::column_layout(55), (14, false));
+        // Key never returns below the comfort threshold boundary
+        let (_, key_90) = super::column_layout(90);
+        assert!(key_90);
+    }
+
+    #[test]
     fn fit_authors_candidates() {
         let a3 = "{Zrake}, J. and {Clyburn}, M. and {Fearing}, S.";
         assert_eq!(super::fit_authors(a3, 40), "Zrake, Clyburn, and Fearing");
@@ -2158,6 +2189,28 @@ mod tests {
             assert_eq!(super::base64(input.as_bytes()), want);
         }
     }
+}
+
+/// Responsive column plan for the table: (author width, show Key).
+/// Degradation order: the Key column drops first (it is redundant with
+/// the card footer) as soon as titles would fall below a comfortable
+/// width; then the author column shrinks toward its floor; the title
+/// keeps a hard minimum via its Min constraint.
+fn column_layout(width: u16) -> (u16, bool) {
+    const FIXED: u16 = 2 + 2 + 2 + 6; // gutter, ↓, ●, year
+    const KEY_W: u16 = 20;
+    const TITLE_COMFORT: u16 = 32; // drop Key before squeezing titles below this
+    const TITLE_MIN: u16 = 20; // author shrinks to protect this
+    let scaled = (width / 6).clamp(14, 30);
+    let need_with_key = FIXED + scaled + KEY_W + TITLE_COMFORT + 7;
+    if need_with_key <= width {
+        return (scaled, true);
+    }
+    let mut author = scaled;
+    while FIXED + author + TITLE_MIN + 6 > width && author > 14 {
+        author -= 1;
+    }
+    (author, false)
 }
 
 /// Densest author description that fits `width`. Candidates from most
