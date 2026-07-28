@@ -1962,23 +1962,25 @@ impl App {
     }
 
     /// Centered keyboard cheat-sheet (ctrl+p); any key or click dismisses.
+    /// Entries whose action is currently unavailable render dimmed, the
+    /// old actions panel's behavior (available() is the single policy).
     fn draw_help(&mut self, f: &mut Frame) {
-        let entries: &[(&str, &str)] = &[
-            ("␣", "select / toggle row"),
-            ("j k", "move cursor"),
-            ("g G", "first / last row"),
-            ("m", "manuscript ± (selection)"),
-            ("p", "download PDF"),
-            ("B", "browser download"),
-            ("o", "open PDF"),
-            ("X", "clear PDF / cancel DL"),
-            ("y", "copy…"),
-            ("⌫", "remove…"),
-            ("/", "filter"),
-            ("D", "pub card"),
-            ("L", "event log"),
-            ("?", "this cheat-sheet"),
-            ("q", "quit"),
+        let entries: &[(&str, &str, Option<Action>)] = &[
+            ("␣", "select / toggle row", Some(Action::Select)),
+            ("j k", "move cursor", None),
+            ("g G", "first / last row", None),
+            ("m", "manuscript ± (selection)", Some(Action::Manuscript)),
+            ("p", "download PDF", Some(Action::Download)),
+            ("B", "browser download", Some(Action::BrowserDl)),
+            ("o", "open PDF", Some(Action::OpenPdf)),
+            ("X", "clear PDF / cancel DL", Some(Action::ClearPdf)),
+            ("y", "copy…", Some(Action::Copy)),
+            ("⌫", "remove…", Some(Action::Remove)),
+            ("/", "filter", Some(Action::Filter)),
+            ("D", "pub card", Some(Action::Card)),
+            ("L", "event log", Some(Action::Log)),
+            ("?", "this cheat-sheet", Some(Action::Help)),
+            ("q", "quit", Some(Action::Quit)),
         ];
         let frame = f.area();
         let rows = entries.len().div_ceil(2) as u16;
@@ -1996,14 +1998,20 @@ impl App {
         for r in 0..rows as usize {
             let mut spans: Vec<Span> = vec![];
             for c in 0..2usize {
-                if let Some((key, label)) = entries.get(r + c * rows as usize) {
+                if let Some((key, label, action)) = entries.get(r + c * rows as usize) {
+                    let avail = action.map_or(true, |a| self.available(a));
+                    let (ks, ls) = if avail {
+                        (Style::default().fg(Color::Cyan), Style::default())
+                    } else {
+                        (
+                            Style::default().fg(Color::DarkGray).add_modifier(Modifier::DIM),
+                            Style::default().fg(Color::DarkGray),
+                        )
+                    };
                     let text = format!(" {key:>3}  {label}");
                     let pad = (colw as usize).saturating_sub(text.chars().count());
-                    spans.push(Span::styled(
-                        format!(" {key:>3}  "),
-                        Style::default().fg(Color::Cyan),
-                    ));
-                    spans.push(Span::raw(format!("{label}{}", " ".repeat(pad))));
+                    spans.push(Span::styled(format!(" {key:>3}  "), ks));
+                    spans.push(Span::styled(format!("{label}{}", " ".repeat(pad)), ls));
                 }
             }
             lines.push(Line::from(spans));
