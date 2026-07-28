@@ -1099,10 +1099,6 @@ impl App {
             self.quit = true;
             return;
         }
-        if mods.contains(KeyModifiers::CONTROL) && code == KeyCode::Char('p') {
-            self.show_help = !self.show_help;
-            return;
-        }
         if self.show_help {
             self.show_help = false; // any key dismisses the cheat-sheet
             return;
@@ -1181,6 +1177,7 @@ impl App {
                 KeyCode::Char('X') => self.run_action(Action::ClearPdf),
                 KeyCode::Char('B') => self.run_action(Action::BrowserDl),
                 KeyCode::Char('D') | KeyCode::Char('z') => self.run_action(Action::Card),
+                KeyCode::Char('?') => self.run_action(Action::Help),
                 KeyCode::Char('L') => self.run_action(Action::Log),
                 KeyCode::Char('y') => self.run_action(Action::Copy),
                 KeyCode::Char('Y') => self.do_copy(CopyItem::FullKey),
@@ -1445,7 +1442,7 @@ impl App {
             ("/", "filter"),
             ("D", "pub card"),
             ("L", "event log"),
-            ("^p", "this cheat-sheet"),
+            ("?", "this cheat-sheet"),
             ("q", "quit"),
         ];
         let frame = f.area();
@@ -1939,8 +1936,8 @@ impl App {
         self.footer_badges.clear();
         let badges: [(&str, bool, Action); 3] = [
             ("card[D]", self.show_detail, Action::Card),
-            ("keys[^p]", self.show_help, Action::Help),
             ("log[L]", self.show_log, Action::Log),
+            ("keys[?]", self.show_help, Action::Help),
         ];
         let total: u16 = badges.iter().map(|(l, _, _)| l.chars().count() as u16 + 3).sum();
         let mut bx = (area.x + area.width).saturating_sub(total);
