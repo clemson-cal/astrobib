@@ -1288,7 +1288,7 @@ impl App {
         match self.panel_tab {
             PanelTab::Actions => {
                 let entries: &[(&str, &str, Action)] = &[
-                    ("Spc", if self.select_mode { "sel. done (Esc)" } else { "select" }, Action::Select),
+                    ("␣", if self.select_mode { "sel. done (Esc)" } else { "select" }, Action::Select),
                     ("s", "star ★", Action::Star),
                     ("m", "manuscript ◆", Action::Manuscript),
                     ("p", "download PDF", Action::Download),
@@ -1306,7 +1306,7 @@ impl App {
                         if self.text_select { "mouse on" } else { "select text" },
                         Action::TextSelect,
                     ),
-                    ("Del", "remove…", Action::Remove),
+                    ("⌫", "remove…", Action::Remove),
                     ("/", "filter", Action::Filter),
                     ("D", "pub card", Action::Card),
                     ("q", "quit", Action::Quit),
