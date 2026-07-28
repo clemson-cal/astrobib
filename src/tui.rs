@@ -707,6 +707,44 @@ impl App {
         }
     }
 
+    /// a/A — bulk selection: `a` toggles all *visible* rows (the
+    /// filtered set — so with a filter active it is select-all-in-
+    /// filter; with the global tier hidden it is tier-2-only), `A`
+    /// selects every item in the scope regardless of filter. Selecting
+    /// when everything is already selected deselects (a), mirroring the
+    /// single-row toggle; an emptied selection exits the mode.
+    fn select_all(&mut self, visible_only: bool) {
+        let ids: Vec<String> = match self.scopes.get(self.active_scope) {
+            Some(Scope::Manuscript { .. }) => return, // not a selection target
+            Some(Scope::Ads { articles, .. }) => {
+                articles.iter().map(|a| a.bibcode.clone()).collect()
+            }
+            _ if visible_only => self
+                .filtered
+                .iter()
+                .map(|&i| self.order[i].clone())
+                .collect(),
+            _ => self.order.clone(),
+        };
+        if ids.is_empty() {
+            return;
+        }
+        self.select_mode = true;
+        let all_in = ids.iter().all(|k| self.selected.contains(k));
+        if all_in && visible_only {
+            for k in &ids {
+                self.selected.remove(k);
+            }
+            if self.selected.is_empty() {
+                self.exit_select_mode();
+                return;
+            }
+        } else {
+            self.selected.extend(ids);
+        }
+        self.status = format!("{} selected", self.selected.len());
+    }
+
     /// t — show/hide the global (tier-1) library. Hidden means: global
     /// entries invisible, imports write only the local tier; the rescue
     /// path still protects sole copies by writing to the global tier.
@@ -1763,6 +1801,8 @@ impl App {
                 KeyCode::Char('D') | KeyCode::Char('z') => self.run_action(Action::Card),
                 KeyCode::Char('?') => self.run_action(Action::Help),
                 KeyCode::Char('t') => self.run_action(Action::GlobalTier),
+                KeyCode::Char('a') => self.select_all(true),
+                KeyCode::Char('A') => self.select_all(false),
                 KeyCode::Char('S') => self.open_ads_prompt(),
                 KeyCode::Char('[') => self.cycle_scope(-1),
                 KeyCode::Char(']') => self.cycle_scope(1),
@@ -2047,6 +2087,8 @@ impl App {
     fn draw_help(&mut self, f: &mut Frame) {
         let entries: &[(&str, &str, Option<Action>)] = &[
             ("␣", "select / toggle row", Some(Action::Select)),
+            ("a", "select visible", Some(Action::Select)),
+            ("A", "select all", Some(Action::Select)),
             ("j k", "move cursor", None),
             ("g G", "first / last row", None),
             ("m", "manuscript ± (selection)", Some(Action::Manuscript)),
