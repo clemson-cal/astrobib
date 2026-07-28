@@ -41,6 +41,9 @@ enum Mode {
     },
     /// Confirm modal for removing papers (Delete key).
     Confirm { keys: Vec<String> },
+    /// y pressed — the next key picks what to copy (the Copy panel tab
+    /// shows the menu, which-key style); Esc cancels.
+    Copy,
 }
 
 /// Every user action; the panel lists them all, dimming the unavailable.
@@ -55,9 +58,34 @@ enum Action {
     BrowserDl,
     PickPdf,
     Remove,
+    Copy,
+    TextSelect,
     Filter,
     Card,
     Quit,
+}
+
+/// Tabs of the right-hand control panel; Actions is the classic key
+/// panel, Copy is a clickable which-key menu of clipboard targets.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PanelTab {
+    Actions,
+    Copy,
+}
+
+/// What the copy chord / Copy tab can put on the clipboard. Cite keys
+/// and bibcodes join with ", " under multi-selection (the Python TUI's
+/// convention); URLs, paths, and titles join with newlines.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CopyItem {
+    Key,
+    FullKey,
+    Bibcode,
+    AdsUrl,
+    ArxivUrl,
+    DoiUrl,
+    PdfPath,
+    Title,
 }
 
 /// Pub card buttons; they act on the card's (highlighted) entry.
@@ -93,6 +121,16 @@ struct App {
     show_actions: bool,
     panel_rows: Vec<(u16, Action)>,
     panel_area: Rect,
+    // control panel tabs: Actions (keys) and Copy (clipboard targets)
+    panel_tab: PanelTab,
+    panel_tabs: Vec<(Rect, PanelTab)>,
+    panel_copy_rows: Vec<(u16, CopyItem)>,
+    // panel visibility/tab to restore when the y-chord finishes — the
+    // chord force-shows the Copy tab, which shouldn't stick
+    copy_restore: Option<(bool, PanelTab)>,
+    // v — mouse capture released so the terminal's native drag-select
+    // works; v again re-captures
+    text_select: bool,
     // pub card button and link rects, rebuilt each draw
     card_buttons: Vec<(Rect, CardBtn)>,
     card_links: Vec<(Rect, String)>,
@@ -207,6 +245,11 @@ impl App {
             show_actions: true,
             panel_rows: vec![],
             panel_area: Rect::default(),
+            panel_tab: PanelTab::Actions,
+            panel_tabs: vec![],
+            panel_copy_rows: vec![],
+            copy_restore: None,
+            text_select: false,
             card_buttons: vec![],
             card_links: vec![],
             pdf_status: String::new(),
@@ -248,6 +291,8 @@ impl App {
             }
             Action::PickPdf => single,
             Action::Remove => !keys.is_empty(),
+            Action::Copy => !keys.is_empty(),
+            Action::TextSelect => true,
         }
     }
 
@@ -272,6 +317,8 @@ impl App {
             Action::BrowserDl => self.browser_download(),
             Action::PickPdf => self.open_picker(),
             Action::Remove => self.remove_papers(),
+            Action::Copy => self.enter_copy_mode(),
+            Action::TextSelect => self.toggle_text_select(),
             Action::Filter => self.mode = Mode::Filter,
             Action::Card => self.show_detail = !self.show_detail,
             Action::Quit => self.quit = true,
@@ -757,10 +804,25 @@ impl App {
             self.status = "opened in browser".to_string();
             return;
         }
-        // actions panel rows
+        // control panel: tab headers switch tabs, rows act per tab
         if self.show_actions && hit(self.panel_area, x, y) {
-            if let Some(&(_, action)) = self.panel_rows.iter().find(|(ry, _)| *ry == y) {
-                self.run_action(action);
+            if let Some(&(_, tab)) = self.panel_tabs.iter().find(|(r, _)| hit(*r, x, y)) {
+                self.panel_tab = tab;
+                return;
+            }
+            match self.panel_tab {
+                PanelTab::Actions => {
+                    if let Some(&(_, action)) = self.panel_rows.iter().find(|(ry, _)| *ry == y) {
+                        self.run_action(action);
+                    }
+                }
+                PanelTab::Copy => {
+                    if let Some(&(_, item)) =
+                        self.panel_copy_rows.iter().find(|(ry, _)| *ry == y)
+                    {
+                        self.do_copy(item);
+                    }
+                }
             }
             return;
         }
@@ -791,10 +853,11 @@ impl App {
             return;
         }
         self.table.select(Some(pos));
-        // cmd/option/ctrl+click anywhere on a row enters multi-select and
-        // toggles it (the SGR mouse protocol has no dedicated cmd bit, so
-        // accept whichever modifier the terminal forwards); a plain click
-        // does the same in the ◯/◉ gutter only.
+        // option/ctrl+click anywhere on a row enters multi-select and
+        // toggles it. The SGR mouse protocol carries only shift/alt/ctrl
+        // bits — there is no cmd bit, and macOS terminals keep cmd+click
+        // for themselves (links) — so cmd cannot arrive; SUPER stays in
+        // the mask in case a terminal ever forwards it that way.
         let modified = mods.intersects(
             KeyModifiers::SUPER | KeyModifiers::ALT | KeyModifiers::CONTROL,
         );
@@ -868,6 +931,102 @@ impl App {
         }
     }
 
+    /// y — await a target key; the panel force-shows the Copy tab as a
+    /// which-key menu (restored by exit_copy_mode).
+    fn enter_copy_mode(&mut self) {
+        if self.action_keys().is_empty() {
+            self.status = "nothing to copy".to_string();
+            return;
+        }
+        self.copy_restore = Some((self.show_actions, self.panel_tab));
+        self.show_actions = true;
+        self.panel_tab = PanelTab::Copy;
+        self.mode = Mode::Copy;
+    }
+
+    fn exit_copy_mode(&mut self) {
+        if let Some((show, tab)) = self.copy_restore.take() {
+            self.show_actions = show;
+            self.panel_tab = tab;
+        }
+        if matches!(self.mode, Mode::Copy) {
+            self.mode = Mode::Normal;
+        }
+    }
+
+    /// The clipboard text an item yields over the current targets, or
+    /// None when no target has the field (also the panel's dimming test).
+    fn copy_value(&self, item: CopyItem) -> Option<String> {
+        let mut vals: Vec<String> = vec![];
+        for k in self.action_keys() {
+            let Some(e) = self.lib.get(&k) else { continue };
+            let v = match item {
+                CopyItem::Key => Some(if e.short_key.is_empty() {
+                    e.key().to_string()
+                } else {
+                    e.short_key.clone()
+                }),
+                CopyItem::FullKey => Some(e.key().to_string()),
+                CopyItem::Bibcode => e.bibcode().map(str::to_string),
+                CopyItem::AdsUrl => (!e.adsurl().is_empty()).then(|| e.adsurl().to_string()),
+                CopyItem::ArxivUrl => (!e.eprint().is_empty())
+                    .then(|| format!("https://arxiv.org/abs/{}", e.eprint())),
+                CopyItem::DoiUrl => {
+                    (!e.doi().is_empty()).then(|| format!("https://doi.org/{}", e.doi()))
+                }
+                CopyItem::PdfPath => pdf::is_cached(&k)
+                    .then(|| pdf::cache_path(&k).to_string_lossy().into_owned()),
+                CopyItem::Title => {
+                    let t = e.title().trim_matches(['{', '}']).to_string();
+                    (!t.is_empty()).then_some(t)
+                }
+            };
+            if let Some(v) = v {
+                vals.push(v);
+            }
+        }
+        if vals.is_empty() {
+            return None;
+        }
+        let sep = match item {
+            CopyItem::Key | CopyItem::FullKey | CopyItem::Bibcode => ", ",
+            _ => "\n",
+        };
+        Some(vals.join(sep))
+    }
+
+    fn do_copy(&mut self, item: CopyItem) {
+        self.exit_copy_mode();
+        let Some(text) = self.copy_value(item) else {
+            self.status = "nothing to copy".to_string();
+            return;
+        };
+        if copy_to_clipboard(&text) {
+            let first = text.lines().next().unwrap_or("");
+            let mut shown: String = first.chars().take(60).collect();
+            if shown.len() < text.len() {
+                shown.push('…');
+            }
+            self.status = format!("Copied: {shown}");
+        } else {
+            self.status =
+                "clipboard copy failed — terminal may not support OSC 52".to_string();
+        }
+    }
+
+    /// v — release mouse capture so the terminal's native drag-select
+    /// (and cmd/ctrl+C) works; v again re-captures. run()'s teardown
+    /// tolerates the already-released state on quit.
+    fn toggle_text_select(&mut self) {
+        self.text_select = !self.text_select;
+        if self.text_select {
+            let _ = execute!(std::io::stdout(), DisableMouseCapture);
+        } else {
+            let _ = execute!(std::io::stdout(), EnableMouseCapture);
+            self.status = format!("{} papers", self.order.len());
+        }
+    }
+
     fn on_key(&mut self, code: KeyCode, mods: KeyModifiers) {
         if mods.contains(KeyModifiers::CONTROL) && code == KeyCode::Char('c') {
             self.quit = true;
@@ -908,6 +1067,26 @@ impl App {
                 }
                 _ => {}
             },
+            Mode::Copy => {
+                let item = match code {
+                    KeyCode::Char('y') => Some(CopyItem::Key),
+                    KeyCode::Char('Y') => Some(CopyItem::FullKey),
+                    KeyCode::Char('b') => Some(CopyItem::Bibcode),
+                    KeyCode::Char('a') => Some(CopyItem::AdsUrl),
+                    KeyCode::Char('x') => Some(CopyItem::ArxivUrl),
+                    KeyCode::Char('d') => Some(CopyItem::DoiUrl),
+                    KeyCode::Char('p') => Some(CopyItem::PdfPath),
+                    KeyCode::Char('t') => Some(CopyItem::Title),
+                    _ => None,
+                };
+                match item {
+                    Some(item) => self.do_copy(item),
+                    None => {
+                        self.exit_copy_mode();
+                        self.status = "copy cancelled".to_string();
+                    }
+                }
+            }
             Mode::Confirm { keys } => match code {
                 KeyCode::Enter | KeyCode::Char('y') => {
                     let keys = keys.clone();
@@ -931,6 +1110,9 @@ impl App {
                 KeyCode::Char('X') => self.run_action(Action::ClearPdf),
                 KeyCode::Char('B') => self.run_action(Action::BrowserDl),
                 KeyCode::Char('D') | KeyCode::Char('z') => self.run_action(Action::Card),
+                KeyCode::Char('y') => self.run_action(Action::Copy),
+                KeyCode::Char('Y') => self.do_copy(CopyItem::FullKey),
+                KeyCode::Char('v') => self.run_action(Action::TextSelect),
                 KeyCode::Char(' ') => self.run_action(Action::Select),
                 KeyCode::Esc => {
                     if self.select_mode {
@@ -976,6 +1158,8 @@ impl App {
     fn draw(&mut self, f: &mut Frame) {
         self.card_buttons.clear();
         self.panel_rows.clear();
+        self.panel_copy_rows.clear();
+        self.panel_tabs.clear();
         let [main, status] =
             Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).areas(f.area());
         let mut constraints = vec![Constraint::Min(40)];
@@ -1067,54 +1251,110 @@ impl App {
         f.render_widget(p, area);
     }
 
-    /// The ctrl+p actions panel: every action, with key, label, and click
-    /// target; unavailable actions render dimmed (the Python key panel's
-    /// behavior).
+    /// The ctrl+p control panel, tabbed: Actions lists every action with
+    /// key, label, and click target, unavailable ones dimmed (the Python
+    /// key panel's behavior); Copy lists the clipboard targets of the
+    /// y-chord the same way. Tab headers are clickable.
     fn draw_panel(&mut self, f: &mut Frame, area: Rect) {
         self.panel_area = area;
-        let entries: &[(&str, &str, Action)] = &[
-            ("Spc", if self.select_mode { "sel. done (Esc)" } else { "select" }, Action::Select),
-            ("s", "star ★", Action::Star),
-            ("m", "manuscript ◆", Action::Manuscript),
-            ("p", "download PDF", Action::Download),
-            ("B", "browser DL", Action::BrowserDl),
-            ("", "pick PDF…", Action::PickPdf),
-            ("o", "open PDF", Action::OpenPdf),
-            (
-                "X",
-                if self.poll_cancel.is_some() { "cancel DL" } else { "clear PDF" },
-                Action::ClearPdf,
-            ),
-            ("Del", "remove…", Action::Remove),
-            ("/", "filter", Action::Filter),
-            ("D", "pub card", Action::Card),
-            ("q", "quit", Action::Quit),
-        ];
-        let mut lines: Vec<Line> = vec![Line::from(Span::styled(
-            "Actions",
-            Style::default().add_modifier(Modifier::BOLD),
-        ))];
-        for (i, (key, label, action)) in entries.iter().enumerate() {
-            let y = area.y + 1 + i as u16;
-            let avail = self.available(*action);
-            if avail && y < area.y + area.height {
-                self.panel_rows.push((y, *action));
-            }
-            let (key_style, label_style) = if avail {
-                (
-                    Style::default().fg(Color::Cyan),
-                    Style::default(),
-                )
+        let mut header: Vec<Span> = vec![];
+        let mut tx = area.x + 2; // left border + padding
+        for (label, tab) in [("Actions", PanelTab::Actions), ("Copy", PanelTab::Copy)] {
+            let wl = label.chars().count() as u16;
+            self.panel_tabs
+                .push((Rect { x: tx, y: area.y, width: wl, height: 1 }, tab));
+            header.push(Span::styled(
+                label.to_string(),
+                if self.panel_tab == tab {
+                    Style::default().add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(Color::DarkGray)
+                },
+            ));
+            header.push(Span::raw("  "));
+            tx += wl + 2;
+        }
+        let mut lines: Vec<Line> = vec![Line::from(header)];
+        let row_styles = |avail: bool| {
+            if avail {
+                (Style::default().fg(Color::Cyan), Style::default())
             } else {
                 (
                     Style::default().fg(Color::DarkGray),
                     Style::default().fg(Color::DarkGray),
                 )
-            };
-            lines.push(Line::from(vec![
-                Span::styled(format!("{key:>3} "), key_style),
-                Span::styled((*label).to_string(), label_style),
-            ]));
+            }
+        };
+        match self.panel_tab {
+            PanelTab::Actions => {
+                let entries: &[(&str, &str, Action)] = &[
+                    ("Spc", if self.select_mode { "sel. done (Esc)" } else { "select" }, Action::Select),
+                    ("s", "star ★", Action::Star),
+                    ("m", "manuscript ◆", Action::Manuscript),
+                    ("p", "download PDF", Action::Download),
+                    ("B", "browser DL", Action::BrowserDl),
+                    ("", "pick PDF…", Action::PickPdf),
+                    ("o", "open PDF", Action::OpenPdf),
+                    (
+                        "X",
+                        if self.poll_cancel.is_some() { "cancel DL" } else { "clear PDF" },
+                        Action::ClearPdf,
+                    ),
+                    ("y", "copy…", Action::Copy),
+                    (
+                        "v",
+                        if self.text_select { "mouse on" } else { "select text" },
+                        Action::TextSelect,
+                    ),
+                    ("Del", "remove…", Action::Remove),
+                    ("/", "filter", Action::Filter),
+                    ("D", "pub card", Action::Card),
+                    ("q", "quit", Action::Quit),
+                ];
+                for (i, (key, label, action)) in entries.iter().enumerate() {
+                    let y = area.y + 1 + i as u16;
+                    let avail = self.available(*action);
+                    if avail && y < area.y + area.height {
+                        self.panel_rows.push((y, *action));
+                    }
+                    let (key_style, label_style) = row_styles(avail);
+                    lines.push(Line::from(vec![
+                        Span::styled(format!("{key:>3} "), key_style),
+                        Span::styled((*label).to_string(), label_style),
+                    ]));
+                }
+            }
+            PanelTab::Copy => {
+                let entries: &[(&str, &str, CopyItem)] = &[
+                    ("y", "cite key", CopyItem::Key),
+                    ("Y", "full key", CopyItem::FullKey),
+                    ("b", "bibcode", CopyItem::Bibcode),
+                    ("a", "ADS URL", CopyItem::AdsUrl),
+                    ("x", "arXiv URL", CopyItem::ArxivUrl),
+                    ("d", "DOI URL", CopyItem::DoiUrl),
+                    ("p", "PDF path", CopyItem::PdfPath),
+                    ("t", "title", CopyItem::Title),
+                ];
+                for (i, (key, label, item)) in entries.iter().enumerate() {
+                    let y = area.y + 1 + i as u16;
+                    let avail = self.copy_value(*item).is_some();
+                    if avail && y < area.y + area.height {
+                        self.panel_copy_rows.push((y, *item));
+                    }
+                    let (key_style, label_style) = row_styles(avail);
+                    lines.push(Line::from(vec![
+                        Span::styled(format!("{key:>3} "), key_style),
+                        Span::styled((*label).to_string(), label_style),
+                    ]));
+                }
+                if matches!(self.mode, Mode::Copy) {
+                    lines.push(Line::default());
+                    lines.push(Line::from(Span::styled(
+                        "Esc cancel",
+                        Style::default().fg(Color::DarkGray),
+                    )));
+                }
+            }
         }
         let p = Paragraph::new(Text::from(lines)).block(
             Block::default()
@@ -1400,6 +1640,20 @@ impl App {
                 Span::raw(self.filter.clone()),
                 Span::styled("▏", Style::default().fg(Color::Cyan)),
             ]),
+            Mode::Copy => Line::from(vec![
+                Span::styled("copy: ", Style::default().fg(Color::Cyan)),
+                Span::styled(
+                    "y key · Y full key · b bibcode · a ADS · x arXiv · d DOI · p PDF path · t title · Esc cancel",
+                    Style::default().fg(Color::DarkGray),
+                ),
+            ]),
+            Mode::Normal | Mode::Pick { .. } | Mode::Confirm { .. } if self.text_select => Line::from(vec![
+                Span::styled("✂ text selection", Style::default().fg(Color::Yellow)),
+                Span::styled(
+                    "  ·  drag to select, copy in the terminal · v restores the mouse",
+                    Style::default().fg(Color::DarkGray),
+                ),
+            ]),
             Mode::Normal | Mode::Pick { .. } | Mode::Confirm { .. } if self.select_mode => Line::from(vec![
                 Span::styled(
                     format!("◉ {} selected", self.selected.len()),
@@ -1437,6 +1691,43 @@ fn debug_layout(line: &str) {
             let _ = writeln!(f, "{line}");
         }
     }
+}
+
+/// System clipboard: pbcopy on macOS (reliable in any terminal), else
+/// the OSC 52 escape (terminal-dependent, but works over SSH) — the
+/// Python TUI's _copy_text strategy.
+fn copy_to_clipboard(text: &str) -> bool {
+    use std::io::Write;
+    if cfg!(target_os = "macos") {
+        use std::process::{Command, Stdio};
+        if let Ok(mut child) = Command::new("pbcopy").stdin(Stdio::piped()).spawn() {
+            let wrote = child
+                .stdin
+                .take()
+                .map(|mut s| s.write_all(text.as_bytes()).is_ok())
+                .unwrap_or(false);
+            if wrote && child.wait().is_ok_and(|s| s.success()) {
+                return true;
+            }
+        }
+    }
+    let mut out = std::io::stdout();
+    write!(out, "\x1b]52;c;{}\x07", base64(text.as_bytes())).is_ok() && out.flush().is_ok()
+}
+
+/// Minimal RFC 4648 base64 for the OSC 52 payload (not worth a crate).
+fn base64(data: &[u8]) -> String {
+    const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
+    for chunk in data.chunks(3) {
+        let b = [chunk[0], *chunk.get(1).unwrap_or(&0), *chunk.get(2).unwrap_or(&0)];
+        let n = (b[0] as u32) << 16 | (b[1] as u32) << 8 | b[2] as u32;
+        out.push(T[(n >> 18) as usize & 63] as char);
+        out.push(T[(n >> 12) as usize & 63] as char);
+        out.push(if chunk.len() > 1 { T[(n >> 6) as usize & 63] as char } else { '=' });
+        out.push(if chunk.len() > 2 { T[n as usize & 63] as char } else { '=' });
+    }
+    out
 }
 
 /// "Zrake, J. and MacFadyen, A." → "Zrake, MacFadyen" (surnames, truncated).
