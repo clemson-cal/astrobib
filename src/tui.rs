@@ -2049,7 +2049,7 @@ impl App {
         let detail_area = self.show_detail.then(|| *it.next().unwrap());
 
         let (strip_area, table_area) = {
-            let [s, t] = Layout::vertical([Constraint::Length(2), Constraint::Min(1)])
+            let [s, t] = Layout::vertical([Constraint::Length(3), Constraint::Min(1)])
                 .areas(table_area);
             (s, t)
         };
@@ -2335,39 +2335,21 @@ impl App {
     /// One-line scope strip: Library │ query │ query …, clickable, the
     /// active scope bold cyan; [ and ] cycle, ctrl+w closes, r refreshes.
     fn draw_scope_strip(&mut self, f: &mut Frame, area: Rect) {
-        // pills read ~1.5 rows tall: a half-block lip spans the FULL pill
-        // width with quadrant corners (▗▄▄▖), so the rounded top meets the
-        // powerline caps below as one capsule
+        // font-height capsules, separated from the table by a blank row
+        // above and below (glyph-built "taller" capsules read as
+        // corruption across fonts)
         self.scope_rects.clear();
-        let lip_y = area.y;
         let text_y = area.y + 1;
-        let ascii = ascii_chips();
-        let mut lips: Vec<Span> = vec![];
         let mut spans: Vec<Span> = vec![];
         let mut x = area.x;
         let scope_labels: Vec<String> =
             self.scopes.iter().map(|s| s.label().to_string()).collect();
         let push_one = |label: &str, bg: Color, fg: Color, idx: usize, rounded: bool,
                         x: &mut u16,
-                        lips: &mut Vec<Span>,
                         spans: &mut Vec<Span>,
                         rects: &mut Vec<(Rect, usize)>| {
             let wl = pill_width(label);
-            rects.push((Rect { x: *x, y: lip_y, width: wl, height: 2 }, idx));
-            if ascii {
-                lips.push(Span::raw(" ".repeat(wl as usize + 1)));
-            } else if rounded {
-                let mid = "▄".repeat(wl.saturating_sub(2) as usize);
-                lips.push(Span::styled(format!("▗{mid}▖"), Style::default().fg(bg)));
-                lips.push(Span::raw(" "));
-            } else {
-                // square variant (the + new affordance): sharp corners
-                lips.push(Span::styled(
-                    "▄".repeat(wl as usize),
-                    Style::default().fg(bg),
-                ));
-                lips.push(Span::raw(" "));
-            }
+            rects.push((Rect { x: *x, y: text_y, width: wl, height: 1 }, idx));
             if rounded {
                 push_pill(spans, label, bg, fg);
             } else {
@@ -2381,7 +2363,7 @@ impl App {
         };
         for (i, label) in scope_labels.iter().enumerate() {
             let active = i == self.active_scope;
-            let probe = Rect { x, y: lip_y, width: pill_width(label), height: 2 };
+            let probe = Rect { x, y: text_y, width: pill_width(label), height: 1 };
             let hov = hit(probe, self.hover.0, self.hover.1);
             let (bg, fg) = if active {
                 (Color::Cyan, Color::Black)
@@ -2390,21 +2372,17 @@ impl App {
             } else {
                 (Color::Rgb(40, 44, 52), Color::Gray)
             };
-            push_one(label, bg, fg, i, true, &mut x, &mut lips, &mut spans, &mut self.scope_rects);
+            push_one(label, bg, fg, i, true, &mut x, &mut spans, &mut self.scope_rects);
         }
         let label = "+ new";
-        let probe = Rect { x, y: lip_y, width: pill_width(label), height: 2 };
+        let probe = Rect { x, y: text_y, width: pill_width(label), height: 1 };
         let hov = hit(probe, self.hover.0, self.hover.1);
         let (bg, fg) = if hov {
             (Color::Rgb(58, 63, 72), Color::White)
         } else {
             (Color::Rgb(40, 44, 52), Color::DarkGray)
         };
-        push_one(label, bg, fg, usize::MAX, false, &mut x, &mut lips, &mut spans, &mut self.scope_rects);
-        f.render_widget(
-            Paragraph::new(Line::from(lips)),
-            Rect { x: area.x, y: lip_y, width: area.width, height: 1 },
-        );
+        push_one(label, bg, fg, usize::MAX, false, &mut x, &mut spans, &mut self.scope_rects);
         f.render_widget(
             Paragraph::new(Line::from(spans)),
             Rect { x: area.x, y: text_y, width: area.width, height: 1 },
