@@ -425,6 +425,48 @@ impl MergedLibrary {
     }
 }
 
+/// How a cite string from a manuscript resolves — port of
+/// resolve_citation's states.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum CiteState {
+    /// resolves to a manuscript-db member
+    Ok,
+    /// resolves, but only in the personal library
+    Library,
+    /// prefix of several keys
+    Ambiguous,
+    /// no match anywhere
+    Missing,
+}
+
+impl MergedLibrary {
+    /// Classify a cite string: full key, unambiguous prefix, or raw
+    /// bibcode — port of resolve_citation.
+    pub fn resolve_citation(&self, cited: &str) -> (CiteState, Option<&Entry>) {
+        let entry = match self.get(cited) {
+            Some(e) => Some(e),
+            None => {
+                let matches = self.possible_matches(cited);
+                match matches.len() {
+                    1 => Some(matches[0]),
+                    0 => self.get_by_bibcode(cited),
+                    _ => return (CiteState::Ambiguous, None),
+                }
+            }
+        };
+        match entry {
+            None => (CiteState::Missing, None),
+            Some(e) => {
+                if self.in_manuscript(e.key()) {
+                    (CiteState::Ok, Some(e))
+                } else {
+                    (CiteState::Library, Some(e))
+                }
+            }
+        }
+    }
+}
+
 /// Walk up from cwd to find a manuscript database: a directory holding
 /// both bib/ and .git, excluding the active library root — port of
 /// state.find_manuscript_db.

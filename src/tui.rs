@@ -108,16 +108,28 @@ enum CopyItem {
 /// decides rows and columns.
 enum Scope {
     Library,
+    /// Cited keys from the manuscript's .tex files, classified.
+    Manuscript { rows: Vec<MsRow> },
     Ads {
         tab: crate::tabs::Tab,
         articles: Vec<crate::ads::Article>,
     },
 }
 
+/// One manuscript-view row: a cited string (or an uncited db member).
+struct MsRow {
+    cited: String,
+    state: crate::library::CiteState,
+    uncited: bool,
+    key: Option<String>,
+    title: String,
+}
+
 impl Scope {
     fn label(&self) -> &str {
         match self {
             Scope::Library => "Library",
+            Scope::Manuscript { .. } => "Manuscript",
             Scope::Ads { tab, .. } => &tab.label,
         }
     }
@@ -359,8 +371,11 @@ impl App {
     }
 
     fn close_scope(&mut self) {
-        if self.active_scope == 0 {
-            return; // the library scope is permanent
+        if matches!(
+            self.scopes.get(self.active_scope),
+            None | Some(Scope::Library) | Some(Scope::Manuscript { .. })
+        ) {
+            return; // library and manuscript scopes are permanent
         }
         self.scopes.remove(self.active_scope);
         let idx = self.active_scope.saturating_sub(1);
@@ -378,11 +393,18 @@ impl App {
             );
             return;
         }
-        let input = if self.filter.is_empty() {
+        let mut input = if self.filter.is_empty() {
             String::new()
         } else {
             query::to_ads_query(&self.filter)
         };
+        if let Some(Scope::Manuscript { rows }) = self.scopes.get(self.active_scope) {
+            if let Some(r) = self.table.selected().and_then(|p| rows.get(p)) {
+                if matches!(r.state, crate::library::CiteState::Missing) {
+                    input = r.cited.clone();
+                }
+            }
+        }
         self.mode = Mode::AdsPrompt { input };
     }
 
@@ -418,6 +440,57 @@ impl App {
             let result = crate::ads::search(&query, limit).map_err(|e| e.to_string());
             let _ = tx.send(AdsMsg::Done { tab, refresh_of, result });
         });
+    }
+
+    /// Scan .tex sources and classify every cited key; append uncited
+    /// manuscript-db members — the Python ManuscriptView's row set.
+    fn ms_rows(&self) -> Vec<MsRow> {
+        use crate::library::CiteState;
+        let Some(root) = self.ms_root() else { return vec![] };
+        let files = crate::export::manuscript_tex_files(&root);
+        let cited = crate::export::scan_tex_files(&files);
+        let mut covered: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut rows: Vec<MsRow> = vec![];
+        for c in cited {
+            let (state, entry) = self.lib.resolve_citation(&c);
+            if let Some(e) = entry {
+                covered.insert(e.key().to_string());
+            }
+            rows.push(MsRow {
+                cited: c,
+                state,
+                uncited: false,
+                key: entry.map(|e| e.key().to_string()),
+                title: entry
+                    .map(|e| e.title().trim_matches(['{', '}']).to_string())
+                    .unwrap_or_default(),
+            });
+        }
+        if let Some(ms) = &self.lib.manuscript {
+            for e in ms.entries() {
+                if !covered.contains(e.key()) {
+                    rows.push(MsRow {
+                        cited: e.short_key.clone(),
+                        state: CiteState::Ok,
+                        uncited: true,
+                        key: Some(e.key().to_string()),
+                        title: e.title().trim_matches(['{', '}']).to_string(),
+                    });
+                }
+            }
+        }
+        rows
+    }
+
+    fn rescan_manuscript(&mut self) {
+        if self.lib.manuscript.is_none() {
+            return;
+        }
+        let rows = self.ms_rows();
+        match self.scopes.get_mut(1) {
+            Some(s @ Scope::Manuscript { .. }) => *s = Scope::Manuscript { rows },
+            _ => self.scopes.insert(1, Scope::Manuscript { rows }),
+        }
     }
 
     fn ms_root(&self) -> Option<std::path::PathBuf> {
@@ -491,8 +564,15 @@ impl App {
     }
 
     fn refresh_scope(&mut self) {
-        if let Some(Scope::Ads { tab, .. }) = self.scopes.get(self.active_scope) {
-            self.run_ads_query_limit(tab.query.clone(), Some(self.active_scope), tab.limit);
+        match self.scopes.get(self.active_scope) {
+            Some(Scope::Ads { tab, .. }) => {
+                self.run_ads_query_limit(tab.query.clone(), Some(self.active_scope), tab.limit)
+            }
+            Some(Scope::Manuscript { .. }) => {
+                self.rescan_manuscript();
+                self.note(MsgCat::Info, "manuscript rescanned".to_string());
+            }
+            _ => {}
         }
     }
 
@@ -502,31 +582,58 @@ impl App {
         let Some(Scope::Ads { articles, .. }) = self.scopes.get(self.active_scope) else {
             return;
         };
-        let Some(a) = self.table.selected().and_then(|p| articles.get(p)) else {
-            return;
+        // selection imports in bulk; otherwise the highlighted row
+        let bibcodes: Vec<String> = if self.select_mode && !self.selected.is_empty() {
+            articles
+                .iter()
+                .filter(|a| self.selected.contains(&a.bibcode))
+                .filter(|a| self.lib.get_by_bibcode(&a.bibcode).is_none())
+                .map(|a| a.bibcode.clone())
+                .collect()
+        } else {
+            match self.table.selected().and_then(|p| articles.get(p)) {
+                Some(a) if self.lib.get_by_bibcode(&a.bibcode).is_none() => {
+                    vec![a.bibcode.clone()]
+                }
+                Some(a) => {
+                    let bc = a.bibcode.clone();
+                    self.note(MsgCat::Warn, format!("{bc} already in library"));
+                    return;
+                }
+                None => return,
+            }
         };
-        if self.lib.get_by_bibcode(&a.bibcode).is_some() {
-            self.note(MsgCat::Warn, format!("{} already in library", a.bibcode));
+        if bibcodes.is_empty() {
+            self.note(MsgCat::Warn, "nothing to import".to_string());
             return;
         }
-        self.import_bibcode(a.bibcode.clone());
+        if self.select_mode {
+            self.exit_select_mode();
+        }
+        self.import_bibcodes(bibcodes);
     }
 
     fn import_bibcode(&mut self, bibcode: String) {
+        self.import_bibcodes(vec![bibcode]);
+    }
+
+    fn import_bibcodes(&mut self, bibcodes: Vec<String>) {
         if self.ads_rx.is_some() {
             self.note(MsgCat::Warn, "an ADS request is already running".to_string());
             return;
         }
         let (tx, rx) = std::sync::mpsc::channel();
         self.ads_rx = Some(rx);
-        self.note(MsgCat::Info, format!("Importing {bibcode}…"));
+        self.note(MsgCat::Info, format!("Importing {} paper(s)…", bibcodes.len()));
         std::thread::spawn(move || {
-            let result = match crate::ads::fetch_bibtex(&bibcode) {
-                Ok(Some(data)) => Ok(data),
-                Ok(None) => Err("no BibTeX returned".to_string()),
-                Err(e) => Err(e.to_string()),
-            };
-            let _ = tx.send(AdsMsg::Imported { bibcode, result });
+            for bibcode in bibcodes {
+                let result = match crate::ads::fetch_bibtex(&bibcode) {
+                    Ok(Some(data)) => Ok(data),
+                    Ok(None) => Err("no BibTeX returned".to_string()),
+                    Err(e) => Err(e.to_string()),
+                };
+                let _ = tx.send(AdsMsg::Imported { bibcode, result });
+            }
         });
     }
 
@@ -634,8 +741,8 @@ impl App {
         }
         match a {
             Action::Select => {
-                if self.active_scope != 0 {
-                    return; // selection lives in the Library scope
+                if matches!(self.scopes.get(self.active_scope), Some(Scope::Manuscript { .. })) {
+                    return; // manuscript rows aren't a selection target
                 }
                 self.select_mode = true;
                 if let Some(pos) = self.table.selected() {
@@ -680,6 +787,7 @@ impl App {
 
     fn run(mut self, terminal: &mut ratatui::DefaultTerminal) -> anyhow::Result<()> {
         let t0 = std::time::Instant::now();
+        self.rescan_manuscript();
         self.restore_tabs();
         // Hold the first paint until the pty size settles. Some terminals
         // (Warp) resize the pty in reaction to alt-screen entry — often
@@ -773,21 +881,32 @@ impl App {
     /// that row in the card (full-row hover proved too twitchy); otherwise
     /// the cursor row.
     fn card_key(&self) -> Option<&str> {
-        let a = self.table_area;
-        let (_, show_key) = column_layout(a.width);
-        let show_key = show_key || self.show_detail;
-        let in_key_col = show_key && self.hover.0 >= a.x + a.width.saturating_sub(20);
-        if in_key_col {
-            if let Some(pos) = self.hovered_table_pos() {
-                return self.filtered.get(pos).map(|&i| self.order[i].as_str());
+        if self.active_scope == 0 {
+            let a = self.table_area;
+            let (_, show_key) = column_layout(a.width);
+            let show_key = show_key || self.show_detail;
+            let in_key_col = show_key && self.hover.0 >= a.x + a.width.saturating_sub(20);
+            if in_key_col {
+                if let Some(pos) = self.hovered_table_pos() {
+                    return self.filtered.get(pos).map(|&i| self.order[i].as_str());
+                }
             }
         }
         self.selected_key()
     }
 
     fn selected_key(&self) -> Option<&str> {
+        // the manuscript scope resolves to library entries, so entry
+        // actions apply there; ADS rows don't resolve until imported
+        if let Some(Scope::Manuscript { rows }) = self.scopes.get(self.active_scope) {
+            return self
+                .table
+                .selected()
+                .and_then(|p| rows.get(p))
+                .and_then(|r| r.key.as_deref());
+        }
         if self.active_scope != 0 {
-            return None; // library-entry actions don't apply to ADS rows
+            return None;
         }
         let pos = self.table.selected()?;
         let idx = *self.filtered.get(pos)?;
@@ -824,6 +943,7 @@ impl App {
     fn row_count(&self) -> usize {
         match self.scopes.get(self.active_scope) {
             Some(Scope::Ads { articles, .. }) => articles.len(),
+            Some(Scope::Manuscript { rows }) => rows.len(),
             _ => self.filtered.len(),
         }
     }
@@ -841,10 +961,18 @@ impl App {
     /// Toggle selection membership of the row at a filtered position.
     /// A selection emptied by toggling exits selection mode, same as Esc.
     fn toggle_row_selected(&mut self, pos: usize) {
-        let Some(&idx) = self.filtered.get(pos) else {
-            return;
+        let key = match self.scopes.get(self.active_scope) {
+            Some(Scope::Ads { articles, .. }) => {
+                let Some(a) = articles.get(pos) else { return };
+                a.bibcode.clone()
+            }
+            _ => {
+                let Some(&idx) = self.filtered.get(pos) else {
+                    return;
+                };
+                self.order[idx].clone()
+            }
         };
-        let key = self.order[idx].clone();
         if !self.selected.remove(&key) {
             self.selected.insert(key);
         }
@@ -861,8 +989,15 @@ impl App {
         self.status = format!("{} papers", self.order.len());
     }
 
-    /// Rebuild the display order (entries changed or sort changed).
+    /// Rebuild the display order (entries changed or sort changed),
+    /// and refresh the manuscript classification when present.
     fn rebuild_order(&mut self) {
+        if matches!(self.scopes.get(1), Some(Scope::Manuscript { .. })) {
+            let rows = self.ms_rows();
+            if let Some(s) = self.scopes.get_mut(1) {
+                *s = Scope::Manuscript { rows };
+            }
+        }
         self.order = self.lib.entries().iter().map(|e| e.key().to_string()).collect();
         let lib = &self.lib;
         let (col, asc) = self.sort;
@@ -1309,7 +1444,11 @@ impl App {
         let modified = mods.intersects(
             KeyModifiers::SUPER | KeyModifiers::ALT | KeyModifiers::CONTROL,
         );
-        if (modified || x < a.x + 2) && self.active_scope == 0 {
+        let selectable = !matches!(
+            self.scopes.get(self.active_scope),
+            Some(Scope::Manuscript { .. })
+        );
+        if (modified || x < a.x + 2) && selectable {
             self.select_mode = true;
             self.toggle_row_selected(pos);
         }
@@ -1922,6 +2061,96 @@ impl App {
         use ratatui::widgets::Cell;
         self.table_area = area;
         self.sort_headers.clear();
+        if let Some(Scope::Manuscript { rows }) = self.scopes.get(self.active_scope) {
+            // manuscript view: cited string, state, resolved title
+            use crate::library::CiteState;
+            let cursor = self.table.selected();
+            let hov_row = self.hovered_table_pos();
+            let trows: Vec<Row> = rows
+                .iter()
+                .enumerate()
+                .map(|(pos, r)| {
+                    let lit = hov_row == Some(pos);
+                    let (icon, word, style) = match (r.uncited, r.state) {
+                        (true, _) => ("·", "uncited", Style::default().fg(Color::DarkGray)),
+                        (_, CiteState::Ok) => ("●", "ok", Style::default().fg(Color::Green)),
+                        (_, CiteState::Library) => {
+                            ("○", "library", Style::default().fg(Color::Yellow))
+                        }
+                        (_, CiteState::Ambiguous) => {
+                            ("?", "ambiguous", Style::default().fg(Color::Magenta))
+                        }
+                        (_, CiteState::Missing) => ("✗", "missing", Style::default().fg(Color::Red)),
+                    };
+                    let cite_style = if lit {
+                        Style::default().fg(Color::White)
+                    } else {
+                        Style::default().fg(Color::Cyan)
+                    };
+                    let title_style = if lit {
+                        Style::default().fg(Color::White).add_modifier(Modifier::ITALIC)
+                    } else {
+                        Style::default().add_modifier(Modifier::ITALIC)
+                    };
+                    let row = Row::new(vec![
+                        Cell::from(Span::styled(
+                            if cursor == Some(pos) { "◉" } else { "" },
+                            Style::default().fg(Color::Cyan),
+                        )),
+                        Cell::from(Span::styled(icon, style)),
+                        Cell::from(Span::styled(r.cited.clone(), cite_style)),
+                        Cell::from(Span::styled(word, style)),
+                        Cell::from(Span::styled(r.title.clone(), title_style)),
+                    ]);
+                    if cursor == Some(pos) {
+                        row.style(Style::default().bg(Color::Rgb(34, 40, 52)))
+                    } else {
+                        row
+                    }
+                })
+                .collect();
+            let header: Vec<Span> = ["", "", "Cited", "State", "Title"]
+                .iter()
+                .zip([2u16, 2, 26, 10, 0])
+                .flat_map(|(l, w)| {
+                    let pad = (w as usize).saturating_sub(l.chars().count());
+                    [
+                        Span::styled(*l, Style::default().add_modifier(Modifier::BOLD)),
+                        Span::raw(" ".repeat(pad + 1)),
+                    ]
+                })
+                .collect();
+            f.render_widget(
+                Paragraph::new(Line::from(header)),
+                Rect { x: area.x, y: area.y, width: area.width, height: 1 },
+            );
+            f.render_widget(
+                Paragraph::new(Span::styled(
+                    "─".repeat(area.width as usize),
+                    Style::default().fg(Color::DarkGray),
+                )),
+                Rect { x: area.x, y: area.y + 1, width: area.width, height: 1 },
+            );
+            let data_area = Rect {
+                x: area.x,
+                y: area.y + 2,
+                width: area.width,
+                height: area.height.saturating_sub(2),
+            };
+            let table = Table::new(
+                trows,
+                [
+                    Constraint::Length(2),
+                    Constraint::Length(2),
+                    Constraint::Length(26),
+                    Constraint::Length(10),
+                    Constraint::Min(20),
+                ],
+            )
+            .block(Block::default().borders(Borders::NONE));
+            f.render_stateful_widget(table, data_area, &mut self.table);
+            return;
+        }
         if let Some(Scope::Ads { articles, .. }) = self.scopes.get(self.active_scope) {
             // ADS results: ↓ ● Year Author Title; ● from the bibcode
             // index, ↓ from the canonical cache key (cite key once
@@ -1950,11 +2179,20 @@ impl App {
                             Style::default().fg(Color::Green).add_modifier(Modifier::DIM),
                         )
                     };
+                    let circle = if self.select_mode {
+                        if self.selected.contains(&a.bibcode) { "◉" } else { "◯" }
+                    } else if cursor == Some(pos) {
+                        "◉"
+                    } else {
+                        ""
+                    };
+                    let circle_style = if self.select_mode && cursor == Some(pos) {
+                        Style::default().fg(Color::White).add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::default().fg(Color::Cyan)
+                    };
                     let row = Row::new(vec![
-                        Cell::from(Span::styled(
-                            if cursor == Some(pos) { "◉" } else { "" },
-                            Style::default().fg(Color::Cyan),
-                        )),
+                        Cell::from(Span::styled(circle, circle_style)),
                         Cell::from(Span::styled(
                             if pdf::is_cached(cache_key) { "↓" } else { "" },
                             Style::default().fg(Color::Green),
@@ -2336,7 +2574,7 @@ impl App {
             return;
         }
         let Some(key) = self.card_key().map(str::to_string) else {
-            return;
+            return; // unresolved manuscript rows have nothing to show
         };
         let Some(e) = self.lib.get(&key) else { return };
         let x0 = area.x + 3; // border + 2 padding
@@ -2731,14 +2969,30 @@ impl App {
                         _ => (self.status.clone(), Color::Gray),
                     }
                 };
-                Line::from(vec![
+                let pending = [
+                    self.dl_rx.is_some(),
+                    self.ads_rx.is_some(),
+                    self.poll_cancel.is_some(),
+                ]
+                .iter()
+                .filter(|b| **b)
+                .count();
+                let mut spans = vec![];
+                if pending > 0 {
+                    spans.push(Span::styled(
+                        format!("⧗{pending} "),
+                        Style::default().fg(Color::Yellow),
+                    ));
+                }
+                spans.extend([
                     Span::styled(
                         format!("{n}/{total}  ·  "),
                         Style::default().fg(Color::DarkGray),
                     ),
                     Span::styled(msg, Style::default().fg(msg_color)),
                     Span::styled(filt, Style::default().fg(Color::DarkGray)),
-                ])
+                ]);
+                Line::from(spans)
             }
         };
         f.render_widget(line, area);
