@@ -1,0 +1,52 @@
+# astrobib Rust port
+
+Status doc for the `rust` branch. The crate lives at the repo root alongside the Python package, which stays checked in as the reference implementation during porting.
+
+## Run it
+
+```
+cargo run --release              # TUI (default)
+cargo run --release -- list
+cargo run --release -- search '^zrake OR kw:"compact objects"'
+cargo run --release -- show Zrake2022i
+cargo test                       # includes golden key vectors
+```
+
+## What's ported
+
+- `src/keys.rs` — cite key generation. Byte-for-byte compatible with keys.py; guarded by `tests/golden_keys.json` (38 vectors generated from the Python implementation over the real library plus edge cases). Regenerate vectors from Python when adding cases; never hand-edit expected keys.
+- `src/bib.rs` — tolerant single-entry BibTeX parser (brace-aware, field names lowercased like bibtexparser) + writer matching library.py FIELD_ORDER, and a LaTeX-accent→Unicode converter covering the common ADS patterns.
+- `src/library.rs` — Entry, Library: load `bib/*.bib`, bibcode index, O(N log N) short keys (verified identical to Python on the real library), key/prefix/bibcode resolution. No parse cache — Rust parses the whole library faster than Python reads its cache.
+- `src/query.rs` — the full filter language incl. uppercase OR/AND/NOT, bare `^author` sugar, year ranges, `is:` terms, and `to_ads_query` translation. Test battery mirrors the Python one.
+- `src/tui.rs` — ratatui TUI: year-sorted table (↓ ● columns live; the ● manuscript-membership header appears only inside a manuscript context), live filter on `/` with the full query language (incl. `is:ms`/`is:pdf`), pub card, j/k/g/G navigation, instant quit. Thin rules under the column headers and framing the log pane. Starring was removed from the port at the user's request (2026-07-28); the astrobib_starred field in Python-written files is ignored and still stripped from manuscript copies.
+- Selection mode (iOS-style, replaces the Python TUI's check-marks): Space, a click in the leftmost gutter, or option/ctrl+click anywhere on a row enters the mode and toggles rows (◯ unselected, ◉ selected); Esc exits and clears, and so does toggling the last selected row off. cmd+click can't work: the SGR mouse protocol has no cmd bit and macOS terminals reserve it. Mouse support includes click-to-highlight and wheel scrolling.
+- Buttons render as rounded powerline pills ( caps in the chip color); ASTROBIB_ASCII=1 falls back to flat chips of identical width for terminals without Nerd Font glyphs.
+- Actions on the highlighted entry or the whole selection (Python-TUI key map): `m` manuscript-db toggle (any-missing → add all, else remove all, with last-copy rescue into the personal library), `p` download PDFs on a background thread (ADS OA resolver → arXiv fallback, live progress in the status bar), `o` open cached PDFs, `X` clear cached PDFs (or cancel a pending browser watch), `B` browser download (resolver-verified URL, ~/Downloads watched 60s with the two-poll stability check), `d` remove from both databases (no confirmation, as in Python). Membership/removal writes verified byte-identical to Python, including the rescue path.
+- No persistent actions list: every action lives where its object does. PDF actions are card buttons; manuscript membership is a card chip (`◆ in manuscript` / `◇ add to manuscript`, clickable, acting on the card's entry; the `m` key still bulk-toggles a selection); removal is Delete/Backspace behind the confirm modal; view toggles are footer badges with their keys attached (`card[D] · log[L] · keys[?]`). `?` (or the keys badge) opens a transient two-column keyboard cheat-sheet — any key or click dismisses it, like the Python key panel. The `y` chord opens a centered which-key copy modal (clickable rows, valueless items dimmed, clicking elsewhere cancels).
+- Event log: every user-action outcome is a categorized message (info gray, success green, warning yellow, error red). `L` (or the footer badge) toggles a bottom log pane with mm:ss timestamps; when hidden, the newest message shows color-coded in the footer.
+- Footer view badges (right-aligned, clickable): ◼/◻ card · keys · log show/hide each app-wide view.
+- Sortable columns: clicking the ↓, Year, Author, Title, or Key header sorts (▲/▼ marker); same header flips direction, bool/recency columns start with the interesting side up.
+- Responsive column priorities: the author column scales with the table (w/6, clamped 14–30) and each cell shows the densest author description that fits (full list → "A, B, +N" → "A et al."); under horizontal pressure the Key column drops first (redundant with the card footer) before authors shrink toward their floor, protecting a minimum title width. `column_layout()` is the single source of the plan; TITLE_COMFORT tunes when Key drops.
+- Roll-over styling on every clickable (panel rows, card links underline, pill buttons brighten, yank-cells, picker rows, table rows, headers, badges), driven by mouse-motion tracking. Subtle column palette in the table (indicators cyan/green/magenta/yellow, dim green year, gray authors, italic titles, dim cyan keys); pill fills sit barely above the background (no terminal alpha, so near-background RGB).
+- Copy-regions: the card's title, abstract, and cite key are themselves click-to-copy — hovering tints the whole region (a wash distinct from the links' underline) and shows a transient cyan footer hint ("⧉ click to copy title"); clicking copies that entry's datum. The abstract copies its full stored text — the card's 1000-char/height truncation is display-only, matching Python. The y chord remains for keyboard use and multi-selection joins.
+- Copy-to-clipboard: `y` opens the which-key modal: `yy` cite key (short), `yY` full key, `yb` bibcode, `ya` ADS URL, `yx` arXiv URL, `yd` DOI URL, `yp` cached-PDF path, `yt` title, `yA` abstract; top-level `Y` copies full keys directly. Multi-selection joins keys/bibcodes with ", " and the rest with newlines. Clipboard via pbcopy on macOS, OSC 52 elsewhere.
+- Pub card emulating the Python DetailPanel: body, then a bordered cyan links row (`ADS · arXiv:<id> · DOI`, click opens the browser), then the PDF buttons with Python's labels/colors and visibility rules (`arXiv ↓`/`ADS OA ↓` cyan, `browser ↓` yellow, `pick …` magenta when uncached and eligible; `Open ↗` green / `Clear ✕` muted when cached), a transient PDF-status line (⏳ waiting with clickable cancel, ✓/✗ results), and a footer (keywords, cite key with dim hash suffix, preprint note). ANSI palette colors, so the terminal theme applies as in Textual. `pick …` opens a modal ~/Downloads PDF list (newest first, ⏎ imports a copy after a %PDF header check). Pub card toggle is `D`/`z`.
+- Removal is on the Delete key behind a confirm modal (lists targets; ⏎/y or clicking `remove` confirms, Esc/n/`cancel` aborts) — a deliberate departure from Python's unconfirmed `d`.
+- Manuscript databases (read side + stars): walk-up discovery matching state.find_manuscript_db, MergedLibrary with personal-wins merge, ● indicator; membership toggling and refs sync not yet ported.
+
+A format quirk worth knowing, faithfully reproduced: bibtexparser v1 stores fields in reverse file order, so every parse→rewrite cycle flips the trailing (non-FIELD_ORDER) fields. Both implementations do it identically; files oscillate between two stable forms.
+
+Warm full-library load + query + print measures ~7 ms end to end (vs ~1 s Python+Textual startup floor).
+
+- ADS query scopes: one table, switchable data sources. A scope strip above the table (`Library │ <query> │ …`, clickable, `[`/`]` cycle, `ctrl+w` closes a query scope, `r` refreshes with its stored limit). `S` opens the query prompt, pre-filled from the active local filter via `to_ads_query`; a pasted DOI becomes a fielded query and a pasted ADS abstract URL imports directly. Fetches run on worker threads with results/errors in the event log. Result rows derive ● from the bibcode index and ↓ from the canonical cache key (cite key once imported); the pub card shows the article (body, links, citation count, import state) and `i` imports via the parity-verified save path. Selection mode, local filter, and library-entry actions are gated to the Library scope. Query scopes persist in tabs.json (shared with Python, keyed per manuscript context) and restore+refresh on launch; `+`/`-` steps the result limit (20/50/100/200) and re-runs; `new query[S]` in the strip is clickable. Selection mode works in ADS scopes over bibcodes, and `i` imports the whole selection (or the highlighted row) in one worker.
+- Manuscript scope (always present inside a manuscript repo): scans `.tex` sources (main.tex root, `\input`/`\include` expansion, comments stripped) and classifies every cited string — ● ok / ○ library / ✗ missing / ? ambiguous — plus uncited db members. Entry actions and the pub card work on resolved rows; `S` on a missing row pre-fills the query prompt with the cited string; `r` rescans; membership changes reclassify live.
+- A yellow ⧗N in the footer counts in-flight background work (ADS requests, PDF downloads, browser watch).
+- Abstract truncation is height-driven only: the full abstract renders whenever the card has room; a cut ends in an ellipsis (the Python 1000-char cap is gone).
+
+## Not yet ported
+
+The `refs.bib` generation/sync flow and export, UAT browser/keyword tree, the `update` (arXiv→published) command, config/token writing (the ADS token is read from state.json — set it with the Python tool). Distribution plan when ready: maturin `bindings = "bin"` wheels to PyPI so `pipx install astrobib` keeps working, per the discussion in the main repo.
+
+## Parity rules
+
+Anything both implementations write must be byte-identical: cite keys (golden-tested), short keys (diff-tested), `.bib` serialization (FIELD_ORDER). The bib database format is the contract — see DESIGN.md.

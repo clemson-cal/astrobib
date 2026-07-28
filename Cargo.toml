@@ -1,0 +1,22 @@
+[package]
+name = "astrobib"
+version = "0.0.1"
+edition = "2021"
+description = "ADS-native BibTeX library manager (Rust port)"
+license = "MIT"
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+indexmap = "2"
+ratatui = "0.29"
+regex = "1"
+serde_json = { version = "1", features = ["preserve_order"] }
+sha2 = "0.10"
+unicode-normalization = "0.1"
+unicode-properties = "0.1"
+ureq = { version = "2", features = ["json"] }
+
+[profile.release]
+lto = true
+strip = true

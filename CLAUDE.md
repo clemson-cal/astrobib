@@ -4,6 +4,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Read [DESIGN.md](DESIGN.md) before adding features or changing data formats. It is the authoritative statement of design constraints.
 
+**Parallel agents: one writer per working tree.** Concurrent agent sessions must not share this working tree — spawn writing subagents with worktree isolation (`isolation: "worktree"` / `git worktree add`) and integrate through commits. When committing here, stage explicit paths (never `git add -A`) and review `git status --short` first: another session's uncommitted work may be present.
+
 ---
 
 ## Development commands

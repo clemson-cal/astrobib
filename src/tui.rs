@@ -1,0 +1,3188 @@
+//! Ratatui TUI: library table with live filter, pub card, star toggle.
+//!
+//! Feature parity with the Textual app comes incrementally; the current cut
+//! covers browsing — instant startup, live filtering with the full query
+//! language, manuscript ● and star ★ indicators, a toggleable pub card,
+//! star toggling, and instant quit.
+
+use crate::library::{has_cached_pdf, MergedLibrary};
+use crate::pdf;
+use crate::query::{self, QueryContext};
+use ratatui::crossterm::event::{
+    self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, KeyModifiers,
+    MouseButton, MouseEvent, MouseEventKind,
+};
+use ratatui::crossterm::execute;
+use ratatui::layout::{Constraint, Layout, Rect};
+use ratatui::style::{Color, Modifier, Style};
+use ratatui::text::{Line, Span, Text};
+use ratatui::widgets::{Block, Borders, Paragraph, Row, Table, TableState};
+use ratatui::Frame;
+use std::collections::HashSet;
+use std::time::Duration;
+
+pub fn run(lib: MergedLibrary) -> anyhow::Result<()> {
+    let mut terminal = ratatui::init();
+    let _ = execute!(std::io::stdout(), EnableMouseCapture);
+    let result = App::new(lib).run(&mut terminal);
+    let _ = execute!(std::io::stdout(), DisableMouseCapture);
+    ratatui::restore();
+    result
+}
+
+enum Mode {
+    Normal,
+    Filter,
+    /// Modal ~/Downloads PDF picker (pub card "pick …").
+    Pick {
+        key: String,
+        files: Vec<std::path::PathBuf>,
+        sel: usize,
+    },
+    /// Confirm modal for removing papers (Delete key).
+    Confirm { keys: Vec<String> },
+    /// S — compose an ADS query; ↑/↓ steps the result limit, ⏎ runs it.
+    AdsPrompt { input: String, limit: usize },
+    /// y pressed — the next key picks what to copy (the Copy panel tab
+    /// shows the menu, which-key style); Esc cancels.
+    Copy,
+}
+
+/// Every user action; the panel lists them all, dimming the unavailable.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Action {
+    Select,
+    Manuscript,
+    Download,
+    OpenPdf,
+    ClearPdf,
+    BrowserDl,
+    Remove,
+    Copy,
+    Filter,
+    Card,
+    Log,
+    Help,
+    Quit,
+}
+
+/// Message-log categories; each renders in its own color in the log
+/// pane and the footer.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum MsgCat {
+    Info,
+    Ok,
+    Warn,
+    Err,
+}
+
+impl MsgCat {
+    fn color(self) -> Color {
+        match self {
+            MsgCat::Info => Color::Gray,
+            MsgCat::Ok => Color::Green,
+            MsgCat::Warn => Color::Yellow,
+            MsgCat::Err => Color::Red,
+        }
+    }
+}
+
+/// What the copy chord / Copy tab can put on the clipboard. Cite keys
+/// and bibcodes join with ", " under multi-selection (the Python TUI's
+/// convention); URLs, paths, and titles join with newlines.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CopyItem {
+    Key,
+    FullKey,
+    Bibcode,
+    AdsUrl,
+    ArxivUrl,
+    DoiUrl,
+    PdfPath,
+    Title,
+    Abstract,
+}
+
+/// A data source for the table: the library, or one ADS query's
+/// results. One table widget, one interaction path — the scope only
+/// decides rows and columns.
+enum Scope {
+    Library,
+    /// Cited keys from the manuscript's .tex files, classified.
+    Manuscript { rows: Vec<MsRow> },
+    Ads {
+        tab: crate::tabs::Tab,
+        articles: Vec<crate::ads::Article>,
+    },
+}
+
+/// One manuscript-view row: a cited string (or an uncited db member).
+struct MsRow {
+    cited: String,
+    state: crate::library::CiteState,
+    uncited: bool,
+    key: Option<String>,
+    title: String,
+}
+
+impl Scope {
+    fn label(&self) -> &str {
+        match self {
+            Scope::Library => "Library",
+            Scope::Manuscript { .. } => "Manuscript",
+            Scope::Ads { tab, .. } => &tab.label,
+        }
+    }
+}
+
+enum AdsMsg {
+    Done {
+        tab: crate::tabs::Tab,
+        refresh_of: Option<usize>,
+        result: Result<Vec<crate::ads::Article>, String>,
+    },
+    Imported {
+        bibcode: String,
+        result: Result<crate::bib::Data, String>,
+    },
+}
+
+/// Sortable table columns; clicking a header toggles direction.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SortCol {
+    Pdf,
+    Year,
+    Author,
+    Title,
+    Key,
+}
+
+/// Pub card buttons; they act on the card's (highlighted) entry.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CardBtn {
+    Arxiv,
+    Oa,
+    Browser,
+    Pick,
+    Open,
+    Clear,
+    Cancel,
+    MsToggle,
+}
+
+struct App {
+    lib: MergedLibrary,
+    order: Vec<String>,   // entry keys, year-descending
+    filtered: Vec<usize>, // positions into `order` that pass the filter
+    filter: String,
+    mode: Mode,
+    table: TableState,
+    show_detail: bool,
+    status: String,
+    quit: bool,
+    // iOS-style selection mode: circles appear, Space/click toggles rows,
+    // Esc exits and clears; bulk actions apply to the selection
+    select_mode: bool,
+    selected: HashSet<String>,
+    table_area: Rect, // last drawn table region, for mouse hit-testing
+    dl_rx: Option<std::sync::mpsc::Receiver<DlMsg>>,
+    // ctrl+p keyboard cheat-sheet overlay; any key or click dismisses
+    show_help: bool,
+    // copy-chord modal region and its clickable rows
+    panel_area: Rect,
+    panel_copy_rows: Vec<(Rect, CopyItem)>,
+    // last known mouse position, for roll-over styling of clickables
+    hover: (u16, u16),
+    // transient footer hint while hovering a copy-region (never logged)
+    hover_hint: Option<String>,
+    // event log: (category, seconds-since-start, message); L toggles the
+    // pane, the footer always shows the newest entry color-coded
+    log: Vec<(MsgCat, u64, String)>,
+    show_log: bool,
+    started: std::time::Instant,
+    // table scopes: index 0 is always Library; ADS query results follow
+    scopes: Vec<Scope>,
+    active_scope: usize,
+    scope_rects: Vec<(Rect, usize)>,
+    ads_rx: Option<std::sync::mpsc::Receiver<AdsMsg>>,
+    // table sort (clickable column headers) and their header hit rects
+    sort: (SortCol, bool), // (column, ascending)
+    sort_headers: Vec<(Rect, SortCol)>,
+    // footer view badges: clickable show/hide toggles per app-wide view
+    footer_badges: Vec<(Rect, Action)>,
+    // pub card button and link rects, rebuilt each draw
+    card_buttons: Vec<(Rect, CardBtn)>,
+    card_links: Vec<(Rect, String)>,
+    card_yanks: Vec<(Rect, CopyItem)>,
+    // transient PDF status shown on the card (waiting/result), like the
+    // Python card's #pdf-status line
+    pdf_status: String,
+    // browser-download watcher cancel flag (X / clear cancels the poll)
+    poll_cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+    pick_area: Rect,
+    confirm_btns: Vec<(Rect, bool)>, // (rect, is_confirm)
+}
+
+fn hit(r: Rect, x: u16, y: u16) -> bool {
+    x >= r.x && x < r.x + r.width && y >= r.y && y < r.y + r.height
+}
+
+/// Plain chips instead of powerline pills, for terminals without Nerd
+/// Font glyphs (set ASTROBIB_ASCII=1).
+fn ascii_chips() -> bool {
+    static ASCII: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ASCII.get_or_init(|| std::env::var("ASTROBIB_ASCII").is_ok_and(|v| v != "0"))
+}
+
+/// Rendered cell width of a pill/chip: end caps (or padding) + label.
+fn pill_width(label: &str) -> u16 {
+    label.chars().count() as u16 + 2
+}
+
+/// A clickable rounded chip: powerline semicircle caps drawn in the chip
+/// color around the label, so the row reads as a pill. ASCII mode renders
+/// a plain padded chip of identical width, keeping click rects valid.
+fn push_pill<'a>(spans: &mut Vec<Span<'a>>, label: &str, bg: Color, fg: Color) {
+    if ascii_chips() {
+        spans.push(Span::styled(
+            format!(" {label} "),
+            Style::default().bg(bg).fg(fg),
+        ));
+    } else {
+        spans.push(Span::styled("\u{e0b6}".to_string(), Style::default().fg(bg)));
+        spans.push(Span::styled(label.to_string(), Style::default().bg(bg).fg(fg)));
+        spans.push(Span::styled("\u{e0b4}".to_string(), Style::default().fg(bg)));
+    }
+}
+
+/// Greedy word wrap producing the exact lines we render — placement math
+/// (links/buttons following variable-height text) depends on the count.
+fn wrap_text(s: &str, w: usize) -> Vec<String> {
+    if w == 0 {
+        return vec![String::new()];
+    }
+    let mut lines: Vec<String> = vec![];
+    let mut cur = String::new();
+    for word in s.split_whitespace() {
+        let wl = word.chars().count();
+        let cl = cur.chars().count();
+        if cl == 0 {
+            cur = word.chars().take(w).collect();
+        } else if cl + 1 + wl <= w {
+            cur.push(' ');
+            cur.push_str(word);
+        } else {
+            lines.push(std::mem::take(&mut cur));
+            cur = word.chars().take(w).collect();
+        }
+    }
+    lines.push(cur);
+    lines
+}
+
+enum DlMsg {
+    Progress(String),
+    Done { done: usize, failed: Vec<String> },
+}
+
+impl App {
+    fn new(lib: MergedLibrary) -> Self {
+        let mut order: Vec<String> = lib.entries().iter().map(|e| e.key().to_string()).collect();
+        order.sort_by(|a, b| {
+            let (ea, eb) = (lib.get(a).unwrap(), lib.get(b).unwrap());
+            eb.year().cmp(&ea.year()).then(a.cmp(b))
+        });
+        let filtered = (0..order.len()).collect::<Vec<_>>();
+        let mut table = TableState::default();
+        if !filtered.is_empty() {
+            table.select(Some(0));
+        }
+        let status = format!(
+            "{} papers{}",
+            order.len(),
+            lib.manuscript
+                .as_ref()
+                .map(|m| format!(
+                    "  ·  ms: {}",
+                    m.root.file_name().unwrap_or_default().to_string_lossy()
+                ))
+                .unwrap_or_default()
+        );
+        App {
+            lib,
+            order,
+            filtered,
+            filter: String::new(),
+            mode: Mode::Normal,
+            table,
+            show_detail: true,
+            status,
+            quit: false,
+            select_mode: false,
+            selected: HashSet::new(),
+            table_area: Rect::default(),
+            dl_rx: None,
+            show_help: false,
+            panel_area: Rect::default(),
+            panel_copy_rows: vec![],
+            hover: (u16::MAX, u16::MAX),
+            hover_hint: None,
+            log: vec![],
+            show_log: false,
+            started: std::time::Instant::now(),
+            scopes: vec![Scope::Library],
+            active_scope: 0,
+            scope_rects: vec![],
+            ads_rx: None,
+            sort: (SortCol::Year, false),
+            sort_headers: vec![],
+            footer_badges: vec![],
+            card_buttons: vec![],
+            card_links: vec![],
+            card_yanks: vec![],
+            pdf_status: String::new(),
+            poll_cancel: None,
+            pick_area: Rect::default(),
+            confirm_btns: vec![],
+        }
+    }
+
+    fn active_ads(&self) -> Option<&Scope> {
+        match self.scopes.get(self.active_scope) {
+            Some(s @ Scope::Ads { .. }) => Some(s),
+            _ => None,
+        }
+    }
+
+    fn set_scope(&mut self, idx: usize) {
+        self.active_scope = idx.min(self.scopes.len().saturating_sub(1));
+        self.table.select(Some(0));
+        *self.table.offset_mut() = 0;
+        self.pdf_status.clear();
+        if self.select_mode {
+            self.exit_select_mode();
+        }
+    }
+
+    fn cycle_scope(&mut self, d: isize) {
+        let n = self.scopes.len() as isize;
+        let cur = self.active_scope as isize;
+        self.set_scope(((cur + d).rem_euclid(n)) as usize);
+    }
+
+    fn close_scope(&mut self) {
+        if matches!(
+            self.scopes.get(self.active_scope),
+            None | Some(Scope::Library) | Some(Scope::Manuscript { .. })
+        ) {
+            return; // library and manuscript scopes are permanent
+        }
+        self.scopes.remove(self.active_scope);
+        let idx = self.active_scope.saturating_sub(1);
+        self.set_scope(idx);
+        self.save_tabs();
+    }
+
+    /// S — compose an ADS query. Pre-filled from the active local filter
+    /// via to_ads_query (filter locally, escalate in one keystroke).
+    fn open_ads_prompt(&mut self) {
+        if crate::ads::get_token().is_none() {
+            self.note(
+                MsgCat::Warn,
+                "no ADS token — set ADS_API_TOKEN or configure the Python tool".to_string(),
+            );
+            return;
+        }
+        let mut input = if self.filter.is_empty() {
+            String::new()
+        } else {
+            query::to_ads_query(&self.filter)
+        };
+        if let Some(Scope::Manuscript { rows }) = self.scopes.get(self.active_scope) {
+            if let Some(r) = self.table.selected().and_then(|p| rows.get(p)) {
+                if matches!(r.state, crate::library::CiteState::Missing) {
+                    input = r.cited.clone();
+                }
+            }
+        }
+        self.mode = Mode::AdsPrompt { input, limit: 20 };
+    }
+
+    /// Run a query on a worker thread into a scope. A pasted DOI or ADS
+    /// abstract URL short-circuits: DOI becomes a fielded query, an ADS
+    /// URL imports the paper directly.
+    fn run_ads_query_limit(&mut self, raw: String, refresh_of: Option<usize>, limit: usize) {
+        let raw = raw.trim().to_string();
+        if raw.is_empty() {
+            return;
+        }
+        if let Some(bc) = crate::ads::bibcode_from_url(&raw) {
+            self.import_bibcode(bc);
+            return;
+        }
+        let query = match crate::ads::doi_from_text(&raw) {
+            Some(doi) => format!("doi:\"{doi}\""),
+            None => raw.clone(),
+        };
+        // refreshing keeps the existing tab identity; new queries mint one
+        let tab = match refresh_of.and_then(|i| self.scopes.get(i)) {
+            Some(Scope::Ads { tab, .. }) => {
+                let mut t = tab.clone();
+                t.limit = limit;
+                t
+            }
+            _ => crate::tabs::make_tab(&query, limit),
+        };
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.ads_rx = Some(rx);
+        self.note(MsgCat::Info, format!("Searching ADS: {query}"));
+        std::thread::spawn(move || {
+            let result = crate::ads::search(&query, limit).map_err(|e| e.to_string());
+            let _ = tx.send(AdsMsg::Done { tab, refresh_of, result });
+        });
+    }
+
+    /// Scan .tex sources and classify every cited key; append uncited
+    /// manuscript-db members — the Python ManuscriptView's row set.
+    fn ms_rows(&self) -> Vec<MsRow> {
+        use crate::library::CiteState;
+        let Some(root) = self.ms_root() else { return vec![] };
+        let files = crate::export::manuscript_tex_files(&root);
+        let cited = crate::export::scan_tex_files(&files);
+        let mut covered: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut rows: Vec<MsRow> = vec![];
+        for c in cited {
+            let (state, entry) = self.lib.resolve_citation(&c);
+            if let Some(e) = entry {
+                covered.insert(e.key().to_string());
+            }
+            rows.push(MsRow {
+                cited: c,
+                state,
+                uncited: false,
+                key: entry.map(|e| e.key().to_string()),
+                title: entry
+                    .map(|e| e.title().trim_matches(['{', '}']).to_string())
+                    .unwrap_or_default(),
+            });
+        }
+        if let Some(ms) = &self.lib.manuscript {
+            for e in ms.entries() {
+                if !covered.contains(e.key()) {
+                    rows.push(MsRow {
+                        cited: e.short_key.clone(),
+                        state: CiteState::Ok,
+                        uncited: true,
+                        key: Some(e.key().to_string()),
+                        title: e.title().trim_matches(['{', '}']).to_string(),
+                    });
+                }
+            }
+        }
+        rows
+    }
+
+    fn rescan_manuscript(&mut self) {
+        if self.lib.manuscript.is_none() {
+            return;
+        }
+        let rows = self.ms_rows();
+        match self.scopes.get_mut(1) {
+            Some(s @ Scope::Manuscript { .. }) => *s = Scope::Manuscript { rows },
+            _ => self.scopes.insert(1, Scope::Manuscript { rows }),
+        }
+    }
+
+    fn ms_root(&self) -> Option<std::path::PathBuf> {
+        self.lib.manuscript.as_ref().map(|m| m.root.clone())
+    }
+
+    /// Persist the current ADS scopes in tabs.json-compatible form,
+    /// user-local and keyed per manuscript context (shared with Python).
+    fn save_tabs(&self) {
+        let tabs: Vec<crate::tabs::Tab> = self
+            .scopes
+            .iter()
+            .filter_map(|s| match s {
+                Scope::Ads { tab, .. } => Some(tab.clone()),
+                _ => None,
+            })
+            .collect();
+        crate::tabs::save(&tabs, self.ms_root().as_deref());
+    }
+
+    /// Restore saved query scopes and refresh them all on one worker.
+    fn restore_tabs(&mut self) {
+        let saved = crate::tabs::load(self.ms_root().as_deref());
+        if saved.is_empty() {
+            return;
+        }
+        let first_idx = self.scopes.len();
+        let jobs: Vec<(usize, crate::tabs::Tab)> = saved
+            .iter()
+            .cloned()
+            .enumerate()
+            .map(|(i, t)| (first_idx + i, t))
+            .collect();
+        for t in saved {
+            self.scopes.push(Scope::Ads { tab: t, articles: vec![] });
+        }
+        if crate::ads::get_token().is_none() {
+            return; // scopes restore without results; refresh needs a token
+        }
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.ads_rx = Some(rx);
+        std::thread::spawn(move || {
+            for (idx, tab) in jobs {
+                let result =
+                    crate::ads::search(&tab.query, tab.limit).map_err(|e| e.to_string());
+                let _ = tx.send(AdsMsg::Done { tab, refresh_of: Some(idx), result });
+            }
+        });
+    }
+
+    /// +/- — step the active ADS scope's result limit through the
+    /// Python steps (20/50/100/200) and re-run the query.
+    fn step_limit(&mut self, dir: isize) {
+        const STEPS: [usize; 4] = [20, 50, 100, 200];
+        let Some(Scope::Ads { tab, .. }) = self.scopes.get_mut(self.active_scope) else {
+            return;
+        };
+        let idx = STEPS.iter().position(|&s| s >= tab.limit).unwrap_or(STEPS.len() - 1);
+        let idx = (idx as isize + dir).clamp(0, STEPS.len() as isize - 1) as usize;
+        if STEPS[idx] == tab.limit {
+            return;
+        }
+        tab.limit = STEPS[idx];
+        let (q, l) = (tab.query.clone(), tab.limit);
+        self.note(MsgCat::Info, format!("limit → {l}"));
+        self.run_ads_query_limit(q, Some(self.active_scope), l);
+    }
+
+    fn refresh_scope(&mut self) {
+        match self.scopes.get(self.active_scope) {
+            Some(Scope::Ads { tab, .. }) => {
+                self.run_ads_query_limit(tab.query.clone(), Some(self.active_scope), tab.limit)
+            }
+            Some(Scope::Manuscript { .. }) => {
+                self.rescan_manuscript();
+                self.note(MsgCat::Info, "manuscript rescanned".to_string());
+            }
+            _ => {}
+        }
+    }
+
+    /// i — import the highlighted ADS result into the library (and the
+    /// manuscript db when active), via the parity-verified save path.
+    fn import_highlighted(&mut self) {
+        let Some(Scope::Ads { articles, .. }) = self.scopes.get(self.active_scope) else {
+            return;
+        };
+        // selection imports in bulk; otherwise the highlighted row
+        let bibcodes: Vec<String> = if self.select_mode && !self.selected.is_empty() {
+            articles
+                .iter()
+                .filter(|a| self.selected.contains(&a.bibcode))
+                .filter(|a| self.lib.get_by_bibcode(&a.bibcode).is_none())
+                .map(|a| a.bibcode.clone())
+                .collect()
+        } else {
+            match self.table.selected().and_then(|p| articles.get(p)) {
+                Some(a) if self.lib.get_by_bibcode(&a.bibcode).is_none() => {
+                    vec![a.bibcode.clone()]
+                }
+                Some(a) => {
+                    let bc = a.bibcode.clone();
+                    self.note(MsgCat::Warn, format!("{bc} already in library"));
+                    return;
+                }
+                None => return,
+            }
+        };
+        if bibcodes.is_empty() {
+            self.note(MsgCat::Warn, "nothing to import".to_string());
+            return;
+        }
+        if self.select_mode {
+            self.exit_select_mode();
+        }
+        self.import_bibcodes(bibcodes);
+    }
+
+    fn import_bibcode(&mut self, bibcode: String) {
+        self.import_bibcodes(vec![bibcode]);
+    }
+
+    fn import_bibcodes(&mut self, bibcodes: Vec<String>) {
+        if self.ads_rx.is_some() {
+            self.note(MsgCat::Warn, "an ADS request is already running".to_string());
+            return;
+        }
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.ads_rx = Some(rx);
+        self.note(MsgCat::Info, format!("Importing {} paper(s)…", bibcodes.len()));
+        std::thread::spawn(move || {
+            for bibcode in bibcodes {
+                let result = match crate::ads::fetch_bibtex(&bibcode) {
+                    Ok(Some(data)) => Ok(data),
+                    Ok(None) => Err("no BibTeX returned".to_string()),
+                    Err(e) => Err(e.to_string()),
+                };
+                let _ = tx.send(AdsMsg::Imported { bibcode, result });
+            }
+        });
+    }
+
+    fn drain_ads(&mut self) {
+        let mut msgs = vec![];
+        let mut done = false;
+        if let Some(rx) = &self.ads_rx {
+            loop {
+                match rx.try_recv() {
+                    Ok(m) => msgs.push(m),
+                    Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                        done = true;
+                        break;
+                    }
+                    Err(std::sync::mpsc::TryRecvError::Empty) => break,
+                }
+            }
+        }
+        if done {
+            self.ads_rx = None;
+        }
+        for m in msgs {
+            match m {
+                AdsMsg::Done { mut tab, refresh_of, result } => match result {
+                    Ok(articles) => {
+                        let n = articles.len();
+                        tab.refreshed = Some(crate::tabs::now_secs());
+                        tab.bibcodes = articles.iter().map(|a| a.bibcode.clone()).collect();
+                        let scope = Scope::Ads { tab, articles };
+                        match refresh_of {
+                            Some(i) if i < self.scopes.len() => self.scopes[i] = scope,
+                            _ => {
+                                self.scopes.push(scope);
+                                self.set_scope(self.scopes.len() - 1);
+                            }
+                        }
+                        self.save_tabs();
+                        self.note(MsgCat::Ok, format!("{n} ADS result(s)"));
+                    }
+                    Err(e) => self.note(MsgCat::Err, format!("ADS search failed: {e}")),
+                },
+                AdsMsg::Imported { bibcode, result } => match result {
+                    Ok(data) => match self.lib.save_entry(&data) {
+                        Ok(key) => {
+                            self.rebuild_order();
+                            self.note(MsgCat::Ok, format!("Added {key}"));
+                        }
+                        Err(e) => self.note(MsgCat::Err, format!("import failed: {e}")),
+                    },
+                    Err(e) => {
+                        self.note(MsgCat::Err, format!("import of {bibcode} failed: {e}"))
+                    }
+                },
+            }
+        }
+    }
+
+    /// Emit an event message: color-coded in the log pane and shown in
+    /// the footer while it is the newest entry.
+    fn note(&mut self, cat: MsgCat, msg: String) {
+        self.status = msg.clone();
+        self.log.push((cat, self.started.elapsed().as_secs(), msg));
+    }
+
+    /// Availability policy: single-target actions dim under multi-selection,
+    /// content-dependent actions dim when no target qualifies.
+    fn available(&self, a: Action) -> bool {
+        let keys = self.action_keys();
+        let single = keys.len() == 1;
+        let entry = |k: &String| self.lib.get(k);
+        match a {
+            Action::Select | Action::Filter | Action::Card | Action::Log | Action::Help
+            | Action::Quit => true,
+            Action::Manuscript => self.lib.manuscript.is_some() && !keys.is_empty(),
+            Action::Download => {
+                self.dl_rx.is_none()
+                    && keys.iter().any(|k| {
+                        !pdf::is_cached(k)
+                            && entry(k).is_some_and(|e| {
+                                !e.eprint().is_empty() || !e.adsurl().is_empty()
+                            })
+                    })
+            }
+            Action::OpenPdf => keys.iter().any(|k| pdf::is_cached(k)),
+            Action::ClearPdf => {
+                self.poll_cancel.is_some() || keys.iter().any(|k| pdf::is_cached(k))
+            }
+            Action::BrowserDl => {
+                single
+                    && self.dl_rx.is_none()
+                    && entry(&keys[0]).is_some_and(|e| {
+                        !e.doi().is_empty() || !e.adsurl().is_empty() || !e.eprint().is_empty()
+                    })
+            }
+            Action::Remove => !keys.is_empty(),
+            Action::Copy => !keys.is_empty(),
+        }
+    }
+
+    /// Run an action if available — shared by shortcut keys, panel clicks,
+    /// and pub card buttons.
+    fn run_action(&mut self, a: Action) {
+        if !self.available(a) {
+            return;
+        }
+        match a {
+            Action::Select => {
+                if matches!(self.scopes.get(self.active_scope), Some(Scope::Manuscript { .. })) {
+                    return; // manuscript rows aren't a selection target
+                }
+                self.select_mode = true;
+                if let Some(pos) = self.table.selected() {
+                    self.toggle_row_selected(pos);
+                }
+            }
+            Action::Manuscript => self.toggle_manuscript(),
+            Action::Download => self.download_pdfs(),
+            Action::OpenPdf => self.open_pdfs(),
+            Action::ClearPdf => self.clear_pdfs(),
+            Action::BrowserDl => self.browser_download(),
+            Action::Remove => self.remove_papers(),
+            Action::Copy => self.enter_copy_mode(),
+            Action::Filter => {
+                if self.active_scope == 0 {
+                    self.mode = Mode::Filter;
+                } else {
+                    self.note(MsgCat::Warn, "the filter applies to the Library scope".to_string());
+                }
+            }
+            Action::Card => self.show_detail = !self.show_detail,
+            Action::Log => self.show_log = !self.show_log,
+            Action::Help => self.show_help = !self.show_help,
+            Action::Quit => self.quit = true,
+        }
+    }
+
+    /// The entries an action applies to: the selection (in display order)
+    /// when selection mode is active and non-empty, else the highlighted
+    /// row — the Python TUI's convention.
+    fn action_keys(&self) -> Vec<String> {
+        if self.select_mode && !self.selected.is_empty() {
+            return self
+                .order
+                .iter()
+                .filter(|k| self.selected.contains(*k))
+                .cloned()
+                .collect();
+        }
+        self.selected_key().map(str::to_string).into_iter().collect()
+    }
+
+    fn run(mut self, terminal: &mut ratatui::DefaultTerminal) -> anyhow::Result<()> {
+        let t0 = std::time::Instant::now();
+        self.rescan_manuscript();
+        self.restore_tabs();
+        // Hold the first paint until the pty size settles. Some terminals
+        // (Warp) resize the pty in reaction to alt-screen entry — often
+        // before crossterm's SIGWINCH handler exists, so no Resize event
+        // arrives. Painting at the transient size shows as a visible
+        // reflow; a blank alt screen for ~50ms does not. Wait until the
+        // size is stable for 50ms (cap 250ms); any user input ends the
+        // wait and is handled after the first paint.
+        let mut pending: Option<Event> = None;
+        let mut size = terminal.size()?;
+        let mut stable = std::time::Instant::now();
+        while t0.elapsed() < Duration::from_millis(250) {
+            if event::poll(Duration::from_millis(10))? {
+                let ev = event::read()?;
+                if !matches!(ev, Event::Resize(..)) {
+                    pending = Some(ev);
+                    break;
+                }
+            }
+            let now_size = terminal.size()?;
+            if now_size != size {
+                size = now_size;
+                stable = std::time::Instant::now();
+            }
+            if stable.elapsed() >= Duration::from_millis(50) {
+                break;
+            }
+        }
+        debug_layout(&format!(
+            "{:>6}ms settled at {size:?}",
+            t0.elapsed().as_millis()
+        ));
+        while !self.quit {
+            self.drain_downloads();
+            self.drain_ads();
+            terminal.draw(|f| self.draw(f))?;
+            if let Some(ev) = pending.take() {
+                debug_layout(&format!("{:>6}ms pending {ev:?}", t0.elapsed().as_millis()));
+                match ev {
+                    Event::Key(key) if key.kind == KeyEventKind::Press => {
+                        self.on_key(key.code, key.modifiers)
+                    }
+                    Event::Mouse(m) => self.on_mouse(m),
+                    _ => {}
+                }
+                continue;
+            }
+            // fast cadence for the first second (late terminal resizes that
+            // slip past the settle window) and while downloads report progress
+            let tick = if t0.elapsed() < Duration::from_secs(1)
+                || self.dl_rx.is_some()
+                || self.ads_rx.is_some()
+            {
+                25
+            } else {
+                250
+            };
+            debug_layout(&format!(
+                "{:>6}ms draw frame={:?} table={:?}",
+                t0.elapsed().as_millis(),
+                terminal.get_frame().area(),
+                self.table_area,
+            ));
+            if event::poll(Duration::from_millis(tick))? {
+                let ev = event::read()?;
+                debug_layout(&format!("{:>6}ms event {ev:?}", t0.elapsed().as_millis()));
+                match ev {
+                    Event::Key(key) if key.kind == KeyEventKind::Press => {
+                        self.on_key(key.code, key.modifiers)
+                    }
+                    Event::Mouse(m) => self.on_mouse(m),
+                    _ => {}
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// The table position under the mouse, if any (header and rule
+    /// rows excluded).
+    fn hovered_table_pos(&self) -> Option<usize> {
+        let a = self.table_area;
+        if !hit(a, self.hover.0, self.hover.1) || self.hover.1 <= a.y + 1 {
+            return None;
+        }
+        let pos = self.table.offset() + (self.hover.1 - a.y - 2) as usize;
+        (pos < self.row_count()).then_some(pos)
+    }
+
+    /// The entry the pub card shows: hovering the citekey column previews
+    /// that row in the card (full-row hover proved too twitchy); otherwise
+    /// the cursor row.
+    fn card_key(&self) -> Option<&str> {
+        if self.active_scope == 0 {
+            let a = self.table_area;
+            let (_, show_key) = column_layout(a.width);
+            let show_key = show_key || self.show_detail;
+            let in_key_col = show_key && self.hover.0 >= a.x + a.width.saturating_sub(20);
+            if in_key_col {
+                if let Some(pos) = self.hovered_table_pos() {
+                    return self.filtered.get(pos).map(|&i| self.order[i].as_str());
+                }
+            }
+        }
+        self.selected_key()
+    }
+
+    fn selected_key(&self) -> Option<&str> {
+        // the manuscript scope resolves to library entries, so entry
+        // actions apply there; ADS rows don't resolve until imported
+        if let Some(Scope::Manuscript { rows }) = self.scopes.get(self.active_scope) {
+            return self
+                .table
+                .selected()
+                .and_then(|p| rows.get(p))
+                .and_then(|r| r.key.as_deref());
+        }
+        if self.active_scope != 0 {
+            return None;
+        }
+        let pos = self.table.selected()?;
+        let idx = *self.filtered.get(pos)?;
+        Some(self.order[idx].as_str())
+    }
+
+    fn refilter(&mut self) {
+        let groups = query::tokenize(&self.filter);
+        let in_ms: Vec<String> = self
+            .lib
+            .manuscript
+            .as_ref()
+            .map(|m| m.entries().iter().map(|e| e.key().to_string()).collect())
+            .unwrap_or_default();
+        let ctx = QueryContext {
+            in_manuscript: Some(Box::new(move |k: &str| in_ms.iter().any(|x| x == k))),
+            has_pdf: Some(Box::new(|k: &str| has_cached_pdf(k))),
+        };
+        self.filtered = self
+            .order
+            .iter()
+            .enumerate()
+            .filter(|(_, key)| query::matches(&groups, self.lib.get(key).unwrap(), &ctx))
+            .map(|(i, _)| i)
+            .collect();
+        let sel = self.table.selected().unwrap_or(0);
+        self.table.select(if self.filtered.is_empty() {
+            None
+        } else {
+            Some(sel.min(self.filtered.len() - 1))
+        });
+    }
+
+    fn row_count(&self) -> usize {
+        match self.scopes.get(self.active_scope) {
+            Some(Scope::Ads { articles, .. }) => articles.len(),
+            Some(Scope::Manuscript { rows }) => rows.len(),
+            _ => self.filtered.len(),
+        }
+    }
+
+    fn move_sel(&mut self, delta: isize) {
+        if self.row_count() == 0 {
+            return;
+        }
+        let cur = self.table.selected().unwrap_or(0) as isize;
+        let next = (cur + delta).clamp(0, self.row_count() as isize - 1);
+        self.table.select(Some(next as usize));
+        self.pdf_status.clear(); // stale per-entry message
+    }
+
+    /// Toggle selection membership of the row at a filtered position.
+    /// A selection emptied by toggling exits selection mode, same as Esc.
+    fn toggle_row_selected(&mut self, pos: usize) {
+        let key = match self.scopes.get(self.active_scope) {
+            Some(Scope::Ads { articles, .. }) => {
+                let Some(a) = articles.get(pos) else { return };
+                a.bibcode.clone()
+            }
+            _ => {
+                let Some(&idx) = self.filtered.get(pos) else {
+                    return;
+                };
+                self.order[idx].clone()
+            }
+        };
+        if !self.selected.remove(&key) {
+            self.selected.insert(key);
+        }
+        if self.select_mode && self.selected.is_empty() {
+            self.exit_select_mode();
+        } else {
+            self.status = format!("{} selected", self.selected.len());
+        }
+    }
+
+    fn exit_select_mode(&mut self) {
+        self.select_mode = false;
+        self.selected.clear();
+        self.status = format!("{} papers", self.order.len());
+    }
+
+    /// Rebuild the display order (entries changed or sort changed),
+    /// and refresh the manuscript classification when present.
+    fn rebuild_order(&mut self) {
+        if matches!(self.scopes.get(1), Some(Scope::Manuscript { .. })) {
+            let rows = self.ms_rows();
+            if let Some(s) = self.scopes.get_mut(1) {
+                *s = Scope::Manuscript { rows };
+            }
+        }
+        self.order = self.lib.entries().iter().map(|e| e.key().to_string()).collect();
+        let lib = &self.lib;
+        let (col, asc) = self.sort;
+        self.order.sort_by(|a, b| {
+            let (ea, eb) = (lib.get(a).unwrap(), lib.get(b).unwrap());
+            let ord = match col {
+                SortCol::Pdf => has_cached_pdf(ea.key()).cmp(&has_cached_pdf(eb.key())),
+                SortCol::Year => ea.year().cmp(&eb.year()),
+                SortCol::Author => ea
+                    .first_author_last()
+                    .to_lowercase()
+                    .cmp(&eb.first_author_last().to_lowercase()),
+                SortCol::Title => ea
+                    .title()
+                    .trim_matches(['{', '}'])
+                    .to_lowercase()
+                    .cmp(&eb.title().trim_matches(['{', '}']).to_lowercase()),
+                SortCol::Key => ea.key().cmp(eb.key()),
+            };
+            let ord = if asc { ord } else { ord.reverse() };
+            ord.then(a.cmp(b))
+        });
+        self.selected.retain(|k| lib.get(k).is_some());
+        self.refilter();
+    }
+
+    /// Header click: same column flips direction, a new column starts
+    /// descending for Year (newest first) and ascending otherwise.
+    fn sort_by(&mut self, col: SortCol) {
+        self.sort = if self.sort.0 == col {
+            (col, !self.sort.1)
+        } else {
+            // bool-ish and recency columns start with the interesting side
+            // up: cached/starred/newest first; text columns start A→Z
+            (col, !matches!(col, SortCol::Year | SortCol::Pdf))
+        };
+        self.rebuild_order();
+    }
+
+    /// m — port of action_toggle_manuscript's library-view rule: if any
+    /// target is missing from the manuscript db, add all missing; else
+    /// (all present) remove all.
+    fn toggle_manuscript(&mut self) {
+        if self.lib.manuscript.is_none() {
+            self.note(MsgCat::Warn, "no manuscript db (run inside a manuscript repo)".to_string());
+            return;
+        }
+        let keys = self.action_keys();
+        if keys.is_empty() {
+            return;
+        }
+        let missing: Vec<String> = keys
+            .iter()
+            .filter(|k| !self.lib.in_manuscript(k))
+            .cloned()
+            .collect();
+        if !missing.is_empty() {
+            let mut n = 0;
+            for k in &missing {
+                if matches!(self.lib.add_to_manuscript(k), Ok(true)) {
+                    n += 1;
+                }
+            }
+            self.note(MsgCat::Ok, format!("◆ Added {n} paper(s) to manuscript db"));
+        } else {
+            let mut n = 0;
+            let mut rescued = 0;
+            for k in &keys {
+                if !self.lib.in_personal(k) {
+                    rescued += 1;
+                }
+                if matches!(self.lib.remove_from_manuscript(k), Ok(true)) {
+                    n += 1;
+                }
+            }
+            let note = if rescued > 0 {
+                format!("  ({rescued} copied to personal library)")
+            } else {
+                String::new()
+            };
+            self.note(MsgCat::Ok, format!("Removed {n} paper(s) from manuscript db{note}"));
+        }
+        self.rebuild_order();
+    }
+
+    /// Delete — ask for confirmation before removing.
+    fn remove_papers(&mut self) {
+        let keys = self.action_keys();
+        if !keys.is_empty() {
+            self.mode = Mode::Confirm { keys };
+        }
+    }
+
+    /// Confirmed removal from both databases; exits selection mode after.
+    fn remove_confirmed(&mut self, keys: &[String]) {
+        let mut n = 0;
+        for k in keys {
+            if self.lib.remove_entry(k).is_ok() {
+                n += 1;
+            }
+        }
+        if self.select_mode {
+            self.select_mode = false;
+            self.selected.clear();
+        }
+        self.rebuild_order();
+        self.note(MsgCat::Ok, format!("Removed {n} paper(s)"));
+    }
+
+    /// o — open every cached PDF among the targets.
+    fn open_pdfs(&mut self) {
+        let paths: Vec<_> = self
+            .action_keys()
+            .iter()
+            .filter(|k| pdf::is_cached(k))
+            .map(|k| pdf::cache_path(k))
+            .collect();
+        if paths.is_empty() {
+            self.note(MsgCat::Warn, "no cached PDFs in selection  (p to download)".to_string());
+            return;
+        }
+        let n = paths.len();
+        pdf::open_paths(&paths);
+        self.note(MsgCat::Ok, format!("Opened {n} PDF(s)"));
+    }
+
+    /// X — cancel a running browser-download watch, else clear cached PDFs.
+    fn clear_pdfs(&mut self) {
+        if let Some(cancel) = self.poll_cancel.take() {
+            cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+            self.note(MsgCat::Warn, "browser download cancelled".to_string());
+            return;
+        }
+        self.pdf_status.clear();
+        let mut n = 0;
+        for k in self.action_keys() {
+            let p = pdf::cache_path(&k);
+            if p.exists() && std::fs::remove_file(&p).is_ok() {
+                n += 1;
+            }
+        }
+        self.note(MsgCat::Ok, format!("Cleared {n} cached PDF(s)"));
+    }
+
+    /// Fetch one entry's PDF from a specific source (pub card buttons),
+    /// on the download worker channel.
+    fn download_single(&mut self, key: String, source: pdf::Source) {
+        if self.dl_rx.is_some() {
+            self.note(MsgCat::Warn, "a download is already running".to_string());
+            return;
+        }
+        let Some(e) = self.lib.get(&key) else { return };
+        let (eprint, adsurl) = (e.eprint().to_string(), e.adsurl().to_string());
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.dl_rx = Some(rx);
+        self.note(MsgCat::Info, format!("Downloading {key}…"));
+        std::thread::spawn(move || {
+            let ok = pdf::fetch_source(&key, &eprint, &adsurl, source).is_some();
+            let _ = tx.send(DlMsg::Done {
+                done: ok as usize,
+                failed: if ok { vec![] } else { vec![key] },
+            });
+        });
+    }
+
+    fn browser_download(&mut self) {
+        if let Some(k) = self.action_keys().into_iter().next() {
+            self.browser_download_for(k);
+        }
+    }
+
+    /// B — resolve the best manual-download URL, open the browser, and
+    /// watch ~/Downloads for the PDF (60s, cancellable with X).
+    fn browser_download_for(&mut self, key: String) {
+        if self.dl_rx.is_some() {
+            self.note(MsgCat::Warn, "a download is already running".to_string());
+            return;
+        }
+        let Some(e) = self.lib.get(&key) else {
+            return;
+        };
+        let (key, doi, adsurl, eprint) = (
+            e.key().to_string(),
+            e.doi().to_string(),
+            e.adsurl().to_string(),
+            e.eprint().to_string(),
+        );
+        let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        self.poll_cancel = Some(cancel.clone());
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.dl_rx = Some(rx);
+        self.note(MsgCat::Info, format!("Resolving browser source for {key}…"));
+        std::thread::spawn(move || {
+            let Some(url) = pdf::browser_resolve_url(&doi, &adsurl, &eprint) else {
+                let _ = tx.send(DlMsg::Done { done: 0, failed: vec![key] });
+                return;
+            };
+            let before = pdf::downloads_snapshot();
+            pdf::browser_open(&url);
+            let _ = tx.send(DlMsg::Progress(format!(
+                "Browser opened — waiting for {key} in ~/Downloads (60s, X cancels)…"
+            )));
+            let got = pdf::poll_downloads(&key, &before, 60, &cancel);
+            let _ = tx.send(DlMsg::Done {
+                done: got.is_some() as usize,
+                failed: if got.is_some() { vec![] } else { vec![key] },
+            });
+        });
+    }
+
+    /// pick … — open the modal ~/Downloads PDF picker for one entry.
+    fn open_picker_for(&mut self, key: String) {
+        let files = pdf::downloads_pdfs();
+        if files.is_empty() {
+            self.note(MsgCat::Info, "no PDFs in ~/Downloads".to_string());
+            return;
+        }
+        self.mode = Mode::Pick { key, files, sel: 0 };
+    }
+
+    /// p — download PDFs for targets not yet cached, on a background
+    /// thread so the UI stays live; progress arrives over a channel.
+    fn download_pdfs(&mut self) {
+        if self.dl_rx.is_some() {
+            self.note(MsgCat::Warn, "a download is already running".to_string());
+            return;
+        }
+        let items: Vec<(String, String, String)> = self
+            .action_keys()
+            .iter()
+            .filter(|k| !pdf::is_cached(k))
+            .filter_map(|k| {
+                let e = self.lib.get(k)?;
+                if e.eprint().is_empty() && e.adsurl().is_empty() {
+                    return None;
+                }
+                Some((k.clone(), e.eprint().to_string(), e.adsurl().to_string()))
+            })
+            .collect();
+        if items.is_empty() {
+            self.note(MsgCat::Warn, "nothing to download (cached, or no arXiv ID / ADS URL)".to_string());
+            return;
+        }
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.dl_rx = Some(rx);
+        let total = items.len();
+        std::thread::spawn(move || {
+            let mut done = 0;
+            let mut failed = vec![];
+            for (i, (key, eprint, adsurl)) in items.iter().enumerate() {
+                let _ = tx.send(DlMsg::Progress(format!(
+                    "Downloading [{}/{total}] {key}…",
+                    i + 1
+                )));
+                if pdf::fetch(key, eprint, adsurl).is_some() {
+                    done += 1;
+                } else {
+                    failed.push(key.clone());
+                }
+            }
+            let _ = tx.send(DlMsg::Done { done, failed });
+        });
+        self.note(MsgCat::Info, format!("Downloading {total} PDF(s)…"));
+    }
+
+    fn drain_downloads(&mut self) {
+        let mut msgs = vec![];
+        if let Some(rx) = &self.dl_rx {
+            while let Ok(m) = rx.try_recv() {
+                msgs.push(m);
+            }
+        }
+        for m in msgs {
+            match m {
+                DlMsg::Progress(s) => self.status = s,
+                DlMsg::Done { done, failed } => {
+                    let cat = if failed.is_empty() { MsgCat::Ok } else { MsgCat::Err };
+                    let msg = if failed.is_empty() {
+                        format!("Downloaded {done} PDF(s)")
+                    } else {
+                        format!(
+                            "Downloaded {done} PDF(s) — failed: {}{}",
+                            failed[..failed.len().min(3)].join(", "),
+                            if failed.len() > 3 { "…" } else { "" }
+                        )
+                    };
+                    self.note(cat, msg);
+                    // success needs no card note — the buttons flipping to
+                    // Open/Clear already signal it; only failures explain
+                    self.pdf_status = if done == 0 && !failed.is_empty() {
+                        "✗ no PDF found — try browser ↓".to_string()
+                    } else {
+                        String::new()
+                    };
+                    self.dl_rx = None;
+                    self.poll_cancel = None;
+                }
+            }
+        }
+    }
+
+    fn on_mouse(&mut self, m: MouseEvent) {
+        match m.kind {
+            MouseEventKind::ScrollDown => self.move_sel(3),
+            MouseEventKind::ScrollUp => self.move_sel(-3),
+            MouseEventKind::Down(MouseButton::Left) => {
+                self.on_click(m.column, m.row, m.modifiers)
+            }
+            MouseEventKind::Moved => self.hover = (m.column, m.row),
+            _ => {}
+        }
+    }
+
+    fn on_click(&mut self, x: u16, y: u16, mods: KeyModifiers) {
+        // modal picker swallows all clicks: row click imports, outside closes
+        if let Mode::Pick { key, files, .. } = &self.mode {
+            if hit(self.pick_area, x, y) && y > self.pick_area.y {
+                let i = (y - self.pick_area.y - 1) as usize;
+                if i < files.len() {
+                    let (key, file) = (key.clone(), files[i].clone());
+                    self.mode = Mode::Normal;
+                    self.import_picked(&key, &file);
+                    return;
+                }
+            }
+            self.mode = Mode::Normal;
+            return;
+        }
+        if self.show_help {
+            self.show_help = false; // any click dismisses the cheat-sheet
+            return;
+        }
+        // confirm modal: only its two buttons act; other clicks are inert
+        if let Mode::Confirm { keys } = &self.mode {
+            if let Some(&(_, is_confirm)) = self.confirm_btns.iter().find(|(r, _)| hit(*r, x, y)) {
+                let keys = keys.clone();
+                self.mode = Mode::Normal;
+                if is_confirm {
+                    self.remove_confirmed(&keys);
+                } else {
+                    self.note(MsgCat::Warn, "removal cancelled".to_string());
+                }
+            }
+            return;
+        }
+        // copy-regions: the card text copies its own entry's datum
+        if let Some(&(_, item)) = self.card_yanks.iter().find(|(r, _)| hit(*r, x, y)) {
+            if let Some(key) = self.selected_key().map(str::to_string) {
+                self.do_copy_single(key, item);
+            }
+            return;
+        }
+        // pub card links open the browser
+        if let Some((_, url)) = self.card_links.iter().find(|(r, _)| hit(*r, x, y)) {
+            let url = url.clone();
+            pdf::browser_open(&url);
+            self.note(MsgCat::Info, "opened in browser".to_string());
+            return;
+        }
+        // control panel rows: the copy menu while the y-chord is active,
+        // the actions list otherwise
+        // copy-chord modal: a row copies, anything else cancels the chord
+        if matches!(self.mode, Mode::Copy) {
+            if let Some(&(_, item)) = self.panel_copy_rows.iter().find(|(r, _)| hit(*r, x, y)) {
+                self.do_copy(item);
+            } else {
+                self.exit_copy_mode();
+                self.note(MsgCat::Warn, "copy cancelled".to_string());
+            }
+            return;
+        }
+        // pub card buttons (act on the card's entry)
+        if let Some(&(_, btn)) = self.card_buttons.iter().find(|(r, _)| hit(*r, x, y)) {
+            if let Some(key) = self.selected_key().map(str::to_string) {
+                match btn {
+                    CardBtn::Arxiv => self.download_single(key, pdf::Source::Arxiv),
+                    CardBtn::Oa => self.download_single(key, pdf::Source::Oa),
+                    CardBtn::Browser => self.browser_download_for(key),
+                    CardBtn::Pick => self.open_picker_for(key),
+                    CardBtn::Open => {
+                        pdf::open_paths(&[pdf::cache_path(&key)]);
+                        self.note(MsgCat::Ok, format!("Opened {key}"));
+                    }
+                    CardBtn::Clear | CardBtn::Cancel => self.clear_card_pdf(&key),
+                    CardBtn::MsToggle => {
+                        let res = if self.lib.in_manuscript(&key) {
+                            let rescued = !self.lib.in_personal(&key);
+                            match self.lib.remove_from_manuscript(&key) {
+                                Ok(true) => Some(format!(
+                                    "Removed {key} from manuscript db{}",
+                                    if rescued { "  (copied to personal library)" } else { "" }
+                                )),
+                                _ => None,
+                            }
+                        } else {
+                            match self.lib.add_to_manuscript(&key) {
+                                Ok(true) => Some(format!("◆ Added {key} to manuscript db")),
+                                _ => None,
+                            }
+                        };
+                        if let Some(msg) = res {
+                            self.note(MsgCat::Ok, msg);
+                            self.rebuild_order();
+                        }
+                    }
+                }
+            }
+            return;
+        }
+        // scope strip (usize::MAX = the new-query affordance)
+        if let Some(&(_, idx)) = self.scope_rects.iter().find(|(r, _)| hit(*r, x, y)) {
+            if idx == usize::MAX {
+                self.open_ads_prompt();
+            } else {
+                self.set_scope(idx);
+            }
+            return;
+        }
+        // footer view badges
+        if let Some(&(_, action)) = self.footer_badges.iter().find(|(r, _)| hit(*r, x, y)) {
+            self.run_action(action);
+            return;
+        }
+        // column headers sort
+        if let Some(&(_, col)) = self.sort_headers.iter().find(|(r, _)| hit(*r, x, y)) {
+            self.sort_by(col);
+            return;
+        }
+        // table: header at a.y, rule below it, data rows after
+        let a = self.table_area;
+        if !hit(a, x, y) || y <= a.y + 1 {
+            return;
+        }
+        let pos = self.table.offset() + (y - a.y - 2) as usize;
+        if pos >= self.filtered.len() {
+            return;
+        }
+        self.table.select(Some(pos));
+        // option/ctrl+click anywhere on a row enters multi-select and
+        // toggles it. The SGR mouse protocol carries only shift/alt/ctrl
+        // bits — there is no cmd bit, and macOS terminals keep cmd+click
+        // for themselves (links) — so cmd cannot arrive; SUPER stays in
+        // the mask in case a terminal ever forwards it that way.
+        let modified = mods.intersects(
+            KeyModifiers::SUPER | KeyModifiers::ALT | KeyModifiers::CONTROL,
+        );
+        let selectable = !matches!(
+            self.scopes.get(self.active_scope),
+            Some(Scope::Manuscript { .. })
+        );
+        if (modified || x < a.x + 2) && selectable {
+            self.select_mode = true;
+            self.toggle_row_selected(pos);
+        }
+    }
+
+    /// Clear (or cancel a pending browser watch for) the card entry's PDF.
+    fn clear_card_pdf(&mut self, key: &str) {
+        if let Some(cancel) = self.poll_cancel.take() {
+            cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+            self.note(MsgCat::Warn, "browser download cancelled".to_string());
+            return;
+        }
+        self.pdf_status.clear();
+        let p = pdf::cache_path(key);
+        if p.exists() && std::fs::remove_file(&p).is_ok() {
+            self.note(MsgCat::Ok, format!("Cleared cached PDF for {key}"));
+        }
+    }
+
+    /// y — await a target key; the panel force-shows the Copy tab as a
+    /// which-key menu (restored by exit_copy_mode).
+    fn enter_copy_mode(&mut self) {
+        if self.action_keys().is_empty() {
+            self.note(MsgCat::Warn, "nothing to copy".to_string());
+            return;
+        }
+        self.mode = Mode::Copy;
+    }
+
+    fn exit_copy_mode(&mut self) {
+        if matches!(self.mode, Mode::Copy) {
+            self.mode = Mode::Normal;
+        }
+    }
+
+    /// The clipboard text an item yields over the current targets, or
+    /// None when no target has the field (also the panel's dimming test).
+    fn copy_value(&self, item: CopyItem) -> Option<String> {
+        self.copy_value_keys(&self.action_keys(), item)
+    }
+
+    fn copy_value_keys(&self, keys: &[String], item: CopyItem) -> Option<String> {
+        let mut vals: Vec<String> = vec![];
+        for k in keys {
+            let Some(e) = self.lib.get(k) else { continue };
+            let v = match item {
+                CopyItem::Key => Some(if e.short_key.is_empty() {
+                    e.key().to_string()
+                } else {
+                    e.short_key.clone()
+                }),
+                CopyItem::FullKey => Some(e.key().to_string()),
+                CopyItem::Bibcode => e.bibcode().map(str::to_string),
+                CopyItem::AdsUrl => (!e.adsurl().is_empty()).then(|| e.adsurl().to_string()),
+                CopyItem::ArxivUrl => (!e.eprint().is_empty())
+                    .then(|| format!("https://arxiv.org/abs/{}", e.eprint())),
+                CopyItem::DoiUrl => {
+                    (!e.doi().is_empty()).then(|| format!("https://doi.org/{}", e.doi()))
+                }
+                CopyItem::PdfPath => pdf::is_cached(k)
+                    .then(|| pdf::cache_path(k).to_string_lossy().into_owned()),
+                CopyItem::Abstract => {
+                    (!e.abstract_().is_empty()).then(|| e.abstract_().to_string())
+                }
+                CopyItem::Title => {
+                    let t = e.title().trim_matches(['{', '}']).to_string();
+                    (!t.is_empty()).then_some(t)
+                }
+            };
+            if let Some(v) = v {
+                vals.push(v);
+            }
+        }
+        if vals.is_empty() {
+            return None;
+        }
+        let sep = match item {
+            CopyItem::Key | CopyItem::FullKey | CopyItem::Bibcode => ", ",
+            _ => "\n",
+        };
+        Some(vals.join(sep))
+    }
+
+    /// Copy one entry's datum (the card's copy-regions path).
+    fn do_copy_single(&mut self, key: String, item: CopyItem) {
+        match self.copy_value_keys(&[key], item) {
+            Some(text) => self.finish_copy(&text.clone()),
+            None => self.note(MsgCat::Warn, "nothing to copy".to_string()),
+        }
+    }
+
+    fn do_copy(&mut self, item: CopyItem) {
+        self.exit_copy_mode();
+        let Some(text) = self.copy_value(item) else {
+            self.note(MsgCat::Warn, "nothing to copy".to_string());
+            return;
+        };
+        self.finish_copy(&text);
+    }
+
+    fn finish_copy(&mut self, text: &str) {
+        if copy_to_clipboard(&text) {
+            let first = text.lines().next().unwrap_or("");
+            let mut shown: String = first.chars().take(60).collect();
+            if shown.len() < text.len() {
+                shown.push('…');
+            }
+            self.note(MsgCat::Ok, format!("Copied: {shown}"));
+        } else {
+            self.note(
+                MsgCat::Err,
+                "clipboard copy failed — terminal may not support OSC 52".to_string(),
+            );
+        }
+    }
+
+    fn on_key(&mut self, code: KeyCode, mods: KeyModifiers) {
+        if mods.contains(KeyModifiers::CONTROL) && code == KeyCode::Char('c') {
+            self.quit = true;
+            return;
+        }
+        if self.show_help {
+            self.show_help = false; // any key dismisses the cheat-sheet
+            return;
+        }
+        match &mut self.mode {
+            Mode::Filter => match code {
+                KeyCode::Esc => {
+                    self.filter.clear();
+                    self.mode = Mode::Normal;
+                    self.refilter();
+                }
+                KeyCode::Enter => self.mode = Mode::Normal,
+                KeyCode::Backspace => {
+                    self.filter.pop();
+                    self.refilter();
+                }
+                KeyCode::Char(c) => {
+                    self.filter.push(c);
+                    self.refilter();
+                }
+                _ => {}
+            },
+            Mode::Pick { key, files, sel } => match code {
+                KeyCode::Esc => self.mode = Mode::Normal,
+                KeyCode::Char('j') | KeyCode::Down => {
+                    *sel = (*sel + 1).min(files.len().saturating_sub(1))
+                }
+                KeyCode::Char('k') | KeyCode::Up => *sel = sel.saturating_sub(1),
+                KeyCode::Enter => {
+                    let (key, file) = (key.clone(), files[*sel].clone());
+                    self.mode = Mode::Normal;
+                    self.import_picked(&key, &file);
+                }
+                _ => {}
+            },
+            Mode::Copy => {
+                let item = match code {
+                    KeyCode::Char('y') => Some(CopyItem::Key),
+                    KeyCode::Char('Y') => Some(CopyItem::FullKey),
+                    KeyCode::Char('b') => Some(CopyItem::Bibcode),
+                    KeyCode::Char('a') => Some(CopyItem::AdsUrl),
+                    KeyCode::Char('x') => Some(CopyItem::ArxivUrl),
+                    KeyCode::Char('d') => Some(CopyItem::DoiUrl),
+                    KeyCode::Char('p') => Some(CopyItem::PdfPath),
+                    KeyCode::Char('t') => Some(CopyItem::Title),
+                    KeyCode::Char('A') => Some(CopyItem::Abstract),
+                    _ => None,
+                };
+                match item {
+                    Some(item) => self.do_copy(item),
+                    None => {
+                        self.exit_copy_mode();
+                        self.note(MsgCat::Warn, "copy cancelled".to_string());
+                    }
+                }
+            }
+            Mode::AdsPrompt { input, limit } => match code {
+                KeyCode::Esc => self.mode = Mode::Normal,
+                KeyCode::Enter => {
+                    let (q, l) = (input.clone(), *limit);
+                    self.mode = Mode::Normal;
+                    self.run_ads_query_limit(q, None, l);
+                }
+                KeyCode::Up => {
+                    const STEPS: [usize; 4] = [20, 50, 100, 200];
+                    let i = STEPS.iter().position(|&s| s >= *limit).unwrap_or(0);
+                    *limit = STEPS[(i + 1).min(STEPS.len() - 1)];
+                }
+                KeyCode::Down => {
+                    const STEPS: [usize; 4] = [20, 50, 100, 200];
+                    let i = STEPS.iter().position(|&s| s >= *limit).unwrap_or(0);
+                    *limit = STEPS[i.saturating_sub(1)];
+                }
+                KeyCode::Backspace => {
+                    input.pop();
+                }
+                KeyCode::Char(c) => input.push(c),
+                _ => {}
+            },
+            Mode::Confirm { keys } => match code {
+                KeyCode::Enter | KeyCode::Char('y') => {
+                    let keys = keys.clone();
+                    self.mode = Mode::Normal;
+                    self.remove_confirmed(&keys);
+                }
+                KeyCode::Esc | KeyCode::Char('n') => {
+                    self.mode = Mode::Normal;
+                    self.note(MsgCat::Warn, "removal cancelled".to_string());
+                }
+                _ => {}
+            },
+            Mode::Normal => match code {
+                KeyCode::Char('q') => self.run_action(Action::Quit),
+                KeyCode::Char('/') => self.run_action(Action::Filter),
+                KeyCode::Char('m') => self.run_action(Action::Manuscript),
+                KeyCode::Delete | KeyCode::Backspace => self.run_action(Action::Remove),
+                KeyCode::Char('p') => self.run_action(Action::Download),
+                KeyCode::Char('o') => self.run_action(Action::OpenPdf),
+                KeyCode::Char('X') => self.run_action(Action::ClearPdf),
+                KeyCode::Char('B') => self.run_action(Action::BrowserDl),
+                KeyCode::Char('D') | KeyCode::Char('z') => self.run_action(Action::Card),
+                KeyCode::Char('?') => self.run_action(Action::Help),
+                KeyCode::Char('S') => self.open_ads_prompt(),
+                KeyCode::Char('[') => self.cycle_scope(-1),
+                KeyCode::Char(']') => self.cycle_scope(1),
+                KeyCode::Char('r') => self.refresh_scope(),
+                KeyCode::Char('+') | KeyCode::Char('=') => self.step_limit(1),
+                KeyCode::Char('-') => self.step_limit(-1),
+                KeyCode::Char('w') if mods.contains(KeyModifiers::CONTROL) => {
+                    self.close_scope()
+                }
+                KeyCode::Char('i') => self.import_highlighted(),
+                KeyCode::Char('L') => self.run_action(Action::Log),
+                KeyCode::Char('y') => self.run_action(Action::Copy),
+                KeyCode::Char('Y') => self.do_copy(CopyItem::FullKey),
+                KeyCode::Char(' ') => self.run_action(Action::Select),
+                KeyCode::Esc => {
+                    if self.select_mode {
+                        self.exit_select_mode();
+                    } else if !self.filter.is_empty() {
+                        self.filter.clear();
+                        self.refilter();
+                    }
+                }
+                KeyCode::Char('j') | KeyCode::Down => self.move_sel(1),
+                KeyCode::Char('k') | KeyCode::Up => self.move_sel(-1),
+                KeyCode::Char('g') | KeyCode::Home => {
+                    self.table.select((self.row_count() > 0).then_some(0))
+                }
+                KeyCode::Char('G') | KeyCode::End => {
+                    self.table.select(self.row_count().checked_sub(1))
+                }
+                KeyCode::PageDown => self.move_sel(20),
+                KeyCode::PageUp => self.move_sel(-20),
+                _ => {}
+            },
+        }
+    }
+
+    fn import_picked(&mut self, key: &str, file: &std::path::Path) {
+        match pdf::import_file(key, file) {
+            Some(dest) => {
+                let kb = dest.metadata().map(|m| m.len() / 1024).unwrap_or(0);
+                let msg = format!(
+                    "Imported {} for {key}  ({kb} KB)",
+                    file.file_name().unwrap_or_default().to_string_lossy()
+                );
+                self.note(MsgCat::Ok, msg);
+            }
+            None => {
+                let msg = format!(
+                    "{} does not look like a PDF",
+                    file.file_name().unwrap_or_default().to_string_lossy()
+                );
+                self.note(MsgCat::Err, msg);
+            }
+        }
+    }
+
+    fn draw(&mut self, f: &mut Frame) {
+        self.card_buttons.clear();
+        self.hover_hint = None;
+        self.panel_copy_rows.clear();
+        let log_h = if self.show_log {
+            (self.log.len().min(8) + 2) as u16
+        } else {
+            0
+        };
+        let [main, log_area, status] = Layout::vertical([
+            Constraint::Min(1),
+            Constraint::Length(log_h),
+            Constraint::Length(1),
+        ])
+        .areas(f.area());
+        let mut constraints = vec![Constraint::Min(40)];
+        if self.show_detail {
+            constraints.push(Constraint::Length(48));
+        }
+        let areas = Layout::horizontal(constraints).split(main);
+        let mut it = areas.iter();
+        let table_area = *it.next().unwrap();
+        let detail_area = self.show_detail.then(|| *it.next().unwrap());
+
+        let (strip_area, table_area) = {
+            let [s, t] = Layout::vertical([Constraint::Length(1), Constraint::Min(1)])
+                .areas(table_area);
+            (s, t)
+        };
+        self.draw_scope_strip(f, strip_area);
+        self.draw_table(f, table_area);
+        if let Some(area) = detail_area {
+            self.draw_detail(f, area);
+        } else {
+            self.card_yanks.clear();
+        }
+        if matches!(self.mode, Mode::Copy) {
+            self.draw_copy_modal(f);
+        } else {
+            self.panel_area = Rect::default();
+        }
+        if self.show_help {
+            self.draw_help(f);
+        }
+        if self.show_log {
+            self.draw_log(f, log_area);
+        }
+        self.draw_status(f, status);
+        if let Mode::Pick { .. } = self.mode {
+            self.draw_picker(f);
+        } else {
+            self.pick_area = Rect::default();
+        }
+        if let Mode::Confirm { .. } = self.mode {
+            self.draw_confirm(f);
+        } else {
+            self.confirm_btns.clear();
+        }
+    }
+
+    /// Centered confirm modal for Delete: lists the targets, offers
+    /// clickable remove/cancel (⏎/y confirms, Esc/n cancels).
+    fn draw_confirm(&mut self, f: &mut Frame) {
+        self.confirm_btns.clear();
+        let Mode::Confirm { keys } = &self.mode else { return };
+        let frame = f.area();
+        let listed: Vec<&String> = keys.iter().take(8).collect();
+        let extra = keys.len().saturating_sub(listed.len());
+        let h = (listed.len() + if extra > 0 { 1 } else { 0 } + 4) as u16;
+        let w = 52.min(frame.width.saturating_sub(4));
+        let area = Rect {
+            x: frame.width.saturating_sub(w) / 2,
+            y: frame.height.saturating_sub(h) / 2,
+            width: w,
+            height: h.min(frame.height),
+        };
+        f.render_widget(ratatui::widgets::Clear, area);
+        let mut lines: Vec<Line> = vec![];
+        for k in &listed {
+            lines.push(Line::from(Span::styled(
+                k.to_string(),
+                Style::default().fg(Color::Cyan),
+            )));
+        }
+        if extra > 0 {
+            lines.push(Line::from(Span::styled(
+                format!("… and {extra} more"),
+                Style::default().fg(Color::DarkGray),
+            )));
+        }
+        lines.push(Line::default());
+        let by = area.y + h.saturating_sub(2);
+        let bx = area.x + 1;
+        let (rw, cw) = (pill_width("remove"), pill_width("cancel"));
+        self.confirm_btns
+            .push((Rect { x: bx, y: by, width: rw, height: 1 }, true));
+        self.confirm_btns.push((
+            Rect { x: bx + rw + 2, y: by, width: cw, height: 1 },
+            false,
+        ));
+        let hov_remove = self
+            .confirm_btns
+            .first()
+            .is_some_and(|(r, _)| hit(*r, self.hover.0, self.hover.1));
+        let hov_cancel = self
+            .confirm_btns
+            .get(1)
+            .is_some_and(|(r, _)| hit(*r, self.hover.0, self.hover.1));
+        let mut bspans: Vec<Span> = vec![];
+        push_pill(
+            &mut bspans,
+            "remove",
+            if hov_remove { Color::LightRed } else { Color::Red },
+            Color::White,
+        );
+        bspans.push(Span::raw("  "));
+        push_pill(
+            &mut bspans,
+            "cancel",
+            if hov_cancel { Color::Rgb(58, 63, 72) } else { Color::Rgb(40, 44, 52) },
+            Color::White,
+        );
+        lines.push(Line::from(bspans));
+        let title = format!(
+            " Remove {} paper(s) from the library? ",
+            keys.len()
+        );
+        let p = Paragraph::new(Text::from(lines))
+            .block(Block::default().borders(Borders::ALL).title(title));
+        f.render_widget(p, area);
+    }
+
+    /// The ctrl+p control panel, tabbed: Actions lists every action with
+    /// key, label, and click target, unavailable ones dimmed (the Python
+    /// key panel's behavior); Copy lists the clipboard targets of the
+    /// y-chord the same way. Tab headers are clickable.
+    /// Centered which-key modal for the y chord: clickable rows, items
+    /// without a value dimmed; clicking elsewhere or Esc cancels.
+    fn draw_copy_modal(&mut self, f: &mut Frame) {
+        self.panel_copy_rows.clear();
+        let entries: &[(&str, &str, CopyItem)] = &[
+            ("y", "cite key", CopyItem::Key),
+            ("Y", "full key", CopyItem::FullKey),
+            ("b", "bibcode", CopyItem::Bibcode),
+            ("a", "ADS URL", CopyItem::AdsUrl),
+            ("x", "arXiv URL", CopyItem::ArxivUrl),
+            ("d", "DOI URL", CopyItem::DoiUrl),
+            ("p", "PDF path", CopyItem::PdfPath),
+            ("t", "title", CopyItem::Title),
+            ("A", "abstract", CopyItem::Abstract),
+        ];
+        let frame = f.area();
+        let h = entries.len() as u16 + 3;
+        let w = 30.min(frame.width.saturating_sub(4));
+        let area = Rect {
+            x: frame.width.saturating_sub(w) / 2,
+            y: frame.height.saturating_sub(h) / 2,
+            width: w,
+            height: h.min(frame.height),
+        };
+        self.panel_area = area;
+        f.render_widget(ratatui::widgets::Clear, area);
+        let mut lines: Vec<Line> = vec![];
+        for (i, (key, label, item)) in entries.iter().enumerate() {
+            let y = area.y + 1 + i as u16;
+            let avail = self.copy_value(*item).is_some();
+            if avail {
+                self.panel_copy_rows.push((
+                    Rect { x: area.x + 1, y, width: w.saturating_sub(2), height: 1 },
+                    *item,
+                ));
+            }
+            let hov = avail && hit(
+                Rect { x: area.x + 1, y, width: w.saturating_sub(2), height: 1 },
+                self.hover.0,
+                self.hover.1,
+            );
+            let (mut ks, mut ls) = if avail {
+                (Style::default().fg(Color::Cyan), Style::default())
+            } else {
+                (
+                    Style::default().fg(Color::DarkGray),
+                    Style::default().fg(Color::DarkGray),
+                )
+            };
+            if hov {
+                ks = ks.bg(Color::Rgb(50, 54, 62));
+                ls = ls.bg(Color::Rgb(50, 54, 62)).add_modifier(Modifier::BOLD);
+            }
+            lines.push(Line::from(vec![
+                Span::styled(format!(" {key:>2}  "), ks),
+                Span::styled((*label).to_string(), ls),
+            ]));
+        }
+        lines.push(Line::default());
+        lines.push(Line::from(Span::styled(
+            " Esc cancel",
+            Style::default().fg(Color::DarkGray),
+        )));
+        let p = Paragraph::new(Text::from(lines)).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(" copy → clipboard "),
+        );
+        f.render_widget(p, area);
+    }
+
+    /// Centered keyboard cheat-sheet (ctrl+p); any key or click dismisses.
+    fn draw_help(&mut self, f: &mut Frame) {
+        let entries: &[(&str, &str)] = &[
+            ("␣", "select / toggle row"),
+            ("j k", "move cursor"),
+            ("g G", "first / last row"),
+            ("m", "manuscript ± (selection)"),
+            ("p", "download PDF"),
+            ("B", "browser download"),
+            ("o", "open PDF"),
+            ("X", "clear PDF / cancel DL"),
+            ("y", "copy…"),
+            ("⌫", "remove…"),
+            ("/", "filter"),
+            ("D", "pub card"),
+            ("L", "event log"),
+            ("?", "this cheat-sheet"),
+            ("q", "quit"),
+        ];
+        let frame = f.area();
+        let rows = entries.len().div_ceil(2) as u16;
+        let h = rows + 2;
+        let w = 62.min(frame.width.saturating_sub(4));
+        let colw = (w - 2) / 2;
+        let area = Rect {
+            x: frame.width.saturating_sub(w) / 2,
+            y: frame.height.saturating_sub(h) / 2,
+            width: w,
+            height: h.min(frame.height),
+        };
+        f.render_widget(ratatui::widgets::Clear, area);
+        let mut lines: Vec<Line> = vec![];
+        for r in 0..rows as usize {
+            let mut spans: Vec<Span> = vec![];
+            for c in 0..2usize {
+                if let Some((key, label)) = entries.get(r + c * rows as usize) {
+                    let text = format!(" {key:>3}  {label}");
+                    let pad = (colw as usize).saturating_sub(text.chars().count());
+                    spans.push(Span::styled(
+                        format!(" {key:>3}  "),
+                        Style::default().fg(Color::Cyan),
+                    ));
+                    spans.push(Span::raw(format!("{label}{}", " ".repeat(pad))));
+                }
+            }
+            lines.push(Line::from(spans));
+        }
+        let p = Paragraph::new(Text::from(lines))
+            .block(Block::default().borders(Borders::ALL).title(" keys "));
+        f.render_widget(p, area);
+    }
+
+    /// Centered modal list of ~/Downloads PDFs for the pick action.
+    fn draw_picker(&mut self, f: &mut Frame) {
+        let Mode::Pick { files, sel, key } = &self.mode else {
+            return;
+        };
+        let frame = f.area();
+        let h = (files.len().min(15) + 2) as u16;
+        let w = 64.min(frame.width.saturating_sub(4));
+        let area = Rect {
+            x: frame.width.saturating_sub(w) / 2,
+            y: frame.height.saturating_sub(h) / 2,
+            width: w,
+            height: h.min(frame.height),
+        };
+        self.pick_area = area;
+        f.render_widget(ratatui::widgets::Clear, area);
+        let mut lines: Vec<Line> = vec![];
+        for (i, p) in files.iter().take(15).enumerate() {
+            let name = p.file_name().unwrap_or_default().to_string_lossy().to_string();
+            let row_y = area.y + 1 + i as u16;
+            let hov = self.hover.1 == row_y && hit(area, self.hover.0, self.hover.1);
+            let style = if i == *sel {
+                Style::default().bg(Color::DarkGray).add_modifier(Modifier::BOLD)
+            } else if hov {
+                Style::default().bg(Color::Rgb(50, 54, 62))
+            } else {
+                Style::default()
+            };
+            lines.push(Line::from(Span::styled(name, style)));
+        }
+        let p = Paragraph::new(Text::from(lines)).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(format!(" pick PDF for {key} — ⏎ import · Esc cancel ")),
+        );
+        f.render_widget(p, area);
+    }
+
+    /// One-line scope strip: Library │ query │ query …, clickable, the
+    /// active scope bold cyan; [ and ] cycle, ctrl+w closes, r refreshes.
+    fn draw_scope_strip(&mut self, f: &mut Frame, area: Rect) {
+        self.scope_rects.clear();
+        let mut spans: Vec<Span> = vec![];
+        let mut x = area.x;
+        for (i, scope) in self.scopes.iter().enumerate() {
+            let label = scope.label().to_string();
+            let wl = pill_width(&label);
+            let r = Rect { x, y: area.y, width: wl, height: 1 };
+            self.scope_rects.push((r, i));
+            let active = i == self.active_scope;
+            let hov = hit(r, self.hover.0, self.hover.1);
+            let (bg, fg) = if active {
+                (Color::Cyan, Color::Black)
+            } else if hov {
+                (Color::Rgb(58, 63, 72), Color::White)
+            } else {
+                (Color::Rgb(40, 44, 52), Color::Gray)
+            };
+            push_pill(&mut spans, &label, bg, fg);
+            spans.push(Span::raw(" "));
+            x += wl + 1;
+        }
+        // the + pill starts a new query (also on S; the cheat-sheet documents it)
+        let label = "+ new";
+        let wl = pill_width(label);
+        let r = Rect { x, y: area.y, width: wl, height: 1 };
+        self.scope_rects.push((r, usize::MAX));
+        let hov = hit(r, self.hover.0, self.hover.1);
+        let (bg, fg) = if hov {
+            (Color::Rgb(58, 63, 72), Color::White)
+        } else {
+            (Color::Rgb(40, 44, 52), Color::DarkGray)
+        };
+        push_pill(&mut spans, label, bg, fg);
+        f.render_widget(Paragraph::new(Line::from(spans)), area);
+    }
+
+    fn draw_table(&mut self, f: &mut Frame, area: Rect) {
+        use ratatui::widgets::Cell;
+        self.table_area = area;
+        self.sort_headers.clear();
+        if let Some(Scope::Manuscript { rows }) = self.scopes.get(self.active_scope) {
+            // manuscript view: cited string, state, resolved title
+            use crate::library::CiteState;
+            let cursor = self.table.selected();
+            let hov_row = self.hovered_table_pos();
+            let trows: Vec<Row> = rows
+                .iter()
+                .enumerate()
+                .map(|(pos, r)| {
+                    let lit = hov_row == Some(pos);
+                    let (icon, word, style) = match (r.uncited, r.state) {
+                        (true, _) => ("·", "uncited", Style::default().fg(Color::DarkGray)),
+                        (_, CiteState::Ok) => ("●", "ok", Style::default().fg(Color::Green)),
+                        (_, CiteState::Library) => {
+                            ("○", "library", Style::default().fg(Color::Yellow))
+                        }
+                        (_, CiteState::Ambiguous) => {
+                            ("?", "ambiguous", Style::default().fg(Color::Magenta))
+                        }
+                        (_, CiteState::Missing) => ("✗", "missing", Style::default().fg(Color::Red)),
+                    };
+                    let cite_style = if lit {
+                        Style::default().fg(Color::White)
+                    } else {
+                        Style::default().fg(Color::Cyan)
+                    };
+                    let title_style = if lit {
+                        Style::default().fg(Color::White).add_modifier(Modifier::ITALIC)
+                    } else {
+                        Style::default().add_modifier(Modifier::ITALIC)
+                    };
+                    let row = Row::new(vec![
+                        Cell::from(Span::styled(
+                            if cursor == Some(pos) { "◉" } else { "" },
+                            Style::default().fg(Color::Cyan),
+                        )),
+                        Cell::from(Span::styled(icon, style)),
+                        Cell::from(Span::styled(r.cited.clone(), cite_style)),
+                        Cell::from(Span::styled(word, style)),
+                        Cell::from(Span::styled(r.title.clone(), title_style)),
+                    ]);
+                    if cursor == Some(pos) {
+                        row.style(Style::default().bg(Color::Rgb(34, 40, 52)))
+                    } else {
+                        row
+                    }
+                })
+                .collect();
+            let header: Vec<Span> = ["", "", "Cited", "State", "Title"]
+                .iter()
+                .zip([2u16, 2, 26, 10, 0])
+                .flat_map(|(l, w)| {
+                    let pad = (w as usize).saturating_sub(l.chars().count());
+                    [
+                        Span::styled(*l, Style::default().add_modifier(Modifier::BOLD)),
+                        Span::raw(" ".repeat(pad + 1)),
+                    ]
+                })
+                .collect();
+            f.render_widget(
+                Paragraph::new(Line::from(header)),
+                Rect { x: area.x, y: area.y, width: area.width, height: 1 },
+            );
+            f.render_widget(
+                Paragraph::new(Span::styled(
+                    "─".repeat(area.width as usize),
+                    Style::default().fg(Color::DarkGray),
+                )),
+                Rect { x: area.x, y: area.y + 1, width: area.width, height: 1 },
+            );
+            let data_area = Rect {
+                x: area.x,
+                y: area.y + 2,
+                width: area.width,
+                height: area.height.saturating_sub(2),
+            };
+            let table = Table::new(
+                trows,
+                [
+                    Constraint::Length(2),
+                    Constraint::Length(2),
+                    Constraint::Length(26),
+                    Constraint::Length(10),
+                    Constraint::Min(20),
+                ],
+            )
+            .block(Block::default().borders(Borders::NONE));
+            f.render_stateful_widget(table, data_area, &mut self.table);
+            return;
+        }
+        if let Some(Scope::Ads { articles, .. }) = self.scopes.get(self.active_scope) {
+            // ADS results: ↓ ● Year Author Title; ● from the bibcode
+            // index, ↓ from the canonical cache key (cite key once
+            // imported, bibcode otherwise)
+            let (author_w, _) = column_layout(area.width);
+            let cursor = self.table.selected();
+            let hov_row = self.hovered_table_pos();
+            let rows: Vec<Row> = articles
+                .iter()
+                .enumerate()
+                .map(|(pos, a)| {
+                    let entry = self.lib.get_by_bibcode(&a.bibcode);
+                    let cache_key = entry.map(|e| e.key()).unwrap_or(&a.bibcode);
+                    let author = a.author.join(" and ");
+                    let lit = hov_row == Some(pos);
+                    let (au_style, ti_style, yr_style) = if lit {
+                        (
+                            Style::default().fg(Color::White),
+                            Style::default().fg(Color::White).add_modifier(Modifier::ITALIC),
+                            Style::default().fg(Color::Green),
+                        )
+                    } else {
+                        (
+                            Style::default().fg(Color::Gray),
+                            Style::default().add_modifier(Modifier::ITALIC),
+                            Style::default().fg(Color::Green).add_modifier(Modifier::DIM),
+                        )
+                    };
+                    let circle = if self.select_mode {
+                        if self.selected.contains(&a.bibcode) { "◉" } else { "◯" }
+                    } else if cursor == Some(pos) {
+                        "◉"
+                    } else {
+                        ""
+                    };
+                    let circle_style = if self.select_mode && cursor == Some(pos) {
+                        Style::default().fg(Color::White).add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::default().fg(Color::Cyan)
+                    };
+                    let row = Row::new(vec![
+                        Cell::from(Span::styled(circle, circle_style)),
+                        Cell::from(Span::styled(
+                            if pdf::is_cached(cache_key) { "↓" } else { "" },
+                            Style::default().fg(Color::Green),
+                        )),
+                        Cell::from(Span::styled(
+                            if entry.is_some() { "●" } else { "" },
+                            Style::default().fg(Color::Magenta),
+                        )),
+                        Cell::from(Span::styled(a.year.clone(), yr_style)),
+                        Cell::from(Span::styled(
+                            fit_authors(&author, author_w as usize),
+                            au_style,
+                        )),
+                        Cell::from(Span::styled(a.title.clone(), ti_style)),
+                    ]);
+                    if cursor == Some(pos) {
+                        row.style(Style::default().bg(Color::Rgb(34, 40, 52)))
+                    } else {
+                        row
+                    }
+                })
+                .collect();
+            let header: Vec<Span> = ["", "↓", "●", "Year", "Author", "Title"]
+                .iter()
+                .zip([2u16, 2, 2, 6, author_w, 0])
+                .flat_map(|(l, w)| {
+                    let pad = (w as usize).saturating_sub(l.chars().count());
+                    [
+                        Span::styled(*l, Style::default().add_modifier(Modifier::BOLD)),
+                        Span::raw(" ".repeat(pad + 1)),
+                    ]
+                })
+                .collect();
+            f.render_widget(
+                Paragraph::new(Line::from(header)),
+                Rect { x: area.x, y: area.y, width: area.width, height: 1 },
+            );
+            f.render_widget(
+                Paragraph::new(Span::styled(
+                    "─".repeat(area.width as usize),
+                    Style::default().fg(Color::DarkGray),
+                )),
+                Rect { x: area.x, y: area.y + 1, width: area.width, height: 1 },
+            );
+            let data_area = Rect {
+                x: area.x,
+                y: area.y + 2,
+                width: area.width,
+                height: area.height.saturating_sub(2),
+            };
+            let table = Table::new(
+                rows,
+                [
+                    Constraint::Length(2),
+                    Constraint::Length(2),
+                    Constraint::Length(2),
+                    Constraint::Length(6),
+                    Constraint::Length(author_w),
+                    Constraint::Min(20),
+                ],
+            )
+            .block(Block::default().borders(Borders::NONE));
+            f.render_stateful_widget(table, data_area, &mut self.table);
+            return;
+        }
+        // subtle per-column palette; the terminal theme supplies the hues.
+        // cursor row: faint cool fill ("standing on a surface") + ◉;
+        // hovered row: no fill — the text lifts one level instead
+        let cursor_fill = Style::default().bg(Color::Rgb(34, 40, 52));
+        let palette = |lit: bool| {
+            if lit {
+                (
+                    Style::default().fg(Color::Cyan),
+                    Style::default().fg(Color::Green),
+                    Style::default().fg(Color::Magenta),
+                    Style::default().fg(Color::Green),
+                    Style::default().fg(Color::White),
+                    Style::default().fg(Color::Cyan),
+                )
+            } else {
+                (
+                    Style::default().fg(Color::Cyan),
+                    Style::default().fg(Color::Green),
+                    Style::default().fg(Color::Magenta),
+                    Style::default().fg(Color::Green).add_modifier(Modifier::DIM),
+                    Style::default().fg(Color::Gray),
+                    Style::default().fg(Color::Cyan).add_modifier(Modifier::DIM),
+                )
+            }
+        };
+        // responsive columns: author scales, Key drops first when tight —
+        // but never while the card is shown: the Key column is the
+        // hover-preview target, so the title absorbs the squeeze instead
+        let (author_w, show_key) = column_layout(area.width);
+        let show_key = show_key || self.show_detail;
+        let hov_row = self.hovered_table_pos();
+        let cursor = self.table.selected();
+        let rows: Vec<Row> = self
+            .filtered
+            .iter()
+            .enumerate()
+            .map(|(pos, &i)| {
+                let e = self.lib.get(&self.order[i]).unwrap();
+                let at_cursor = cursor == Some(pos);
+                let lit = hov_row == Some(pos);
+                let (c_ind, c_pdf, c_ms, c_year, c_author, c_key) = palette(lit);
+                // the gutter carries the cursor: ◉ marks the cursor row
+                // (no row highlight, so cell colors stay visible); in
+                // selection mode the cursor row's circle brightens
+                let circle = if !self.select_mode {
+                    if at_cursor { "◉" } else { "" }
+                } else if self.selected.contains(e.key()) {
+                    "◉"
+                } else {
+                    "◯"
+                };
+                let circle_style = if self.select_mode && at_cursor {
+                    Style::default().fg(Color::White).add_modifier(Modifier::BOLD)
+                } else {
+                    c_ind
+                };
+                let mut cells = vec![
+                    Cell::from(Span::styled(circle, circle_style)),
+                    Cell::from(Span::styled(
+                        if has_cached_pdf(e.key()) { "↓" } else { "" },
+                        c_pdf,
+                    )),
+                    Cell::from(Span::styled(
+                        if self.lib.in_manuscript(e.key()) { "●" } else { "" },
+                        c_ms,
+                    )),
+                    Cell::from(Span::styled(e.year(), c_year)),
+                    Cell::from(Span::styled(
+                        fit_authors(e.author(), author_w as usize),
+                        c_author,
+                    )),
+                    Cell::from(Span::styled(
+                        e.title().trim_matches(['{', '}']).to_string(),
+                        if lit {
+                            Style::default().fg(Color::White).add_modifier(Modifier::ITALIC)
+                        } else {
+                            Style::default().add_modifier(Modifier::ITALIC)
+                        },
+                    )),
+                ];
+                if show_key {
+                    cells.push(Cell::from(Span::styled(e.short_key.clone(), c_key)));
+                }
+                let row = Row::new(cells);
+                if at_cursor {
+                    row.style(cursor_fill)
+                } else {
+                    row
+                }
+            })
+            .collect();
+
+        // header: sortable columns get a click rect and a ▲/▼ marker
+        let mut widths: Vec<u16> = vec![2, 2, 2, 6, author_w, 0];
+        if show_key {
+            widths.push(20);
+        }
+        let ncols = widths.len() as u16;
+        let (sort_col, asc) = self.sort;
+        let mut hx = area.x;
+        let title_w = area
+            .width
+            .saturating_sub(widths.iter().sum::<u16>() + ncols);
+        let ms_header = if self.lib.manuscript.is_some() { "●" } else { "" };
+        let mut headers: Vec<&str> = vec!["", "↓", ms_header, "Year", "Author", "Title"];
+        if show_key {
+            headers.push("Key");
+        }
+        let mut header_spans: Vec<Span> = vec![];
+        for (ci, base) in headers.iter().enumerate() {
+            let cw = if ci == 5 { title_w } else { widths[ci] };
+            let col = match ci {
+                1 => Some(SortCol::Pdf),
+                3 => Some(SortCol::Year),
+                4 => Some(SortCol::Author),
+                5 => Some(SortCol::Title),
+                6 => Some(SortCol::Key),
+                _ => None,
+            };
+            let mut label = base.to_string();
+            let mut style = Style::default().add_modifier(Modifier::BOLD);
+            if let Some(col) = col {
+                let r = Rect { x: hx, y: area.y, width: cw, height: 1 };
+                self.sort_headers.push((r, col));
+                if sort_col == col {
+                    let arrow = if asc { "▲" } else { "▼" };
+                    // narrow indicator columns fit glyph+arrow only
+                    label = if cw <= 2 { format!("{base}{arrow}") } else { format!("{base} {arrow}") };
+                }
+                if hit(r, self.hover.0, self.hover.1) {
+                    style = style.fg(Color::Cyan).add_modifier(Modifier::UNDERLINED);
+                }
+            }
+            let pad = (cw as usize).saturating_sub(label.chars().count());
+            header_spans.push(Span::styled(label, style));
+            header_spans.push(Span::raw(" ".repeat(pad + 1)));
+            hx += cw + 1;
+        }
+        f.render_widget(
+            Paragraph::new(Line::from(header_spans)),
+            Rect { x: area.x, y: area.y, width: area.width, height: 1 },
+        );
+        f.render_widget(
+            Paragraph::new(Span::styled(
+                "─".repeat(area.width as usize),
+                Style::default().fg(Color::DarkGray),
+            )),
+            Rect { x: area.x, y: area.y + 1, width: area.width, height: 1 },
+        );
+        let data_area = Rect {
+            x: area.x,
+            y: area.y + 2,
+            width: area.width,
+            height: area.height.saturating_sub(2),
+        };
+
+        let mut constraints = vec![
+            Constraint::Length(2),
+            Constraint::Length(2),
+            Constraint::Length(2),
+            Constraint::Length(6),
+            Constraint::Length(author_w),
+            Constraint::Min(20),
+        ];
+        if show_key {
+            constraints.push(Constraint::Length(20));
+        }
+        let table = Table::new(rows, constraints)
+        .block(Block::default().borders(Borders::NONE));
+        f.render_stateful_widget(table, data_area, &mut self.table);
+    }
+
+    /// The pub card for an ADS result: body and links, plus import state.
+    fn draw_article_card(&mut self, f: &mut Frame, area: Rect) {
+        self.card_yanks.clear();
+        self.card_buttons.clear();
+        self.card_links.clear();
+        let Some(Scope::Ads { articles, .. }) = self.scopes.get(self.active_scope) else {
+            return;
+        };
+        let Some(a) = self.table.selected().and_then(|p| articles.get(p)) else {
+            return;
+        };
+        let title = a.title.clone();
+        let authors = a.author.join(" and ");
+        let year = a.year.clone();
+        let abstract_ = crate::ads::clean_abstract(&a.abstract_);
+        let bibcode = a.bibcode.clone();
+        let doi = a.doi.first().cloned().unwrap_or_default();
+        let eprint = crate::ads::arxiv_id(a).map(str::to_string).unwrap_or_default();
+        let cites = a.citation_count;
+        let in_lib = self.lib.get_by_bibcode(&bibcode).map(|e| e.key().to_string());
+
+        let x0 = area.x + 3;
+        let w = area.width.saturating_sub(5) as usize;
+        let bottom = area.y + area.height;
+        let mut y = area.y + 1;
+        let line_at = |f: &mut Frame, y: u16, line: Line| {
+            if y < bottom {
+                f.render_widget(
+                    Paragraph::new(line),
+                    Rect { x: x0, y, width: w as u16, height: 1 },
+                );
+            }
+        };
+        for l in wrap_text(&title, w) {
+            line_at(
+                f,
+                y,
+                Line::from(Span::styled(
+                    l,
+                    Style::default().add_modifier(Modifier::BOLD | Modifier::ITALIC),
+                )),
+            );
+            y += 1;
+        }
+        y += 1;
+        let byline = format!("{}   ·   {year}", format_authors(&authors));
+        for l in wrap_text(&byline, w) {
+            line_at(f, y, Line::from(Span::styled(l, Style::default().fg(Color::DarkGray))));
+            y += 1;
+        }
+        let rest = 3 + 3; // links block + gap + footer line
+        if !abstract_.is_empty() && y + rest < bottom {
+            y += 1;
+            let avail = (bottom - y).saturating_sub(rest) as usize;
+            let mut abs_lines = wrap_text(&abstract_, w);
+            if abs_lines.len() > avail && avail > 0 {
+                abs_lines.truncate(avail);
+                if let Some(last) = abs_lines.last_mut() {
+                    last.push_str(" …");
+                }
+            }
+            for l in abs_lines {
+                line_at(f, y, Line::from(l));
+                y += 1;
+            }
+        }
+        let sep = "─".repeat(w);
+        let dimsep = Style::default().fg(Color::DarkGray);
+        line_at(f, y, Line::from(Span::styled(sep.clone(), dimsep)));
+        y += 1;
+        let cyan = Style::default().fg(Color::Cyan);
+        let hv = self.hover;
+        let mut spans: Vec<Span> = vec![];
+        let mut lx = x0;
+        let link = |label: String, url: String, spans: &mut Vec<Span>, lx: &mut u16, links: &mut Vec<(Rect, String)>| {
+            let wl = label.chars().count() as u16;
+            let r = Rect { x: *lx, y, width: wl, height: 1 };
+            let style = if hit(r, hv.0, hv.1) {
+                cyan.add_modifier(Modifier::UNDERLINED)
+            } else {
+                cyan
+            };
+            links.push((r, url));
+            spans.push(Span::styled(label, style));
+            spans.push(Span::raw("  "));
+            *lx += wl + 2;
+        };
+        link(
+            "ADS".into(),
+            format!("https://ui.adsabs.harvard.edu/abs/{bibcode}/abstract"),
+            &mut spans,
+            &mut lx,
+            &mut self.card_links,
+        );
+        if !eprint.is_empty() {
+            link(
+                format!("arXiv:{eprint}"),
+                format!("https://arxiv.org/abs/{eprint}"),
+                &mut spans,
+                &mut lx,
+                &mut self.card_links,
+            );
+        }
+        if !doi.is_empty() {
+            link("DOI".into(), format!("https://doi.org/{doi}"), &mut spans, &mut lx, &mut self.card_links);
+        }
+        line_at(f, y, Line::from(spans));
+        y += 1;
+        line_at(f, y, Line::from(Span::styled(sep, dimsep)));
+        y += 2;
+        let mut foot: Vec<Span> = vec![];
+        match &in_lib {
+            Some(key) => {
+                foot.push(Span::styled("● in library  ", Style::default().fg(Color::Magenta)));
+                foot.push(Span::styled(key.clone(), cyan));
+            }
+            None => {
+                foot.push(Span::styled(bibcode.clone(), Style::default().fg(Color::DarkGray)));
+                foot.push(Span::styled("   i imports", Style::default().fg(Color::Cyan)));
+            }
+        }
+        if let Some(n) = cites {
+            foot.push(Span::styled(
+                format!("   · cited by {n}"),
+                Style::default().fg(Color::DarkGray),
+            ));
+        }
+        line_at(f, y, Line::from(foot));
+    }
+
+    /// The pub card, emulating the Python DetailPanel's flow: body (title,
+    /// authors · year, abstract), a bordered links row (ADS · arXiv:id ·
+    /// DOI, cyan, browser-opening), the PDF buttons (Python labels/colors;
+    /// ineligible ones hidden, not dimmed), a transient PDF status line,
+    /// and a footer (keywords, cite key with dim hash suffix, preprint
+    /// note). Text is pre-wrapped so every row's click rect is exact.
+    fn draw_detail(&mut self, f: &mut Frame, area: Rect) {
+        self.card_links.clear();
+        f.render_widget(Block::default().borders(Borders::LEFT), area);
+        if self.active_ads().is_some() {
+            self.draw_article_card(f, area);
+            return;
+        }
+        let Some(key) = self.card_key().map(str::to_string) else {
+            return; // unresolved manuscript rows have nothing to show
+        };
+        let Some(e) = self.lib.get(&key) else { return };
+        let x0 = area.x + 3; // border + 2 padding
+        let w = area.width.saturating_sub(5) as usize;
+        let bottom = area.y + area.height;
+        let mut y = area.y + 1;
+        let line_at = |f: &mut Frame, y: u16, line: Line| {
+            if y < bottom {
+                f.render_widget(
+                    Paragraph::new(line),
+                    Rect { x: x0, y, width: w as u16, height: 1 },
+                );
+            }
+        };
+
+        let hv = self.hover;
+        // copy-regions: the text itself is the click target; hovering any
+        // line of a region tints the whole region and hints in the footer
+        let hov_region: Option<CopyItem> = self
+            .card_yanks
+            .iter()
+            .find(|(r, _)| hit(*r, hv.0, hv.1))
+            .map(|&(_, item)| item);
+        if let Some(item) = hov_region {
+            let what = match item {
+                CopyItem::Title => "title",
+                CopyItem::Abstract => "abstract",
+                _ => "cite key",
+            };
+            self.hover_hint = Some(format!("⧉ click to copy {what}"));
+        }
+        let mut yanks: Vec<(Rect, CopyItem)> = vec![];
+        let tint = Style::default().bg(Color::Rgb(44, 48, 56));
+        let region_style = |base: Style, item: CopyItem| {
+            if hov_region == Some(item) { base.patch(tint) } else { base }
+        };
+        // ── body ─────────────────────────────────────────────────────
+        for l in wrap_text(e.title().trim_matches(['{', '}']), w) {
+            let lw = l.chars().count() as u16;
+            yanks.push((Rect { x: x0, y, width: lw.max(1), height: 1 }, CopyItem::Title));
+            line_at(
+                f,
+                y,
+                Line::from(Span::styled(
+                    l,
+                    region_style(
+                        Style::default().add_modifier(Modifier::BOLD | Modifier::ITALIC),
+                        CopyItem::Title,
+                    ),
+                )),
+            );
+            y += 1;
+        }
+        y += 1;
+        let year = e.year();
+        let byline = format!("{}   ·   {year}", format_authors(e.author()));
+        let by_lines = wrap_text(&byline, w);
+        for (i, l) in by_lines.iter().enumerate() {
+            let line = if i == by_lines.len() - 1 && l.chars().count() > year.chars().count() {
+                let split = l.chars().count() - year.chars().count();
+                let head: String = l.chars().take(split).collect();
+                Line::from(vec![
+                    Span::styled(head, Style::default().fg(Color::DarkGray)),
+                    Span::styled(year.clone(), Style::default().fg(Color::Green)),
+                ])
+            } else {
+                Line::from(Span::styled(l.clone(), Style::default().fg(Color::DarkGray)))
+            };
+            line_at(f, y, line);
+            y += 1;
+        }
+        let (eprint, adsurl, doi) = (
+            e.eprint().to_string(),
+            e.adsurl().to_string(),
+            e.doi().to_string(),
+        );
+        // footer + links/buttons need this much room below the abstract
+        let kws = e.keywords().join(" · ");
+        let kw_lines = if kws.is_empty() { 0 } else { wrap_text(&kws, w).len() as u16 + 1 };
+        let has_ms = self.lib.manuscript.is_some();
+        // links block (sep + links + sep + air) + buttons + ms chip +
+        // status (line + blank) + keywords + key line
+        let rest = 4 + 1 + u16::from(has_ms) + 2 + kw_lines + 1;
+        let abs = e.abstract_();
+        if !abs.is_empty() && y + rest < bottom {
+            y += 1;
+            // truncation is height-driven only: the full abstract shows
+            // whenever the card has room, and a cut ends in an ellipsis
+            let avail = (bottom - y).saturating_sub(rest) as usize;
+            let mut abs_lines = wrap_text(abs, w);
+            if abs_lines.len() > avail && avail > 0 {
+                abs_lines.truncate(avail);
+                if let Some(last) = abs_lines.last_mut() {
+                    let keep = w.saturating_sub(2);
+                    if last.chars().count() > keep {
+                        *last = last.chars().take(keep).collect();
+                    }
+                    last.push_str(" …");
+                }
+            }
+            for l in abs_lines.into_iter().take(avail) {
+                let lw = l.chars().count() as u16;
+                yanks.push((
+                    Rect { x: x0, y, width: lw.max(1), height: 1 },
+                    CopyItem::Abstract,
+                ));
+                line_at(
+                    f,
+                    y,
+                    Line::from(Span::styled(
+                        l,
+                        region_style(Style::default(), CopyItem::Abstract),
+                    )),
+                );
+                y += 1;
+            }
+        }
+
+        // ── links row (bordered top and bottom, like #detail-links) ──
+        let sep = "─".repeat(w);
+        let dimsep = Style::default().fg(Color::DarkGray);
+        line_at(f, y, Line::from(Span::styled(sep.clone(), dimsep)));
+        y += 1;
+        let mut spans: Vec<Span> = vec![];
+        let mut lx = x0;
+        let cyan = Style::default().fg(Color::Cyan);
+        let link = |label: String, url: String, spans: &mut Vec<Span>, lx: &mut u16, links: &mut Vec<(Rect, String)>| {
+            let wl = label.chars().count() as u16;
+            if y < bottom {
+                links.push((Rect { x: *lx, y, width: wl, height: 1 }, url));
+            }
+            let r = Rect { x: *lx, y, width: wl, height: 1 };
+            let style = if hit(r, hv.0, hv.1) {
+                cyan.add_modifier(Modifier::UNDERLINED)
+            } else {
+                cyan
+            };
+            spans.push(Span::styled(label, style));
+            spans.push(Span::raw("  "));
+            *lx += wl + 2;
+        };
+        if !adsurl.is_empty() {
+            link("ADS".into(), adsurl.clone(), &mut spans, &mut lx, &mut self.card_links);
+        }
+        if !eprint.is_empty() {
+            link(
+                format!("arXiv:{eprint}"),
+                format!("https://arxiv.org/abs/{eprint}"),
+                &mut spans,
+                &mut lx,
+                &mut self.card_links,
+            );
+        }
+        if !doi.is_empty() {
+            link("DOI".into(), format!("https://doi.org/{doi}"), &mut spans, &mut lx, &mut self.card_links);
+        }
+        line_at(f, y, Line::from(spans));
+        y += 1;
+        line_at(f, y, Line::from(Span::styled(sep, dimsep)));
+        y += 2; // a little air below the links row
+
+        // ── PDF buttons (Python labels, colors, and visibility rules),
+        //    drawn as rounded pills ─────────────────────────────────────
+        let cached = pdf::is_cached(&key);
+        let muted = Style::default().fg(Color::Gray);
+        let mut buttons: Vec<(&str, CardBtn, Color)> = vec![];
+        if !cached && !eprint.is_empty() {
+            buttons.push(("arXiv ↓", CardBtn::Arxiv, Color::Cyan));
+        }
+        if !cached && !adsurl.is_empty() {
+            buttons.push(("ADS OA ↓", CardBtn::Oa, Color::Cyan));
+        }
+        if !cached && (!doi.is_empty() || !adsurl.is_empty()) {
+            buttons.push(("browser ↓", CardBtn::Browser, Color::Yellow));
+        }
+        if !cached {
+            buttons.push(("pick …", CardBtn::Pick, Color::Magenta));
+        }
+        if cached {
+            buttons.push(("Open ↗", CardBtn::Open, Color::Green));
+            buttons.push(("Clear ✕", CardBtn::Clear, Color::Gray));
+        }
+        let mut spans: Vec<Span> = vec![];
+        let mut bx = x0;
+        for (label, btn, fg) in buttons {
+            let wl = pill_width(label);
+            let r = Rect { x: bx, y, width: wl, height: 1 };
+            if y < bottom {
+                self.card_buttons.push((r, btn));
+            }
+            let bg = if hit(r, hv.0, hv.1) {
+                Color::Rgb(58, 63, 72)
+            } else {
+                Color::Rgb(40, 44, 52)
+            };
+            push_pill(&mut spans, label, bg, fg);
+            spans.push(Span::raw(" "));
+            bx += wl + 1;
+        }
+        line_at(f, y, Line::from(spans));
+        y += 1;
+
+        // ── manuscript membership chip (acts on the card's entry) ────
+        if has_ms {
+            let in_ms = self.lib.in_manuscript(&key);
+            let label = if in_ms { "◆ in manuscript" } else { "◇ add to manuscript" };
+            let wl = pill_width(label);
+            let r = Rect { x: x0, y, width: wl, height: 1 };
+            self.card_buttons.push((r, CardBtn::MsToggle));
+            let bg = if hit(r, hv.0, hv.1) {
+                Color::Rgb(58, 63, 72)
+            } else {
+                Color::Rgb(40, 44, 52)
+            };
+            let mut spans: Vec<Span> = vec![];
+            push_pill(
+                &mut spans,
+                label,
+                bg,
+                if in_ms { Color::Magenta } else { Color::Gray },
+            );
+            line_at(f, y, Line::from(spans));
+            y += 1;
+        }
+
+        // ── PDF status (⏳ waiting…, ✓/✗ results) ────────────────────
+        if self.poll_cancel.is_some() {
+            let label = "⏳ waiting for download…  cancel ✕";
+            if y < bottom {
+                self.card_buttons.push((
+                    Rect { x: x0, y, width: label.chars().count() as u16, height: 1 },
+                    CardBtn::Cancel,
+                ));
+            }
+            line_at(f, y, Line::from(Span::styled(label, Style::default().fg(Color::Yellow))));
+        } else if !self.pdf_status.is_empty() {
+            line_at(f, y, Line::from(Span::styled(self.pdf_status.clone(), muted)));
+        }
+        y += 2;
+
+        // ── footer ───────────────────────────────────────────────────
+        if !kws.is_empty() {
+            for l in wrap_text(&kws, w) {
+                line_at(f, y, Line::from(Span::styled(l, Style::default().fg(Color::DarkGray))));
+                y += 1;
+            }
+            y += 1;
+        }
+        let short = if e.short_key.is_empty() { e.key() } else { &e.short_key };
+        let suffix: String = e.key().chars().skip(short.chars().count()).collect();
+        let mut spans = vec![
+            Span::styled(short.to_string(), cyan),
+            Span::styled(suffix, Style::default().fg(Color::DarkGray).add_modifier(Modifier::DIM)),
+        ];
+        let preprint = e
+            .adsurl()
+            .rsplit('/')
+            .next()
+            .is_some_and(|bc| bc.len() > 9 && bc[..4].chars().all(|c| c.is_ascii_digit()) && &bc[4..9] == "arXiv");
+        if preprint {
+            spans.push(Span::styled("  (preprint)", Style::default().fg(Color::DarkGray)));
+        }
+        let used: u16 = spans.iter().map(|s| s.content.chars().count() as u16).sum();
+        yanks.push((Rect { x: x0, y, width: used.max(1), height: 1 }, CopyItem::Key));
+        if hov_region == Some(CopyItem::Key) {
+            for s in &mut spans {
+                s.style = s.style.patch(tint);
+            }
+        }
+        line_at(f, y, Line::from(spans));
+        self.card_yanks = yanks;
+    }
+
+
+    /// Right-aligned clickable show/hide badges for each app-wide view.
+    fn draw_badges(&mut self, f: &mut Frame, area: Rect) {
+        self.footer_badges.clear();
+        let badges: [(&str, bool, Action); 3] = [
+            ("card", self.show_detail, Action::Card),
+            ("log", self.show_log, Action::Log),
+            ("keys", self.show_help, Action::Help),
+        ];
+        let total: u16 = badges.iter().map(|(l, _, _)| l.chars().count() as u16 + 3).sum();
+        let mut bx = (area.x + area.width).saturating_sub(total);
+        let mut spans: Vec<Span> = vec![];
+        for (label, on, action) in badges {
+            let wl = label.chars().count() as u16 + 2;
+            let r = Rect { x: bx, y: area.y, width: wl, height: 1 };
+            self.footer_badges.push((r, action));
+            let hov = hit(r, self.hover.0, self.hover.1);
+            let style = match (on, hov) {
+                (true, true) => Style::default().fg(Color::Cyan).add_modifier(Modifier::UNDERLINED),
+                (true, false) => Style::default().fg(Color::Cyan),
+                (false, true) => Style::default().fg(Color::Gray).add_modifier(Modifier::UNDERLINED),
+                (false, false) => Style::default().fg(Color::DarkGray),
+            };
+            spans.push(Span::styled(
+                format!("{} {label}", if on { "◼" } else { "◻" }),
+                style,
+            ));
+            spans.push(Span::raw(" "));
+            bx += wl + 1;
+        }
+        let w = total.min(area.width);
+        let badge_area = Rect {
+            x: (area.x + area.width).saturating_sub(w),
+            y: area.y,
+            width: w,
+            height: 1,
+        };
+        f.render_widget(Paragraph::new(Line::from(spans)), badge_area);
+    }
+
+    /// The event-log pane: newest entries at the bottom, one line each,
+    /// color-coded by category, mm:ss timestamps since launch.
+    fn draw_log(&self, f: &mut Frame, area: Rect) {
+        let n = area.height.saturating_sub(2) as usize;
+        let start = self.log.len().saturating_sub(n);
+        let mut lines: Vec<Line> = vec![];
+        for (cat, secs, msg) in &self.log[start..] {
+            lines.push(Line::from(vec![
+                Span::styled(
+                    format!("{:02}:{:02}  ", secs / 60, secs % 60),
+                    Style::default().fg(Color::DarkGray),
+                ),
+                Span::styled(msg.clone(), Style::default().fg(cat.color())),
+            ]));
+        }
+        let block = Block::default()
+            .borders(Borders::TOP | Borders::BOTTOM)
+            .title(Span::styled(" Log ", Style::default().fg(Color::DarkGray)));
+        f.render_widget(Paragraph::new(Text::from(lines)).block(block), area);
+    }
+
+    fn draw_status(&mut self, f: &mut Frame, area: Rect) {
+        let line = match self.mode {
+            Mode::Filter => Line::from(vec![
+                Span::styled("/", Style::default().fg(Color::Cyan)),
+                Span::raw(self.filter.clone()),
+                Span::styled("▏", Style::default().fg(Color::Cyan)),
+            ]),
+            Mode::AdsPrompt { ref input, limit } => Line::from(vec![
+                Span::styled("ADS query: ", Style::default().fg(Color::Cyan)),
+                Span::raw(input.clone()),
+                Span::styled("▏", Style::default().fg(Color::Cyan)),
+                Span::styled(
+                    format!("   n={limit} ↑↓"),
+                    Style::default().fg(Color::Gray),
+                ),
+                Span::styled(
+                    "   ⏎ search · Esc cancel · paste DOI/ADS URL to import",
+                    Style::default().fg(Color::DarkGray),
+                ),
+            ]),
+            Mode::Copy => Line::from(vec![
+                Span::styled("copy: ", Style::default().fg(Color::Cyan)),
+                Span::styled(
+                    "y key · Y full key · b bibcode · a ADS · x arXiv · d DOI · p PDF path · t title · Esc cancel",
+                    Style::default().fg(Color::DarkGray),
+                ),
+            ]),
+            Mode::Normal | Mode::Pick { .. } | Mode::Confirm { .. } if self.select_mode => Line::from(vec![
+                Span::styled(
+                    format!("◉ {} selected", self.selected.len()),
+                    Style::default().fg(Color::Cyan),
+                ),
+                Span::styled(
+                    "  ·  Space/click ◯ toggle · Esc done · ctrl+p actions".to_string(),
+                    Style::default().fg(Color::DarkGray),
+                ),
+            ]),
+            Mode::Normal | Mode::Pick { .. } | Mode::Confirm { .. } => {
+                let n = self.filtered.len();
+                let total = self.order.len();
+                let filt = if self.filter.is_empty() {
+                    String::new()
+                } else {
+                    format!("  ·  /{}", self.filter)
+                };
+                // logged messages show for ~5s then clear (a fresh one
+                // outranks the hover hint); unlogged transient status —
+                // download progress, ambient counts — stays visible
+                let now = self.started.elapsed().as_secs();
+                let last = self.log.last();
+                let status_is_logged = last.is_some_and(|(_, _, m)| *m == self.status);
+                let fresh = last
+                    .filter(|(_, t, m)| *m == self.status && now.saturating_sub(*t) < 5);
+                let (msg, msg_color) = if let Some((cat, _, m)) = fresh {
+                    (m.clone(), cat.color())
+                } else if let Some(hint) = &self.hover_hint {
+                    (hint.clone(), Color::Cyan)
+                } else if !status_is_logged {
+                    (self.status.clone(), Color::Gray)
+                } else {
+                    (String::new(), Color::Gray)
+                };
+                let pending = [
+                    self.dl_rx.is_some(),
+                    self.ads_rx.is_some(),
+                    self.poll_cancel.is_some(),
+                ]
+                .iter()
+                .filter(|b| **b)
+                .count();
+                let mut spans = vec![];
+                if pending > 0 {
+                    spans.push(Span::styled(
+                        format!("⧗{pending} "),
+                        Style::default().fg(Color::Yellow),
+                    ));
+                }
+                spans.extend([
+                    Span::styled(
+                        format!("{n}/{total}  ·  "),
+                        Style::default().fg(Color::DarkGray),
+                    ),
+                    Span::styled(msg, Style::default().fg(msg_color)),
+                    Span::styled(filt, Style::default().fg(Color::DarkGray)),
+                ]);
+                Line::from(spans)
+            }
+        };
+        f.render_widget(line, area);
+        self.draw_badges(f, area);
+    }
+}
+
+/// Append a line to $ASTROBIB_DEBUG_LAYOUT (a file path) when set —
+/// temporary instrumentation for layout/resize investigations.
+fn debug_layout(line: &str) {
+    if let Ok(path) = std::env::var("ASTROBIB_DEBUG_LAYOUT") {
+        use std::io::Write;
+        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+            let _ = writeln!(f, "{line}");
+        }
+    }
+}
+
+/// System clipboard: pbcopy on macOS (reliable in any terminal), else
+/// the OSC 52 escape (terminal-dependent, but works over SSH) — the
+/// Python TUI's _copy_text strategy.
+fn copy_to_clipboard(text: &str) -> bool {
+    use std::io::Write;
+    if cfg!(target_os = "macos") {
+        use std::process::{Command, Stdio};
+        if let Ok(mut child) = Command::new("pbcopy").stdin(Stdio::piped()).spawn() {
+            let wrote = child
+                .stdin
+                .take()
+                .map(|mut s| s.write_all(text.as_bytes()).is_ok())
+                .unwrap_or(false);
+            if wrote && child.wait().is_ok_and(|s| s.success()) {
+                return true;
+            }
+        }
+    }
+    let mut out = std::io::stdout();
+    write!(out, "\x1b]52;c;{}\x07", base64(text.as_bytes())).is_ok() && out.flush().is_ok()
+}
+
+/// Minimal RFC 4648 base64 for the OSC 52 payload (not worth a crate).
+fn base64(data: &[u8]) -> String {
+    const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
+    for chunk in data.chunks(3) {
+        let b = [chunk[0], *chunk.get(1).unwrap_or(&0), *chunk.get(2).unwrap_or(&0)];
+        let n = (b[0] as u32) << 16 | (b[1] as u32) << 8 | b[2] as u32;
+        out.push(T[(n >> 18) as usize & 63] as char);
+        out.push(T[(n >> 12) as usize & 63] as char);
+        out.push(if chunk.len() > 1 { T[(n >> 6) as usize & 63] as char } else { '=' });
+        out.push(if chunk.len() > 2 { T[n as usize & 63] as char } else { '=' });
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn column_layout_priorities() {
+        // wide: scaled author, Key visible
+        assert_eq!(super::column_layout(150), (25, true));
+        assert_eq!(super::column_layout(100), (16, true));
+        // tight: Key drops first, author keeps its scaled width
+        let (a, key) = super::column_layout(84);
+        assert!(!key);
+        assert!(a >= 14);
+        // very tight: author sits at its floor, Key still gone
+        assert_eq!(super::column_layout(55), (14, false));
+        // Key never returns below the comfort threshold boundary
+        let (_, key_90) = super::column_layout(90);
+        assert!(key_90);
+    }
+
+    #[test]
+    fn fit_authors_candidates() {
+        let a3 = "{Zrake}, J. and {Clyburn}, M. and {Fearing}, S.";
+        assert_eq!(super::fit_authors(a3, 40), "Zrake, Clyburn, and Fearing");
+        assert_eq!(super::fit_authors(a3, 20), "Zrake, Clyburn, +1");
+        assert_eq!(super::fit_authors(a3, 14), "Zrake, +2");
+        assert_eq!(super::fit_authors(a3, 9), "Zrake, +2");
+        assert_eq!(super::fit_authors("{Zrake}, J.", 20), "Zrake");
+        assert_eq!(
+            super::fit_authors("{Zrake}, J. and {MacFadyen}, A.", 30),
+            "Zrake and MacFadyen"
+        );
+        let many = (0..13)
+            .map(|i| format!("{{A{i}}}, X."))
+            .collect::<Vec<_>>()
+            .join(" and ");
+        assert_eq!(super::fit_authors(&many, 14), "A0, A1, +11");
+        assert_eq!(super::fit_authors(&many, 10), "A0, +12");
+        assert_eq!(super::fit_authors("{Verylongsurname}, Q. and {B}, C.", 8), "Verylon…");
+    }
+
+    #[test]
+    fn base64_rfc4648_vectors() {
+        for (input, want) in [
+            ("", ""),
+            ("f", "Zg=="),
+            ("fo", "Zm8="),
+            ("foo", "Zm9v"),
+            ("foob", "Zm9vYg=="),
+            ("fooba", "Zm9vYmE="),
+            ("foobar", "Zm9vYmFy"),
+            ("Zrake2019abcde", "WnJha2UyMDE5YWJjZGU="),
+        ] {
+            assert_eq!(super::base64(input.as_bytes()), want);
+        }
+    }
+}
+
+/// Responsive column plan for the table: (author width, show Key).
+/// Degradation order: the Key column drops first (it is redundant with
+/// the card footer) as soon as titles would fall below a comfortable
+/// width; then the author column shrinks toward its floor; the title
+/// keeps a hard minimum via its Min constraint.
+fn column_layout(width: u16) -> (u16, bool) {
+    const FIXED: u16 = 2 + 2 + 2 + 6; // gutter, ↓, ●, year
+    const KEY_W: u16 = 20;
+    const TITLE_COMFORT: u16 = 32; // drop Key before squeezing titles below this
+    const TITLE_MIN: u16 = 20; // author shrinks to protect this
+    let scaled = (width / 6).clamp(14, 30);
+    let need_with_key = FIXED + scaled + KEY_W + TITLE_COMFORT + 7;
+    if need_with_key <= width {
+        return (scaled, true);
+    }
+    let mut author = scaled;
+    while FIXED + author + TITLE_MIN + 6 > width && author > 14 {
+        author -= 1;
+    }
+    (author, false)
+}
+
+/// Densest author description that fits `width`. Candidates from most
+/// to least verbose — the full "A, B, and C" list, then "A, B, +N"
+/// prefixes with a count, then "A et al." — and the first that fits
+/// wins; a truncated surname is the last resort.
+fn fit_authors(author: &str, width: usize) -> String {
+    let surnames: Vec<String> = author
+        .split(" and ")
+        .map(|a| {
+            a.trim()
+                .split(',')
+                .next()
+                .unwrap_or("")
+                .trim_matches(['{', '}'])
+                .to_string()
+        })
+        .filter(|s| !s.is_empty())
+        .collect();
+    let n = surnames.len();
+    if n == 0 {
+        return String::new();
+    }
+    let mut candidates: Vec<String> = vec![match n {
+        1 => surnames[0].clone(),
+        2 => format!("{} and {}", surnames[0], surnames[1]),
+        _ => format!("{}, and {}", surnames[..n - 1].join(", "), surnames[n - 1]),
+    }];
+    for k in (1..n).rev() {
+        candidates.push(format!("{}, +{}", surnames[..k].join(", "), n - k));
+    }
+    if n > 1 {
+        candidates.push(format!("{} et al.", surnames[0]));
+    }
+    for c in &candidates {
+        if c.chars().count() <= width {
+            return c.clone();
+        }
+    }
+    let mut s: String = surnames[0].chars().take(width.saturating_sub(1)).collect();
+    s.push('…');
+    s
+}
+
+/// "Zrake, J. and MacFadyen, A." → "Zrake, MacFadyen" (surnames, truncated).
+fn format_authors(author: &str) -> String {
+    let surnames: Vec<&str> = author
+        .split(" and ")
+        .map(|a| a.trim().split(',').next().unwrap_or("").trim_matches(['{', '}']))
+        .collect();
+    match surnames.len() {
+        0 => String::new(),
+        1..=4 => surnames.join(", "),
+        _ => format!("{} + {} more", surnames[..3].join(", "), surnames.len() - 3),
+    }
+}
