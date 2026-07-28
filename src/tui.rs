@@ -91,10 +91,19 @@ impl App {
     }
 
     fn run(mut self, terminal: &mut ratatui::DefaultTerminal) -> anyhow::Result<()> {
+        let t0 = std::time::Instant::now();
         while !self.quit {
             terminal.draw(|f| self.draw(f))?;
+            debug_layout(&format!(
+                "{:>6}ms draw frame={:?} table={:?}",
+                t0.elapsed().as_millis(),
+                terminal.get_frame().area(),
+                self.table_area,
+            ));
             if event::poll(Duration::from_millis(250))? {
-                match event::read()? {
+                let ev = event::read()?;
+                debug_layout(&format!("{:>6}ms event {ev:?}", t0.elapsed().as_millis()));
+                match ev {
                     Event::Key(key) if key.kind == KeyEventKind::Press => {
                         self.on_key(key.code, key.modifiers)
                     }
@@ -460,6 +469,17 @@ impl App {
             }
         };
         f.render_widget(line, area);
+    }
+}
+
+/// Append a line to $ASTROBIB_DEBUG_LAYOUT (a file path) when set —
+/// temporary instrumentation for layout/resize investigations.
+fn debug_layout(line: &str) {
+    if let Ok(path) = std::env::var("ASTROBIB_DEBUG_LAYOUT") {
+        use std::io::Write;
+        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+            let _ = writeln!(f, "{line}");
+        }
     }
 }
 
