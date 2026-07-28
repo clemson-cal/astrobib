@@ -5,7 +5,7 @@
 //! bibcode-only records, empty author). Regenerate it from the Python side
 //! whenever vectors are added — never edit expected keys by hand.
 
-use std::collections::HashMap;
+use astrobib::bib::Data;
 
 #[test]
 fn keys_match_python_implementation() {
@@ -13,7 +13,7 @@ fn keys_match_python_implementation() {
     let vectors: Vec<serde_json::Value> = serde_json::from_str(raw).unwrap();
     assert!(!vectors.is_empty());
     for v in &vectors {
-        let data: HashMap<String, String> = v["data"]
+        let data: Data = v["data"]
             .as_object()
             .unwrap()
             .iter()

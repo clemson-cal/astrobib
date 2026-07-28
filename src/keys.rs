@@ -5,8 +5,8 @@
 //! implementation for every record either tool has ever seen. Any change
 //! here must keep tests/golden_keys.json passing.
 
+use crate::bib::Data;
 use sha2::{Digest, Sha256};
-use std::collections::HashMap;
 use unicode_normalization::UnicodeNormalization;
 use unicode_properties::{GeneralCategoryGroup, UnicodeGeneralCategory};
 
@@ -37,7 +37,7 @@ fn year_from_arxiv_id(eprint: &str) -> Option<String> {
     None
 }
 
-fn get<'a>(data: &'a HashMap<String, String>, k: &str) -> &'a str {
+fn get<'a>(data: &'a Data, k: &str) -> &'a str {
     data.get(k).map(String::as_str).unwrap_or("")
 }
 
@@ -47,7 +47,7 @@ fn get<'a>(data: &'a HashMap<String, String>, k: &str) -> &'a str {
 /// stable identifier: the arXiv ID when present, otherwise the ADS bibcode
 /// extracted from adsurl. The year derives from the same identifier, so
 /// preprint and published records yield the same key.
-pub fn generate_key(data: &HashMap<String, String>) -> String {
+pub fn generate_key(data: &Data) -> String {
     let mut year = get(data, "year").to_string();
     let archive_prefix = {
         let a = get(data, "archivePrefix");

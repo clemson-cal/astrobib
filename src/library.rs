@@ -3,7 +3,7 @@
 //! No parse cache: Rust parses the whole library faster than the Python
 //! side reads its cache, so the mtime-keyed JSON cache has no analogue here.
 
-use crate::bib;
+use crate::bib::{self, Data};
 use std::cell::OnceCell;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -19,14 +19,14 @@ pub struct SearchDoc {
 }
 
 pub struct Entry {
-    pub data: HashMap<String, String>,
+    pub data: Data,
     pub path: PathBuf,
     pub short_key: String,
     search: OnceCell<SearchDoc>,
 }
 
 impl Entry {
-    pub fn new(data: HashMap<String, String>, path: PathBuf) -> Self {
+    pub fn new(data: Data, path: PathBuf) -> Self {
         Entry {
             data,
             path,

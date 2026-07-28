@@ -199,12 +199,12 @@ pub fn to_ads_query(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::bib::Data;
     use crate::library::Entry;
-    use std::collections::HashMap;
     use std::path::PathBuf;
 
     fn entry(first: &str, author: &str, title: &str, year: &str) -> Entry {
-        let mut d = HashMap::new();
+        let mut d = Data::new();
         d.insert("ID".to_string(), format!("{first}{year}aaaaa"));
         d.insert("ENTRYTYPE".to_string(), "article".to_string());
         d.insert("author".to_string(), format!("{author}"));

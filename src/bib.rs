@@ -8,10 +8,18 @@
 //! macros are converted to Unicode (the convert_to_unicode analogue);
 //! other braces are preserved verbatim, matching the Python data model.
 
-use std::collections::HashMap;
+use indexmap::IndexMap;
+
+/// Entry data: insertion-ordered, because serialization writes fields
+/// outside FIELD_ORDER in insertion order, exactly like a Python dict.
+pub type Data = IndexMap<String, String>;
 
 /// Field order for serialization — must match library.py FIELD_ORDER so
 /// both implementations write identical files for identical data.
+/// Note the camelCase names never match parsed data (bibtexparser
+/// lowercases field names and the lookup is case-sensitive, in Python
+/// too) — parsed archiveprefix/primaryclass land in the trailing
+/// insertion-ordered section. That quirk is the on-disk format; keep it.
 pub const FIELD_ORDER: &[&str] = &[
     "author",
     "title",
@@ -36,7 +44,7 @@ pub const FIELD_ORDER: &[&str] = &[
 
 /// Parse the first entry in a .bib file into the flat data map the rest of
 /// the code operates on. Returns None on files with no parseable entry.
-pub fn parse_entry(text: &str) -> Option<HashMap<String, String>> {
+pub fn parse_entry(text: &str) -> Option<Data> {
     let bytes = text.as_bytes();
     let at = text.find('@')?;
     let brace = text[at..].find('{')? + at;
@@ -47,7 +55,7 @@ pub fn parse_entry(text: &str) -> Option<HashMap<String, String>> {
     let key = text[i..key_end].trim().to_string();
     i = key_end + 1;
 
-    let mut data = HashMap::new();
+    let mut data = Data::new();
     data.insert("ENTRYTYPE".to_string(), etype);
     data.insert("ID".to_string(), key);
 
@@ -280,29 +288,24 @@ fn finish_group(chars: &[char], i: usize, wrapped: bool) -> Option<usize> {
     }
 }
 
-/// Serialize an entry — same layout as library.py format_bib_entry.
-pub fn format_entry(data: &HashMap<String, String>) -> String {
+/// Serialize an entry — byte-for-byte port of library.py format_bib_entry:
+/// FIELD_ORDER first (case-sensitive match), then everything else in
+/// insertion order.
+pub fn format_entry(data: &Data) -> String {
     let key = data.get("ID").map(String::as_str).unwrap_or("");
     let etype = data.get("ENTRYTYPE").map(String::as_str).unwrap_or("article");
     let mut lines = vec![format!("@{etype}{{{key},")];
     let mut seen: Vec<&str> = vec!["ID", "ENTRYTYPE"];
     for name in FIELD_ORDER {
-        // parsed data holds lowercase names; FIELD_ORDER has display casing
-        let stored = data
-            .get_key_value(*name)
-            .or_else(|| data.get_key_value(name.to_lowercase().as_str()));
-        if let Some((k, val)) = stored {
+        if let Some(val) = data.get(*name) {
             lines.push(format!("  {name:<16} = {{{val}}},"));
-            seen.push(k.as_str());
+            seen.push(name);
         }
     }
-    let mut rest: Vec<(&String, &String)> = data
-        .iter()
-        .filter(|(k, _)| !seen.contains(&k.as_str()))
-        .collect();
-    rest.sort();
-    for (name, val) in rest {
-        lines.push(format!("  {name:<16} = {{{val}}},"));
+    for (name, val) in data {
+        if !seen.contains(&name.as_str()) {
+            lines.push(format!("  {name:<16} = {{{val}}},"));
+        }
     }
     lines.push("}\n".to_string());
     lines.join("\n")
@@ -345,7 +348,7 @@ mod tests {
 
     #[test]
     fn roundtrips_format() {
-        let mut d = HashMap::new();
+        let mut d = Data::new();
         d.insert("ID".into(), "Key2020abcde".into());
         d.insert("ENTRYTYPE".into(), "article".into());
         d.insert("author".into(), "Someone, A.".into());
