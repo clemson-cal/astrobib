@@ -152,6 +152,8 @@ struct App {
     copy_restore: Option<(bool, bool)>,
     // last known mouse position, for roll-over styling of clickables
     hover: (u16, u16),
+    // transient footer hint while hovering a copy-region (never logged)
+    hover_hint: Option<String>,
     // event log: (category, seconds-since-start, message); L toggles the
     // pane, the footer always shows the newest entry color-coded
     log: Vec<(MsgCat, u64, String)>,
@@ -284,6 +286,7 @@ impl App {
             copy_restore: None,
             text_select: false,
             hover: (u16::MAX, u16::MAX),
+            hover_hint: None,
             log: vec![],
             show_log: false,
             started: std::time::Instant::now(),
@@ -884,9 +887,11 @@ impl App {
             }
             return;
         }
-        // yank-cells copy the datum they sit next to
+        // copy-regions: the card text copies its own entry's datum
         if let Some(&(_, item)) = self.card_yanks.iter().find(|(r, _)| hit(*r, x, y)) {
-            self.do_copy(item);
+            if let Some(key) = self.selected_key().map(str::to_string) {
+                self.do_copy_single(key, item);
+            }
             return;
         }
         // pub card links open the browser
@@ -1003,9 +1008,13 @@ impl App {
     /// The clipboard text an item yields over the current targets, or
     /// None when no target has the field (also the panel's dimming test).
     fn copy_value(&self, item: CopyItem) -> Option<String> {
+        self.copy_value_keys(&self.action_keys(), item)
+    }
+
+    fn copy_value_keys(&self, keys: &[String], item: CopyItem) -> Option<String> {
         let mut vals: Vec<String> = vec![];
-        for k in self.action_keys() {
-            let Some(e) = self.lib.get(&k) else { continue };
+        for k in keys {
+            let Some(e) = self.lib.get(k) else { continue };
             let v = match item {
                 CopyItem::Key => Some(if e.short_key.is_empty() {
                     e.key().to_string()
@@ -1020,8 +1029,8 @@ impl App {
                 CopyItem::DoiUrl => {
                     (!e.doi().is_empty()).then(|| format!("https://doi.org/{}", e.doi()))
                 }
-                CopyItem::PdfPath => pdf::is_cached(&k)
-                    .then(|| pdf::cache_path(&k).to_string_lossy().into_owned()),
+                CopyItem::PdfPath => pdf::is_cached(k)
+                    .then(|| pdf::cache_path(k).to_string_lossy().into_owned()),
                 CopyItem::Abstract => {
                     (!e.abstract_().is_empty()).then(|| e.abstract_().to_string())
                 }
@@ -1044,12 +1053,24 @@ impl App {
         Some(vals.join(sep))
     }
 
+    /// Copy one entry's datum (the card's copy-regions path).
+    fn do_copy_single(&mut self, key: String, item: CopyItem) {
+        match self.copy_value_keys(&[key], item) {
+            Some(text) => self.finish_copy(&text.clone()),
+            None => self.note(MsgCat::Warn, "nothing to copy".to_string()),
+        }
+    }
+
     fn do_copy(&mut self, item: CopyItem) {
         self.exit_copy_mode();
         let Some(text) = self.copy_value(item) else {
             self.note(MsgCat::Warn, "nothing to copy".to_string());
             return;
         };
+        self.finish_copy(&text);
+    }
+
+    fn finish_copy(&mut self, text: &str) {
         if copy_to_clipboard(&text) {
             let first = text.lines().next().unwrap_or("");
             let mut shown: String = first.chars().take(60).collect();
@@ -1058,8 +1079,10 @@ impl App {
             }
             self.note(MsgCat::Ok, format!("Copied: {shown}"));
         } else {
-            self.status =
-                "clipboard copy failed — terminal may not support OSC 52".to_string();
+            self.note(
+                MsgCat::Err,
+                "clipboard copy failed — terminal may not support OSC 52".to_string(),
+            );
         }
     }
 
@@ -1209,8 +1232,8 @@ impl App {
 
     fn draw(&mut self, f: &mut Frame) {
         self.card_buttons.clear();
-        self.card_yanks.clear();
         self.panel_rows.clear();
+        self.hover_hint = None;
         self.panel_copy_rows.clear();
         let log_h = if self.show_log {
             (self.log.len().min(8) + 2) as u16
@@ -1237,6 +1260,7 @@ impl App {
             self.draw_detail(f, area);
         } else {
             self.panel_area = Rect::default();
+            self.card_yanks.clear();
         }
         if self.show_log {
             self.draw_log(f, log_area);
@@ -1685,33 +1709,41 @@ impl App {
         };
 
         let hv = self.hover;
+        // copy-regions: the text itself is the click target; hovering any
+        // line of a region tints the whole region and hints in the footer
+        let hov_region: Option<CopyItem> = self
+            .card_yanks
+            .iter()
+            .find(|(r, _)| hit(*r, hv.0, hv.1))
+            .map(|&(_, item)| item);
+        if let Some(item) = hov_region {
+            let what = match item {
+                CopyItem::Title => "title",
+                CopyItem::Abstract => "abstract",
+                _ => "cite key",
+            };
+            self.hover_hint = Some(format!("⧉ click to copy {what}"));
+        }
         let mut yanks: Vec<(Rect, CopyItem)> = vec![];
-        let yank_span = |x: u16, y: u16, item: CopyItem, yanks: &mut Vec<(Rect, CopyItem)>| {
-            let r = Rect { x, y, width: 1, height: 1 };
-            yanks.push((r, item));
-            Span::styled(
-                "⧉",
-                if hit(r, hv.0, hv.1) {
-                    Style::default().fg(Color::White).add_modifier(Modifier::BOLD)
-                } else {
-                    Style::default().fg(Color::Cyan).add_modifier(Modifier::DIM)
-                },
-            )
+        let tint = Style::default().bg(Color::Rgb(44, 48, 56));
+        let region_style = |base: Style, item: CopyItem| {
+            if hov_region == Some(item) { base.patch(tint) } else { base }
         };
         // ── body ─────────────────────────────────────────────────────
-        let title_lines = wrap_text(e.title().trim_matches(['{', '}']), w.saturating_sub(3));
-        let tn = title_lines.len();
-        for (i, l) in title_lines.into_iter().enumerate() {
-            let mut spans = vec![Span::styled(
-                l.clone(),
-                Style::default().add_modifier(Modifier::BOLD | Modifier::ITALIC),
-            )];
-            if i == tn - 1 {
-                let tw = l.chars().count() as u16;
-                spans.push(Span::raw("  "));
-                spans.push(yank_span(x0 + tw + 2, y, CopyItem::Title, &mut yanks));
-            }
-            line_at(f, y, Line::from(spans));
+        for l in wrap_text(e.title().trim_matches(['{', '}']), w) {
+            let lw = l.chars().count() as u16;
+            yanks.push((Rect { x: x0, y, width: lw.max(1), height: 1 }, CopyItem::Title));
+            line_at(
+                f,
+                y,
+                Line::from(Span::styled(
+                    l,
+                    region_style(
+                        Style::default().add_modifier(Modifier::BOLD | Modifier::ITALIC),
+                        CopyItem::Title,
+                    ),
+                )),
+            );
             y += 1;
         }
         y += 1;
@@ -1746,18 +1778,20 @@ impl App {
             y += 1;
             let shown: String = abs.chars().take(1000).collect();
             let avail = (bottom - y).saturating_sub(rest);
-            for (i, l) in wrap_text(&shown, w.saturating_sub(3))
-                .into_iter()
-                .take(avail as usize)
-                .enumerate()
-            {
-                let mut spans = vec![Span::raw(l.clone())];
-                if i == 0 {
-                    let lw = l.chars().count() as u16;
-                    spans.push(Span::raw("  "));
-                    spans.push(yank_span(x0 + lw + 2, y, CopyItem::Abstract, &mut yanks));
-                }
-                line_at(f, y, Line::from(spans));
+            for l in wrap_text(&shown, w).into_iter().take(avail as usize) {
+                let lw = l.chars().count() as u16;
+                yanks.push((
+                    Rect { x: x0, y, width: lw.max(1), height: 1 },
+                    CopyItem::Abstract,
+                ));
+                line_at(
+                    f,
+                    y,
+                    Line::from(Span::styled(
+                        l,
+                        region_style(Style::default(), CopyItem::Abstract),
+                    )),
+                );
                 y += 1;
             }
         }
@@ -1884,8 +1918,12 @@ impl App {
             spans.push(Span::styled("  (preprint)", Style::default().fg(Color::DarkGray)));
         }
         let used: u16 = spans.iter().map(|s| s.content.chars().count() as u16).sum();
-        spans.push(Span::raw("  "));
-        spans.push(yank_span(x0 + used + 2, y, CopyItem::Key, &mut yanks));
+        yanks.push((Rect { x: x0, y, width: used.max(1), height: 1 }, CopyItem::Key));
+        if hov_region == Some(CopyItem::Key) {
+            for s in &mut spans {
+                s.style = s.style.patch(tint);
+            }
+        }
         line_at(f, y, Line::from(spans));
         self.card_yanks = yanks;
     }
@@ -1990,16 +2028,22 @@ impl App {
                 } else {
                     format!("  ·  /{}", self.filter)
                 };
-                let msg_color = match self.log.last() {
-                    Some((cat, _, m)) if *m == self.status => cat.color(),
-                    _ => Color::Gray,
+                let (msg, msg_color) = if let Some(hint) = &self.hover_hint {
+                    (hint.clone(), Color::Cyan)
+                } else {
+                    match self.log.last() {
+                        Some((cat, _, m)) if *m == self.status => {
+                            (self.status.clone(), cat.color())
+                        }
+                        _ => (self.status.clone(), Color::Gray),
+                    }
                 };
                 Line::from(vec![
                     Span::styled(
                         format!("{n}/{total}  ·  "),
                         Style::default().fg(Color::DarkGray),
                     ),
-                    Span::styled(self.status.clone(), Style::default().fg(msg_color)),
+                    Span::styled(msg, Style::default().fg(msg_color)),
                     Span::styled(filt, Style::default().fg(Color::DarkGray)),
                 ])
             }
