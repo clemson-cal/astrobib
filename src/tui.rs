@@ -2350,7 +2350,9 @@ impl App {
                     } else {
                         ""
                     };
-                    let circle_style = if self.select_mode && cursor == Some(pos) {
+                    let circle_style = if circle == "◯" {
+                        Style::default().fg(Color::DarkGray).add_modifier(Modifier::DIM)
+                    } else if self.select_mode && cursor == Some(pos) {
                         Style::default().fg(Color::White).add_modifier(Modifier::BOLD)
                     } else {
                         Style::default().fg(Color::Cyan)
@@ -2477,7 +2479,10 @@ impl App {
                 } else {
                     "◯"
                 };
-                let circle_style = if self.select_mode && at_cursor {
+                // unselected rings recede almost entirely; selected dots pop
+                let circle_style = if circle == "◯" {
+                    Style::default().fg(Color::DarkGray).add_modifier(Modifier::DIM)
+                } else if self.select_mode && at_cursor {
                     Style::default().fg(Color::White).add_modifier(Modifier::BOLD)
                 } else {
                     c_ind
