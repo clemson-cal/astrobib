@@ -1,7 +1,9 @@
 pub mod ads;
 pub mod bib;
 pub mod keys;
+pub mod export;
 pub mod library;
 pub mod pdf;
 pub mod query;
+pub mod tabs;
 pub mod tui;

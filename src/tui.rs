@@ -419,6 +419,24 @@ impl App {
         self.run_ads_query_limit(raw, refresh_of, 20);
     }
 
+    /// +/- — step the active ADS scope's result limit through the
+    /// Python steps (20/50/100/200) and re-run the query.
+    fn step_limit(&mut self, dir: isize) {
+        const STEPS: [usize; 4] = [20, 50, 100, 200];
+        let Some(Scope::Ads { query, limit, .. }) = self.scopes.get_mut(self.active_scope) else {
+            return;
+        };
+        let idx = STEPS.iter().position(|&s| s >= *limit).unwrap_or(STEPS.len() - 1);
+        let idx = (idx as isize + dir).clamp(0, STEPS.len() as isize - 1) as usize;
+        if STEPS[idx] == *limit {
+            return;
+        }
+        *limit = STEPS[idx];
+        let (q, l) = (query.clone(), *limit);
+        self.note(MsgCat::Info, format!("limit → {l}"));
+        self.run_ads_query_limit(q, Some(self.active_scope), l);
+    }
+
     fn refresh_scope(&mut self) {
         if let Some(Scope::Ads { query, limit, .. }) = self.scopes.get(self.active_scope) {
             self.run_ads_query_limit(query.clone(), Some(self.active_scope), *limit);
@@ -690,6 +708,7 @@ impl App {
     fn card_key(&self) -> Option<&str> {
         let a = self.table_area;
         let (_, show_key) = column_layout(a.width);
+        let show_key = show_key || self.show_detail;
         let in_key_col = show_key && self.hover.0 >= a.x + a.width.saturating_sub(20);
         if in_key_col {
             if let Some(pos) = self.hovered_table_pos() {
@@ -1186,9 +1205,13 @@ impl App {
             }
             return;
         }
-        // scope strip
+        // scope strip (usize::MAX = the new-query affordance)
         if let Some(&(_, idx)) = self.scope_rects.iter().find(|(r, _)| hit(*r, x, y)) {
-            self.set_scope(idx);
+            if idx == usize::MAX {
+                self.open_ads_prompt();
+            } else {
+                self.set_scope(idx);
+            }
             return;
         }
         // footer view badges
@@ -1437,6 +1460,8 @@ impl App {
                 KeyCode::Char('[') => self.cycle_scope(-1),
                 KeyCode::Char(']') => self.cycle_scope(1),
                 KeyCode::Char('r') => self.refresh_scope(),
+                KeyCode::Char('+') | KeyCode::Char('=') => self.step_limit(1),
+                KeyCode::Char('-') => self.step_limit(-1),
                 KeyCode::Char('w') if mods.contains(KeyModifiers::CONTROL) => {
                     self.close_scope()
                 }
@@ -1810,9 +1835,18 @@ impl App {
             spans.push(Span::styled(" │ ", Style::default().fg(Color::DarkGray)));
             x += wl + 3;
         }
+        let label = "new query[S]";
+        let r = Rect { x, y: area.y, width: label.chars().count() as u16, height: 1 };
+        // usize::MAX marks the new-query pseudo-scope for the click handler
+        self.scope_rects.push((r, usize::MAX));
+        let hov = hit(r, self.hover.0, self.hover.1);
         spans.push(Span::styled(
-            "S new query",
-            Style::default().fg(Color::DarkGray),
+            label,
+            if hov {
+                Style::default().fg(Color::Gray).add_modifier(Modifier::UNDERLINED)
+            } else {
+                Style::default().fg(Color::DarkGray)
+            },
         ));
         f.render_widget(Paragraph::new(Line::from(spans)), area);
     }
@@ -1835,6 +1869,20 @@ impl App {
                     let entry = self.lib.get_by_bibcode(&a.bibcode);
                     let cache_key = entry.map(|e| e.key()).unwrap_or(&a.bibcode);
                     let author = a.author.join(" and ");
+                    let lit = hov_row == Some(pos);
+                    let (au_style, ti_style, yr_style) = if lit {
+                        (
+                            Style::default().fg(Color::White),
+                            Style::default().fg(Color::White).add_modifier(Modifier::ITALIC),
+                            Style::default().fg(Color::Green),
+                        )
+                    } else {
+                        (
+                            Style::default().fg(Color::Gray),
+                            Style::default().add_modifier(Modifier::ITALIC),
+                            Style::default().fg(Color::Green).add_modifier(Modifier::DIM),
+                        )
+                    };
                     let row = Row::new(vec![
                         Cell::from(Span::styled(
                             if cursor == Some(pos) { "◉" } else { "" },
@@ -1848,21 +1896,15 @@ impl App {
                             if entry.is_some() { "●" } else { "" },
                             Style::default().fg(Color::Magenta),
                         )),
-                        Cell::from(Span::styled(
-                            a.year.clone(),
-                            Style::default().fg(Color::Green).add_modifier(Modifier::DIM),
-                        )),
+                        Cell::from(Span::styled(a.year.clone(), yr_style)),
                         Cell::from(Span::styled(
                             fit_authors(&author, author_w as usize),
-                            Style::default().fg(Color::Gray),
+                            au_style,
                         )),
-                        Cell::from(Span::styled(
-                            a.title.clone(),
-                            Style::default().add_modifier(Modifier::ITALIC),
-                        )),
+                        Cell::from(Span::styled(a.title.clone(), ti_style)),
                     ]);
-                    if hov_row == Some(pos) {
-                        row.style(Style::default().bg(Color::Rgb(38, 42, 50)))
+                    if cursor == Some(pos) {
+                        row.style(Style::default().bg(Color::Rgb(34, 40, 52)))
                     } else {
                         row
                     }
@@ -1911,15 +1953,36 @@ impl App {
             f.render_stateful_widget(table, data_area, &mut self.table);
             return;
         }
-        // subtle per-column palette; the terminal theme supplies the hues
-        let c_ind = Style::default().fg(Color::Cyan);
-        let c_pdf = Style::default().fg(Color::Green);
-        let c_ms = Style::default().fg(Color::Magenta);
-        let c_year = Style::default().fg(Color::Green).add_modifier(Modifier::DIM);
-        let c_author = Style::default().fg(Color::Gray);
-        let c_key = Style::default().fg(Color::Cyan).add_modifier(Modifier::DIM);
-        // responsive columns: author scales, Key drops first when tight
+        // subtle per-column palette; the terminal theme supplies the hues.
+        // cursor row: faint cool fill ("standing on a surface") + ◉;
+        // hovered row: no fill — the text lifts one level instead
+        let cursor_fill = Style::default().bg(Color::Rgb(34, 40, 52));
+        let palette = |lit: bool| {
+            if lit {
+                (
+                    Style::default().fg(Color::Cyan),
+                    Style::default().fg(Color::Green),
+                    Style::default().fg(Color::Magenta),
+                    Style::default().fg(Color::Green),
+                    Style::default().fg(Color::White),
+                    Style::default().fg(Color::Cyan),
+                )
+            } else {
+                (
+                    Style::default().fg(Color::Cyan),
+                    Style::default().fg(Color::Green),
+                    Style::default().fg(Color::Magenta),
+                    Style::default().fg(Color::Green).add_modifier(Modifier::DIM),
+                    Style::default().fg(Color::Gray),
+                    Style::default().fg(Color::Cyan).add_modifier(Modifier::DIM),
+                )
+            }
+        };
+        // responsive columns: author scales, Key drops first when tight —
+        // but never while the card is shown: the Key column is the
+        // hover-preview target, so the title absorbs the squeeze instead
         let (author_w, show_key) = column_layout(area.width);
+        let show_key = show_key || self.show_detail;
         let hov_row = self.hovered_table_pos();
         let cursor = self.table.selected();
         let rows: Vec<Row> = self
@@ -1929,6 +1992,8 @@ impl App {
             .map(|(pos, &i)| {
                 let e = self.lib.get(&self.order[i]).unwrap();
                 let at_cursor = cursor == Some(pos);
+                let lit = hov_row == Some(pos);
+                let (c_ind, c_pdf, c_ms, c_year, c_author, c_key) = palette(lit);
                 // the gutter carries the cursor: ◉ marks the cursor row
                 // (no row highlight, so cell colors stay visible); in
                 // selection mode the cursor row's circle brightens
@@ -1961,15 +2026,19 @@ impl App {
                     )),
                     Cell::from(Span::styled(
                         e.title().trim_matches(['{', '}']).to_string(),
-                        Style::default().add_modifier(Modifier::ITALIC),
+                        if lit {
+                            Style::default().fg(Color::White).add_modifier(Modifier::ITALIC)
+                        } else {
+                            Style::default().add_modifier(Modifier::ITALIC)
+                        },
                     )),
                 ];
                 if show_key {
                     cells.push(Cell::from(Span::styled(e.short_key.clone(), c_key)));
                 }
                 let row = Row::new(cells);
-                if hov_row == Some(pos) {
-                    row.style(Style::default().bg(Color::Rgb(38, 42, 50)))
+                if at_cursor {
+                    row.style(cursor_fill)
                 } else {
                     row
                 }
@@ -2106,7 +2175,7 @@ impl App {
             line_at(f, y, Line::from(Span::styled(l, Style::default().fg(Color::DarkGray))));
             y += 1;
         }
-        let rest = 3 + 2; // links row + footer
+        let rest = 3 + 3; // links block + gap + footer line
         if !abstract_.is_empty() && y + rest < bottom {
             y += 1;
             let avail = (bottom - y).saturating_sub(rest) as usize;
@@ -2281,7 +2350,9 @@ impl App {
         let kws = e.keywords().join(" · ");
         let kw_lines = if kws.is_empty() { 0 } else { wrap_text(&kws, w).len() as u16 + 1 };
         let has_ms = self.lib.manuscript.is_some();
-        let rest = 3 + 1 + u16::from(has_ms) + 1 + kw_lines + 2;
+        // links block (sep + links + sep + air) + buttons + ms chip +
+        // status (line + blank) + keywords + key line
+        let rest = 4 + 1 + u16::from(has_ms) + 2 + kw_lines + 1;
         let abs = e.abstract_();
         if !abs.is_empty() && y + rest < bottom {
             y += 1;
@@ -2580,7 +2651,7 @@ impl App {
                 let fresh = self
                     .log
                     .last()
-                    .filter(|(_, t, m)| *m == self.status && now.saturating_sub(*t) < 4);
+                    .filter(|(_, t, m)| *m == self.status && now.saturating_sub(*t) < 10);
                 let (msg, msg_color) = if let Some((cat, _, m)) = fresh {
                     (m.clone(), cat.color())
                 } else if let Some(hint) = &self.hover_hint {
