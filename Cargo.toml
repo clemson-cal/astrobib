@@ -1,9 +1,10 @@
 [package]
 name = "astrobib"
-version = "0.0.1"
+version = "0.5.0"
 edition = "2021"
 description = "ADS-native BibTeX library manager (Rust port)"
 license = "MIT"
+repository = "https://github.com/clemson-cal/astrobib"
 
 [dependencies]
 anyhow = "1"

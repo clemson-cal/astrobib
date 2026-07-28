@@ -1,0 +1,44 @@
+[build-system]
+requires = ["maturin>=1.0,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "astrobib"
+version = "0.5.0"
+description = "ADS-native BibTeX library manager (Rust port)"
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.8"
+authors = [
+    { name = "Jonathan Zrake", email = "jzrake@clemson.edu" },
+]
+keywords = [
+    "astronomy",
+    "astrophysics",
+    "bibliography",
+    "bibtex",
+    "latex",
+    "literature",
+    "tui",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Rust",
+    "Topic :: Scientific/Engineering :: Astronomy",
+    "Topic :: Text Processing :: Markup :: LaTeX",
+]
+
+[project.urls]
+Homepage = "https://github.com/clemson-cal/astrobib"
+Repository = "https://github.com/clemson-cal/astrobib"
+Issues = "https://github.com/clemson-cal/astrobib/issues"
+
+[tool.maturin]
+bindings = "bin"
+# The retired Python package (astrobib/, preserved at tag v0.4.0) still sits
+# in the tree; without this exclude maturin auto-detects it as a mixed
+# python/rust project and bundles the .py files into the wheel.
+exclude = ["astrobib/**"]
