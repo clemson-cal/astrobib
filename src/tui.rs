@@ -2062,7 +2062,16 @@ impl App {
                 } else {
                     format!("  ·  /{}", self.filter)
                 };
-                let (msg, msg_color) = if let Some(hint) = &self.hover_hint {
+                // a fresh confirmation ("Copied: …") outranks the hover
+                // hint; once it ages out the hint takes over again
+                let now = self.started.elapsed().as_secs();
+                let fresh = self
+                    .log
+                    .last()
+                    .filter(|(_, t, m)| *m == self.status && now.saturating_sub(*t) < 4);
+                let (msg, msg_color) = if let Some((cat, _, m)) = fresh {
+                    (m.clone(), cat.color())
+                } else if let Some(hint) = &self.hover_hint {
                     (hint.clone(), Color::Cyan)
                 } else {
                     match self.log.last() {
