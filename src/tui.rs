@@ -2958,24 +2958,22 @@ impl App {
                 } else {
                     format!("  ·  /{}", self.filter)
                 };
-                // a fresh confirmation ("Copied: …") outranks the hover
-                // hint; once it ages out the hint takes over again
+                // logged messages show for ~5s then clear (a fresh one
+                // outranks the hover hint); unlogged transient status —
+                // download progress, ambient counts — stays visible
                 let now = self.started.elapsed().as_secs();
-                let fresh = self
-                    .log
-                    .last()
-                    .filter(|(_, t, m)| *m == self.status && now.saturating_sub(*t) < 10);
+                let last = self.log.last();
+                let status_is_logged = last.is_some_and(|(_, _, m)| *m == self.status);
+                let fresh = last
+                    .filter(|(_, t, m)| *m == self.status && now.saturating_sub(*t) < 5);
                 let (msg, msg_color) = if let Some((cat, _, m)) = fresh {
                     (m.clone(), cat.color())
                 } else if let Some(hint) = &self.hover_hint {
                     (hint.clone(), Color::Cyan)
+                } else if !status_is_logged {
+                    (self.status.clone(), Color::Gray)
                 } else {
-                    match self.log.last() {
-                        Some((cat, _, m)) if *m == self.status => {
-                            (self.status.clone(), cat.color())
-                        }
-                        _ => (self.status.clone(), Color::Gray),
-                    }
+                    (String::new(), Color::Gray)
                 };
                 let pending = [
                     self.dl_rx.is_some(),
