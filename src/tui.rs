@@ -463,11 +463,17 @@ impl App {
         (pos < self.filtered.len()).then_some(pos)
     }
 
-    /// The entry the pub card shows: a hovered table row previews in the
-    /// card; otherwise the cursor row.
+    /// The entry the pub card shows: hovering the citekey column previews
+    /// that row in the card (full-row hover proved too twitchy); otherwise
+    /// the cursor row.
     fn card_key(&self) -> Option<&str> {
-        if let Some(pos) = self.hovered_table_pos() {
-            return self.filtered.get(pos).map(|&i| self.order[i].as_str());
+        let a = self.table_area;
+        let (_, show_key) = column_layout(a.width);
+        let in_key_col = show_key && self.hover.0 >= a.x + a.width.saturating_sub(20);
+        if in_key_col {
+            if let Some(pos) = self.hovered_table_pos() {
+                return self.filtered.get(pos).map(|&i| self.order[i].as_str());
+            }
         }
         self.selected_key()
     }
@@ -827,9 +833,9 @@ impl App {
                         )
                     };
                     self.note(cat, msg);
-                    self.pdf_status = if failed.is_empty() && done > 0 {
-                        "✓ downloaded".to_string()
-                    } else if done == 0 && !failed.is_empty() {
+                    // success needs no card note — the buttons flipping to
+                    // Open/Clear already signal it; only failures explain
+                    self.pdf_status = if done == 0 && !failed.is_empty() {
                         "✗ no PDF found — try browser ↓".to_string()
                     } else {
                         String::new()
@@ -1530,21 +1536,31 @@ impl App {
         // responsive columns: author scales, Key drops first when tight
         let (author_w, show_key) = column_layout(area.width);
         let hov_row = self.hovered_table_pos();
+        let cursor = self.table.selected();
         let rows: Vec<Row> = self
             .filtered
             .iter()
             .enumerate()
             .map(|(pos, &i)| {
                 let e = self.lib.get(&self.order[i]).unwrap();
+                let at_cursor = cursor == Some(pos);
+                // the gutter carries the cursor: ◉ marks the cursor row
+                // (no row highlight, so cell colors stay visible); in
+                // selection mode the cursor row's circle brightens
                 let circle = if !self.select_mode {
-                    ""
+                    if at_cursor { "◉" } else { "" }
                 } else if self.selected.contains(e.key()) {
                     "◉"
                 } else {
                     "◯"
                 };
+                let circle_style = if self.select_mode && at_cursor {
+                    Style::default().fg(Color::White).add_modifier(Modifier::BOLD)
+                } else {
+                    c_ind
+                };
                 let mut cells = vec![
-                    Cell::from(Span::styled(circle, c_ind)),
+                    Cell::from(Span::styled(circle, circle_style)),
                     Cell::from(Span::styled(
                         if has_cached_pdf(e.key()) { "↓" } else { "" },
                         c_pdf,
@@ -1651,11 +1667,6 @@ impl App {
             constraints.push(Constraint::Length(20));
         }
         let table = Table::new(rows, constraints)
-        .row_highlight_style(
-            Style::default()
-                .bg(Color::DarkGray)
-                .add_modifier(Modifier::BOLD),
-        )
         .block(Block::default().borders(Borders::NONE));
         f.render_stateful_widget(table, data_area, &mut self.table);
     }
