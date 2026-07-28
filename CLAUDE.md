@@ -29,4 +29,4 @@ Format quirk, faithfully reproduced: bibtexparser v1 stored fields in reverse fi
 
 ## Releasing
 
-Not wired yet. Plan: maturin `bindings = "bin"` wheels to PyPI (per-platform, CI matrix) so `pipx install astrobib` keeps working. Do not publish anything without the user's explicit request.
+Maturin `bindings = "bin"` wheels to PyPI so `pipx install astrobib` keeps working: bump the version in both `Cargo.toml` and `pyproject.toml` (not single-sourced), write the CHANGELOG entry, then pushing a `v*` tag triggers `.github/workflows/release.yml` (per-platform wheels + sdist, uploaded with the `PYPI_API_TOKEN` secret). Full procedure in PUBLISHING.md. Do not publish anything — no tag push, no `maturin publish` — without the user's explicit request.
