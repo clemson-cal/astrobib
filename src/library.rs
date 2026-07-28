@@ -268,6 +268,39 @@ impl Library {
         Ok(key)
     }
 
+    /// Delete an entry's file and drop it from the indexes — port of
+    /// remove_entry.
+    pub fn remove_entry(&mut self, key: &str) -> std::io::Result<()> {
+        let path = self.root.join("bib").join(format!("{key}.bib"));
+        if path.exists() {
+            std::fs::remove_file(&path)?;
+        }
+        if let Some(&i) = self.by_key.get(key) {
+            self.entries.remove(i);
+            self.reindex();
+            self.compute_short_keys();
+        }
+        Ok(())
+    }
+
+    /// Write a prepared data map under a FIXED key (no key generation) —
+    /// used by manuscript membership copies.
+    fn write_entry(&mut self, key: &str, data: Data) -> std::io::Result<()> {
+        let bib_dir = self.root.join("bib");
+        std::fs::create_dir_all(&bib_dir)?;
+        let path = bib_dir.join(format!("{key}.bib"));
+        std::fs::write(&path, bib::format_entry(&data))?;
+        let entry = Entry::new(data, path);
+        if let Some(&i) = self.by_key.get(key) {
+            self.entries[i] = entry;
+        } else {
+            self.entries.push(entry);
+        }
+        self.reindex();
+        self.compute_short_keys();
+        Ok(())
+    }
+
     /// Set or clear the personal astrobib_starred flag and rewrite the
     /// entry file — port of set_starred. shift_remove keeps the field
     /// order of the remaining entries stable, like Python's dict.pop.
@@ -361,6 +394,56 @@ impl MergedLibrary {
             ms.save_entry(data)?;
         }
         Ok(key)
+    }
+
+    pub fn in_personal(&self, key: &str) -> bool {
+        self.personal.has(key)
+    }
+
+    /// Remove an entry from both databases — port of remove_entry.
+    pub fn remove_entry(&mut self, key: &str) -> std::io::Result<()> {
+        self.personal.remove_entry(key)?;
+        if let Some(ms) = &mut self.manuscript {
+            ms.remove_entry(key)?;
+        }
+        Ok(())
+    }
+
+    /// Copy an entry into the manuscript db (personal fields stripped) —
+    /// port of add_to_manuscript. Returns false if there is no manuscript,
+    /// the entry is unknown, or it is already a member.
+    pub fn add_to_manuscript(&mut self, key: &str) -> std::io::Result<bool> {
+        let Some(entry) = self.get(key) else {
+            return Ok(false);
+        };
+        let mut data = entry.data.clone();
+        data.shift_remove("astrobib_starred"); // stars are personal
+        let Some(ms) = &mut self.manuscript else {
+            return Ok(false);
+        };
+        if ms.has(key) {
+            return Ok(false);
+        }
+        ms.write_entry(key, data)?;
+        Ok(true)
+    }
+
+    /// Remove an entry from the manuscript db, first rescuing it into the
+    /// personal library when the manuscript holds the only copy — port of
+    /// remove_from_manuscript. Removal never destroys bibdata.
+    pub fn remove_from_manuscript(&mut self, key: &str) -> std::io::Result<bool> {
+        let Some(ms) = &self.manuscript else {
+            return Ok(false);
+        };
+        if !ms.has(key) {
+            return Ok(false);
+        }
+        if !self.personal.has(key) {
+            let data = ms.get(key).unwrap().data.clone();
+            self.personal.write_entry(key, data)?;
+        }
+        self.manuscript.as_mut().unwrap().remove_entry(key)?;
+        Ok(true)
     }
 }
 

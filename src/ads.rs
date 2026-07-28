@@ -139,6 +139,28 @@ pub fn fetch_bibtex(bibcode: &str) -> Result<Option<Data>> {
     Ok(Some(data))
 }
 
+/// Query the ADS link resolver for a direct PDF URL — port of
+/// resolve_pdf_url. Returns None if no token, unknown bibcode, or the
+/// link type is unavailable; redirects are NOT followed (the JSON body
+/// carries the link).
+pub fn resolve_pdf_url(bibcode: &str, link_type: &str) -> Option<String> {
+    let token = get_token()?;
+    let agent = ureq::AgentBuilder::new()
+        .timeout(Duration::from_secs(10))
+        .redirects(0)
+        .build();
+    let resp = agent
+        .get(&format!("{ADS_API}/resolver/{bibcode}/{link_type}"))
+        .set("Authorization", &format!("Bearer {token}"))
+        .call()
+        .ok()?;
+    if resp.status() != 200 {
+        return None;
+    }
+    let v: serde_json::Value = resp.into_json().ok()?;
+    v["link"].as_str().filter(|s| !s.is_empty()).map(str::to_string)
+}
+
 /// Strip HTML tags and LaTeX braces from abstract text (display-only field).
 pub fn clean_abstract(text: &str) -> String {
     static TAG: OnceLock<Regex> = OnceLock::new();

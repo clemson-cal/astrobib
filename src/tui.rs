@@ -6,6 +6,7 @@
 //! star toggling, and instant quit.
 
 use crate::library::{has_cached_pdf, MergedLibrary};
+use crate::pdf;
 use crate::query::{self, QueryContext};
 use ratatui::crossterm::event::{
     self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, KeyModifiers,
@@ -49,6 +50,12 @@ struct App {
     select_mode: bool,
     selected: HashSet<String>,
     table_area: Rect, // last drawn table region, for mouse hit-testing
+    dl_rx: Option<std::sync::mpsc::Receiver<DlMsg>>,
+}
+
+enum DlMsg {
+    Progress(String),
+    Done { done: usize, failed: Vec<String> },
 }
 
 impl App {
@@ -87,7 +94,23 @@ impl App {
             select_mode: false,
             selected: HashSet::new(),
             table_area: Rect::default(),
+            dl_rx: None,
         }
+    }
+
+    /// The entries an action applies to: the selection (in display order)
+    /// when selection mode is active and non-empty, else the highlighted
+    /// row — the Python TUI's convention.
+    fn action_keys(&self) -> Vec<String> {
+        if self.select_mode && !self.selected.is_empty() {
+            return self
+                .order
+                .iter()
+                .filter(|k| self.selected.contains(*k))
+                .cloned()
+                .collect();
+        }
+        self.selected_key().map(str::to_string).into_iter().collect()
     }
 
     fn run(mut self, terminal: &mut ratatui::DefaultTerminal) -> anyhow::Result<()> {
@@ -124,6 +147,7 @@ impl App {
             t0.elapsed().as_millis()
         ));
         while !self.quit {
+            self.drain_downloads();
             terminal.draw(|f| self.draw(f))?;
             if let Some(ev) = pending.take() {
                 debug_layout(&format!("{:>6}ms pending {ev:?}", t0.elapsed().as_millis()));
@@ -136,9 +160,13 @@ impl App {
                 }
                 continue;
             }
-            // fast cadence for the first second as a safety net in case a
-            // late terminal resize slips past the settle window above
-            let tick = if t0.elapsed() < Duration::from_secs(1) { 25 } else { 250 };
+            // fast cadence for the first second (late terminal resizes that
+            // slip past the settle window) and while downloads report progress
+            let tick = if t0.elapsed() < Duration::from_secs(1) || self.dl_rx.is_some() {
+                25
+            } else {
+                250
+            };
             debug_layout(&format!(
                 "{:>6}ms draw frame={:?} table={:?}",
                 t0.elapsed().as_millis(),
@@ -218,6 +246,185 @@ impl App {
         self.select_mode = false;
         self.selected.clear();
         self.status = format!("{} papers", self.order.len());
+    }
+
+    /// Rebuild the display order after entries were added or removed.
+    fn rebuild_order(&mut self) {
+        self.order = self.lib.entries().iter().map(|e| e.key().to_string()).collect();
+        let lib = &self.lib;
+        self.order.sort_by(|a, b| {
+            let (ea, eb) = (lib.get(a).unwrap(), lib.get(b).unwrap());
+            eb.year().cmp(&ea.year()).then(a.cmp(b))
+        });
+        self.selected.retain(|k| lib.get(k).is_some());
+        self.refilter();
+    }
+
+    /// m — port of action_toggle_manuscript's library-view rule: if any
+    /// target is missing from the manuscript db, add all missing; else
+    /// (all present) remove all.
+    fn toggle_manuscript(&mut self) {
+        if self.lib.manuscript.is_none() {
+            self.status = "no manuscript db (run inside a manuscript repo)".to_string();
+            return;
+        }
+        let keys = self.action_keys();
+        if keys.is_empty() {
+            return;
+        }
+        let missing: Vec<String> = keys
+            .iter()
+            .filter(|k| !self.lib.in_manuscript(k))
+            .cloned()
+            .collect();
+        if !missing.is_empty() {
+            let mut n = 0;
+            for k in &missing {
+                if matches!(self.lib.add_to_manuscript(k), Ok(true)) {
+                    n += 1;
+                }
+            }
+            self.status = format!("◆ Added {n} paper(s) to manuscript db");
+        } else {
+            let mut n = 0;
+            let mut rescued = 0;
+            for k in &keys {
+                if !self.lib.in_personal(k) {
+                    rescued += 1;
+                }
+                if matches!(self.lib.remove_from_manuscript(k), Ok(true)) {
+                    n += 1;
+                }
+            }
+            let note = if rescued > 0 {
+                format!("  ({rescued} copied to personal library)")
+            } else {
+                String::new()
+            };
+            self.status = format!("Removed {n} paper(s) from manuscript db{note}");
+        }
+        self.rebuild_order();
+    }
+
+    /// d — remove targets from both databases (no confirmation, matching
+    /// the Python TUI); exits selection mode afterward.
+    fn remove_papers(&mut self) {
+        let keys = self.action_keys();
+        if keys.is_empty() {
+            return;
+        }
+        let mut n = 0;
+        for k in &keys {
+            if self.lib.remove_entry(k).is_ok() {
+                n += 1;
+            }
+        }
+        if self.select_mode {
+            self.select_mode = false;
+            self.selected.clear();
+        }
+        self.rebuild_order();
+        self.status = format!("Removed {n} paper(s)");
+    }
+
+    /// o — open every cached PDF among the targets.
+    fn open_pdfs(&mut self) {
+        let paths: Vec<_> = self
+            .action_keys()
+            .iter()
+            .filter(|k| pdf::is_cached(k))
+            .map(|k| pdf::cache_path(k))
+            .collect();
+        if paths.is_empty() {
+            self.status = "no cached PDFs in selection  (p to download)".to_string();
+            return;
+        }
+        let n = paths.len();
+        pdf::open_paths(&paths);
+        self.status = format!("Opened {n} PDF(s)");
+    }
+
+    /// X — clear cached PDFs among the targets.
+    fn clear_pdfs(&mut self) {
+        let mut n = 0;
+        for k in self.action_keys() {
+            let p = pdf::cache_path(&k);
+            if p.exists() && std::fs::remove_file(&p).is_ok() {
+                n += 1;
+            }
+        }
+        self.status = format!("Cleared {n} cached PDF(s)");
+    }
+
+    /// p — download PDFs for targets not yet cached, on a background
+    /// thread so the UI stays live; progress arrives over a channel.
+    fn download_pdfs(&mut self) {
+        if self.dl_rx.is_some() {
+            self.status = "a download is already running".to_string();
+            return;
+        }
+        let items: Vec<(String, String, String)> = self
+            .action_keys()
+            .iter()
+            .filter(|k| !pdf::is_cached(k))
+            .filter_map(|k| {
+                let e = self.lib.get(k)?;
+                if e.eprint().is_empty() && e.adsurl().is_empty() {
+                    return None;
+                }
+                Some((k.clone(), e.eprint().to_string(), e.adsurl().to_string()))
+            })
+            .collect();
+        if items.is_empty() {
+            self.status = "nothing to download (cached, or no arXiv ID / ADS URL)".to_string();
+            return;
+        }
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.dl_rx = Some(rx);
+        let total = items.len();
+        std::thread::spawn(move || {
+            let mut done = 0;
+            let mut failed = vec![];
+            for (i, (key, eprint, adsurl)) in items.iter().enumerate() {
+                let _ = tx.send(DlMsg::Progress(format!(
+                    "Downloading [{}/{total}] {key}…",
+                    i + 1
+                )));
+                if pdf::fetch(key, eprint, adsurl).is_some() {
+                    done += 1;
+                } else {
+                    failed.push(key.clone());
+                }
+            }
+            let _ = tx.send(DlMsg::Done { done, failed });
+        });
+        self.status = format!("Downloading {total} PDF(s)…");
+    }
+
+    fn drain_downloads(&mut self) {
+        let mut msgs = vec![];
+        if let Some(rx) = &self.dl_rx {
+            while let Ok(m) = rx.try_recv() {
+                msgs.push(m);
+            }
+        }
+        for m in msgs {
+            match m {
+                DlMsg::Progress(s) => self.status = s,
+                DlMsg::Done { done, failed } => {
+                    self.status = if failed.is_empty() {
+                        format!("Downloaded {done} PDF(s)")
+                    } else {
+                        format!(
+                            "Downloaded {done} PDF(s) — failed: {}{}",
+                            failed[..failed.len().min(3)].join(", "),
+                            if failed.len() > 3 { "…" } else { "" }
+                        )
+                    };
+                    self.dl_rx = None;
+                }
+            }
+        }
     }
 
     fn on_mouse(&mut self, m: MouseEvent) {
@@ -325,7 +532,12 @@ impl App {
                 KeyCode::Char('q') => self.quit = true,
                 KeyCode::Char('/') => self.mode = Mode::Filter,
                 KeyCode::Char('s') => self.toggle_star(),
-                KeyCode::Char('d') | KeyCode::Char('z') => self.show_detail = !self.show_detail,
+                KeyCode::Char('m') => self.toggle_manuscript(),
+                KeyCode::Char('d') => self.remove_papers(),
+                KeyCode::Char('p') => self.download_pdfs(),
+                KeyCode::Char('o') => self.open_pdfs(),
+                KeyCode::Char('X') => self.clear_pdfs(),
+                KeyCode::Char('D') | KeyCode::Char('z') => self.show_detail = !self.show_detail,
                 KeyCode::Char(' ') => {
                     // first Space enters selection mode and selects the row
                     self.select_mode = true;
@@ -492,7 +704,8 @@ impl App {
                     Style::default().fg(Color::Cyan),
                 ),
                 Span::styled(
-                    "  ·  Space/click ◯ toggle · s star · Esc done".to_string(),
+                    "  ·  Space/click ◯ toggle · s★ m◆ p↓ o open X clear d remove · Esc done"
+                        .to_string(),
                     Style::default().fg(Color::DarkGray),
                 ),
             ]),
@@ -506,7 +719,7 @@ impl App {
                 };
                 Line::from(Span::styled(
                     format!(
-                        "{n}/{total}  ·  {}{filt}  ·  / filter · Space select · s star · d card · q quit",
+                        "{n}/{total}  ·  {}{filt}  ·  / filter · Space select · s★ m◆ p↓ o open · D card · q quit",
                         self.status
                     ),
                     Style::default().fg(Color::DarkGray),
