@@ -62,15 +62,30 @@ enum Action {
     TextSelect,
     Filter,
     Card,
+    Log,
+    Panel,
     Quit,
 }
 
-/// Tabs of the right-hand control panel; Actions is the classic key
-/// panel, Copy is a clickable which-key menu of clipboard targets.
+/// Message-log categories; each renders in its own color in the log
+/// pane and the footer.
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum PanelTab {
-    Actions,
-    Copy,
+enum MsgCat {
+    Info,
+    Ok,
+    Warn,
+    Err,
+}
+
+impl MsgCat {
+    fn color(self) -> Color {
+        match self {
+            MsgCat::Info => Color::Gray,
+            MsgCat::Ok => Color::Green,
+            MsgCat::Warn => Color::Yellow,
+            MsgCat::Err => Color::Red,
+        }
+    }
 }
 
 /// What the copy chord / Copy tab can put on the clipboard. Cite keys
@@ -86,6 +101,18 @@ enum CopyItem {
     DoiUrl,
     PdfPath,
     Title,
+    Abstract,
+}
+
+/// Sortable table columns; clicking a header toggles direction.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SortCol {
+    Pdf,
+    Star,
+    Year,
+    Author,
+    Title,
+    Key,
 }
 
 /// Pub card buttons; they act on the card's (highlighted) entry.
@@ -121,19 +148,29 @@ struct App {
     show_actions: bool,
     panel_rows: Vec<(u16, Action)>,
     panel_area: Rect,
-    // control panel tabs: Actions (keys) and Copy (clipboard targets)
-    panel_tab: PanelTab,
-    panel_tabs: Vec<(Rect, PanelTab)>,
     panel_copy_rows: Vec<(u16, CopyItem)>,
-    // panel visibility/tab to restore when the y-chord finishes — the
-    // chord force-shows the Copy tab, which shouldn't stick
-    copy_restore: Option<(bool, PanelTab)>,
+    // panel visibility to restore when the y-chord finishes — the chord
+    // force-shows the panel as a which-key menu, which shouldn't stick
+    copy_restore: Option<bool>,
+    // last known mouse position, for roll-over styling of clickables
+    hover: (u16, u16),
+    // event log: (category, seconds-since-start, message); L toggles the
+    // pane, the footer always shows the newest entry color-coded
+    log: Vec<(MsgCat, u64, String)>,
+    show_log: bool,
+    started: std::time::Instant,
+    // table sort (clickable column headers) and their header hit rects
+    sort: (SortCol, bool), // (column, ascending)
+    sort_headers: Vec<(Rect, SortCol)>,
+    // footer view badges: clickable show/hide toggles per app-wide view
+    footer_badges: Vec<(Rect, Action)>,
     // v — mouse capture released so the terminal's native drag-select
     // works; v again re-captures
     text_select: bool,
     // pub card button and link rects, rebuilt each draw
     card_buttons: Vec<(Rect, CardBtn)>,
     card_links: Vec<(Rect, String)>,
+    card_yanks: Vec<(Rect, CopyItem)>,
     // transient PDF status shown on the card (waiting/result), like the
     // Python card's #pdf-status line
     pdf_status: String,
@@ -245,18 +282,31 @@ impl App {
             show_actions: true,
             panel_rows: vec![],
             panel_area: Rect::default(),
-            panel_tab: PanelTab::Actions,
-            panel_tabs: vec![],
             panel_copy_rows: vec![],
             copy_restore: None,
             text_select: false,
+            hover: (u16::MAX, u16::MAX),
+            log: vec![],
+            show_log: false,
+            started: std::time::Instant::now(),
+            sort: (SortCol::Year, false),
+            sort_headers: vec![],
+            footer_badges: vec![],
             card_buttons: vec![],
             card_links: vec![],
+            card_yanks: vec![],
             pdf_status: String::new(),
             poll_cancel: None,
             pick_area: Rect::default(),
             confirm_btns: vec![],
         }
+    }
+
+    /// Emit an event message: color-coded in the log pane and shown in
+    /// the footer while it is the newest entry.
+    fn note(&mut self, cat: MsgCat, msg: String) {
+        self.status = msg.clone();
+        self.log.push((cat, self.started.elapsed().as_secs(), msg));
     }
 
     /// Availability policy: single-target actions dim under multi-selection,
@@ -266,7 +316,8 @@ impl App {
         let single = keys.len() == 1;
         let entry = |k: &String| self.lib.get(k);
         match a {
-            Action::Select | Action::Filter | Action::Card | Action::Quit => true,
+            Action::Select | Action::Filter | Action::Card | Action::Log | Action::Panel
+            | Action::Quit => true,
             Action::Star => keys.iter().any(|k| self.lib.in_personal(k)),
             Action::Manuscript => self.lib.manuscript.is_some() && !keys.is_empty(),
             Action::Download => {
@@ -321,6 +372,8 @@ impl App {
             Action::TextSelect => self.toggle_text_select(),
             Action::Filter => self.mode = Mode::Filter,
             Action::Card => self.show_detail = !self.show_detail,
+            Action::Log => self.show_log = !self.show_log,
+            Action::Panel => self.show_actions = !self.show_actions,
             Action::Quit => self.quit = true,
         }
     }
@@ -481,16 +534,46 @@ impl App {
         self.status = format!("{} papers", self.order.len());
     }
 
-    /// Rebuild the display order after entries were added or removed.
+    /// Rebuild the display order (entries changed or sort changed).
     fn rebuild_order(&mut self) {
         self.order = self.lib.entries().iter().map(|e| e.key().to_string()).collect();
         let lib = &self.lib;
+        let (col, asc) = self.sort;
         self.order.sort_by(|a, b| {
             let (ea, eb) = (lib.get(a).unwrap(), lib.get(b).unwrap());
-            eb.year().cmp(&ea.year()).then(a.cmp(b))
+            let ord = match col {
+                SortCol::Pdf => has_cached_pdf(ea.key()).cmp(&has_cached_pdf(eb.key())),
+                SortCol::Star => ea.starred().cmp(&eb.starred()),
+                SortCol::Year => ea.year().cmp(&eb.year()),
+                SortCol::Author => ea
+                    .first_author_last()
+                    .to_lowercase()
+                    .cmp(&eb.first_author_last().to_lowercase()),
+                SortCol::Title => ea
+                    .title()
+                    .trim_matches(['{', '}'])
+                    .to_lowercase()
+                    .cmp(&eb.title().trim_matches(['{', '}']).to_lowercase()),
+                SortCol::Key => ea.key().cmp(eb.key()),
+            };
+            let ord = if asc { ord } else { ord.reverse() };
+            ord.then(a.cmp(b))
         });
         self.selected.retain(|k| lib.get(k).is_some());
         self.refilter();
+    }
+
+    /// Header click: same column flips direction, a new column starts
+    /// descending for Year (newest first) and ascending otherwise.
+    fn sort_by(&mut self, col: SortCol) {
+        self.sort = if self.sort.0 == col {
+            (col, !self.sort.1)
+        } else {
+            // bool-ish and recency columns start with the interesting side
+            // up: cached/starred/newest first; text columns start A→Z
+            (col, !matches!(col, SortCol::Year | SortCol::Star | SortCol::Pdf))
+        };
+        self.rebuild_order();
     }
 
     /// m — port of action_toggle_manuscript's library-view rule: if any
@@ -498,7 +581,7 @@ impl App {
     /// (all present) remove all.
     fn toggle_manuscript(&mut self) {
         if self.lib.manuscript.is_none() {
-            self.status = "no manuscript db (run inside a manuscript repo)".to_string();
+            self.note(MsgCat::Warn, "no manuscript db (run inside a manuscript repo)".to_string());
             return;
         }
         let keys = self.action_keys();
@@ -517,7 +600,7 @@ impl App {
                     n += 1;
                 }
             }
-            self.status = format!("◆ Added {n} paper(s) to manuscript db");
+            self.note(MsgCat::Ok, format!("◆ Added {n} paper(s) to manuscript db"));
         } else {
             let mut n = 0;
             let mut rescued = 0;
@@ -534,7 +617,7 @@ impl App {
             } else {
                 String::new()
             };
-            self.status = format!("Removed {n} paper(s) from manuscript db{note}");
+            self.note(MsgCat::Ok, format!("Removed {n} paper(s) from manuscript db{note}"));
         }
         self.rebuild_order();
     }
@@ -560,7 +643,7 @@ impl App {
             self.selected.clear();
         }
         self.rebuild_order();
-        self.status = format!("Removed {n} paper(s)");
+        self.note(MsgCat::Ok, format!("Removed {n} paper(s)"));
     }
 
     /// o — open every cached PDF among the targets.
@@ -572,21 +655,22 @@ impl App {
             .map(|k| pdf::cache_path(k))
             .collect();
         if paths.is_empty() {
-            self.status = "no cached PDFs in selection  (p to download)".to_string();
+            self.note(MsgCat::Warn, "no cached PDFs in selection  (p to download)".to_string());
             return;
         }
         let n = paths.len();
         pdf::open_paths(&paths);
-        self.status = format!("Opened {n} PDF(s)");
+        self.note(MsgCat::Ok, format!("Opened {n} PDF(s)"));
     }
 
     /// X — cancel a running browser-download watch, else clear cached PDFs.
     fn clear_pdfs(&mut self) {
         if let Some(cancel) = self.poll_cancel.take() {
             cancel.store(true, std::sync::atomic::Ordering::Relaxed);
-            self.status = "browser download cancelled".to_string();
+            self.note(MsgCat::Warn, "browser download cancelled".to_string());
             return;
         }
+        self.pdf_status.clear();
         let mut n = 0;
         for k in self.action_keys() {
             let p = pdf::cache_path(&k);
@@ -594,21 +678,21 @@ impl App {
                 n += 1;
             }
         }
-        self.status = format!("Cleared {n} cached PDF(s)");
+        self.note(MsgCat::Ok, format!("Cleared {n} cached PDF(s)"));
     }
 
     /// Fetch one entry's PDF from a specific source (pub card buttons),
     /// on the download worker channel.
     fn download_single(&mut self, key: String, source: pdf::Source) {
         if self.dl_rx.is_some() {
-            self.status = "a download is already running".to_string();
+            self.note(MsgCat::Warn, "a download is already running".to_string());
             return;
         }
         let Some(e) = self.lib.get(&key) else { return };
         let (eprint, adsurl) = (e.eprint().to_string(), e.adsurl().to_string());
         let (tx, rx) = std::sync::mpsc::channel();
         self.dl_rx = Some(rx);
-        self.status = format!("Downloading {key}…");
+        self.note(MsgCat::Info, format!("Downloading {key}…"));
         std::thread::spawn(move || {
             let ok = pdf::fetch_source(&key, &eprint, &adsurl, source).is_some();
             let _ = tx.send(DlMsg::Done {
@@ -628,7 +712,7 @@ impl App {
     /// watch ~/Downloads for the PDF (60s, cancellable with X).
     fn browser_download_for(&mut self, key: String) {
         if self.dl_rx.is_some() {
-            self.status = "a download is already running".to_string();
+            self.note(MsgCat::Warn, "a download is already running".to_string());
             return;
         }
         let Some(e) = self.lib.get(&key) else {
@@ -644,7 +728,7 @@ impl App {
         self.poll_cancel = Some(cancel.clone());
         let (tx, rx) = std::sync::mpsc::channel();
         self.dl_rx = Some(rx);
-        self.status = format!("Resolving browser source for {key}…");
+        self.note(MsgCat::Info, format!("Resolving browser source for {key}…"));
         std::thread::spawn(move || {
             let Some(url) = pdf::browser_resolve_url(&doi, &adsurl, &eprint) else {
                 let _ = tx.send(DlMsg::Done { done: 0, failed: vec![key] });
@@ -673,7 +757,7 @@ impl App {
     fn open_picker_for(&mut self, key: String) {
         let files = pdf::downloads_pdfs();
         if files.is_empty() {
-            self.status = "no PDFs in ~/Downloads".to_string();
+            self.note(MsgCat::Info, "no PDFs in ~/Downloads".to_string());
             return;
         }
         self.mode = Mode::Pick { key, files, sel: 0 };
@@ -683,7 +767,7 @@ impl App {
     /// thread so the UI stays live; progress arrives over a channel.
     fn download_pdfs(&mut self) {
         if self.dl_rx.is_some() {
-            self.status = "a download is already running".to_string();
+            self.note(MsgCat::Warn, "a download is already running".to_string());
             return;
         }
         let items: Vec<(String, String, String)> = self
@@ -699,7 +783,7 @@ impl App {
             })
             .collect();
         if items.is_empty() {
-            self.status = "nothing to download (cached, or no arXiv ID / ADS URL)".to_string();
+            self.note(MsgCat::Warn, "nothing to download (cached, or no arXiv ID / ADS URL)".to_string());
             return;
         }
         let (tx, rx) = std::sync::mpsc::channel();
@@ -721,7 +805,7 @@ impl App {
             }
             let _ = tx.send(DlMsg::Done { done, failed });
         });
-        self.status = format!("Downloading {total} PDF(s)…");
+        self.note(MsgCat::Info, format!("Downloading {total} PDF(s)…"));
     }
 
     fn drain_downloads(&mut self) {
@@ -735,7 +819,8 @@ impl App {
             match m {
                 DlMsg::Progress(s) => self.status = s,
                 DlMsg::Done { done, failed } => {
-                    self.status = if failed.is_empty() {
+                    let cat = if failed.is_empty() { MsgCat::Ok } else { MsgCat::Err };
+                    let msg = if failed.is_empty() {
                         format!("Downloaded {done} PDF(s)")
                     } else {
                         format!(
@@ -744,6 +829,7 @@ impl App {
                             if failed.len() > 3 { "…" } else { "" }
                         )
                     };
+                    self.note(cat, msg);
                     self.pdf_status = if failed.is_empty() && done > 0 {
                         "✓ downloaded".to_string()
                     } else if done == 0 && !failed.is_empty() {
@@ -765,6 +851,7 @@ impl App {
             MouseEventKind::Down(MouseButton::Left) => {
                 self.on_click(m.column, m.row, m.modifiers)
             }
+            MouseEventKind::Moved => self.hover = (m.column, m.row),
             _ => {}
         }
     }
@@ -792,37 +879,32 @@ impl App {
                 if is_confirm {
                     self.remove_confirmed(&keys);
                 } else {
-                    self.status = "removal cancelled".to_string();
+                    self.note(MsgCat::Warn, "removal cancelled".to_string());
                 }
             }
+            return;
+        }
+        // yank-cells copy the datum they sit next to
+        if let Some(&(_, item)) = self.card_yanks.iter().find(|(r, _)| hit(*r, x, y)) {
+            self.do_copy(item);
             return;
         }
         // pub card links open the browser
         if let Some((_, url)) = self.card_links.iter().find(|(r, _)| hit(*r, x, y)) {
             let url = url.clone();
             pdf::browser_open(&url);
-            self.status = "opened in browser".to_string();
+            self.note(MsgCat::Info, "opened in browser".to_string());
             return;
         }
-        // control panel: tab headers switch tabs, rows act per tab
+        // control panel rows: the copy menu while the y-chord is active,
+        // the actions list otherwise
         if self.show_actions && hit(self.panel_area, x, y) {
-            if let Some(&(_, tab)) = self.panel_tabs.iter().find(|(r, _)| hit(*r, x, y)) {
-                self.panel_tab = tab;
-                return;
-            }
-            match self.panel_tab {
-                PanelTab::Actions => {
-                    if let Some(&(_, action)) = self.panel_rows.iter().find(|(ry, _)| *ry == y) {
-                        self.run_action(action);
-                    }
+            if matches!(self.mode, Mode::Copy) {
+                if let Some(&(_, item)) = self.panel_copy_rows.iter().find(|(ry, _)| *ry == y) {
+                    self.do_copy(item);
                 }
-                PanelTab::Copy => {
-                    if let Some(&(_, item)) =
-                        self.panel_copy_rows.iter().find(|(ry, _)| *ry == y)
-                    {
-                        self.do_copy(item);
-                    }
-                }
+            } else if let Some(&(_, action)) = self.panel_rows.iter().find(|(ry, _)| *ry == y) {
+                self.run_action(action);
             }
             return;
         }
@@ -836,11 +918,21 @@ impl App {
                     CardBtn::Pick => self.open_picker_for(key),
                     CardBtn::Open => {
                         pdf::open_paths(&[pdf::cache_path(&key)]);
-                        self.status = format!("Opened {key}");
+                        self.note(MsgCat::Ok, format!("Opened {key}"));
                     }
                     CardBtn::Clear | CardBtn::Cancel => self.clear_card_pdf(&key),
                 }
             }
+            return;
+        }
+        // footer view badges
+        if let Some(&(_, action)) = self.footer_badges.iter().find(|(r, _)| hit(*r, x, y)) {
+            self.run_action(action);
+            return;
+        }
+        // column headers sort
+        if let Some(&(_, col)) = self.sort_headers.iter().find(|(r, _)| hit(*r, x, y)) {
+            self.sort_by(col);
             return;
         }
         // table: header at a.y, data rows below
@@ -871,12 +963,13 @@ impl App {
     fn clear_card_pdf(&mut self, key: &str) {
         if let Some(cancel) = self.poll_cancel.take() {
             cancel.store(true, std::sync::atomic::Ordering::Relaxed);
-            self.status = "browser download cancelled".to_string();
+            self.note(MsgCat::Warn, "browser download cancelled".to_string());
             return;
         }
+        self.pdf_status.clear();
         let p = pdf::cache_path(key);
         if p.exists() && std::fs::remove_file(&p).is_ok() {
-            self.status = format!("Cleared cached PDF for {key}");
+            self.note(MsgCat::Ok, format!("Cleared cached PDF for {key}"));
         }
     }
 
@@ -891,7 +984,7 @@ impl App {
                 .cloned()
                 .collect();
             if keys.is_empty() {
-                self.status = "selection has no personal-library papers".to_string();
+                self.note(MsgCat::Warn, "selection has no personal-library papers".to_string());
                 return;
             }
             let target = keys
@@ -903,9 +996,9 @@ impl App {
                     n += 1;
                 }
             }
-            self.status = format!(
-                "{} {n} paper(s)",
-                if target { "★ Starred" } else { "Unstarred" }
+            self.note(
+                MsgCat::Ok,
+                format!("{} {n} paper(s)", if target { "★ Starred" } else { "Unstarred" }),
             );
             return;
         }
@@ -914,20 +1007,21 @@ impl App {
         };
         // stars are personal: entries not in the personal library can't star
         if !self.lib.personal.has(&key) {
-            self.status = format!("{key} is not in the personal library");
+            self.note(MsgCat::Warn, format!("{key} is not in the personal library"));
             return;
         }
         let starred = self.lib.get(&key).map(|e| e.starred()).unwrap_or(false);
         match self.lib.set_starred(&key, !starred) {
             Ok(()) => {
                 let e = self.lib.get(&key).unwrap();
-                self.status = format!(
-                    "{} {}",
-                    if !starred { "★ Starred" } else { "Unstarred" },
-                    if e.short_key.is_empty() { &key } else { &e.short_key }
+                let short = if e.short_key.is_empty() { &key } else { &e.short_key };
+                let msg = format!(
+                    "{} {short}",
+                    if !starred { "★ Starred" } else { "Unstarred" }
                 );
+                self.note(MsgCat::Ok, msg);
             }
-            Err(err) => self.status = format!("star failed: {err}"),
+            Err(err) => self.note(MsgCat::Err, format!("star failed: {err}")),
         }
     }
 
@@ -935,19 +1029,17 @@ impl App {
     /// which-key menu (restored by exit_copy_mode).
     fn enter_copy_mode(&mut self) {
         if self.action_keys().is_empty() {
-            self.status = "nothing to copy".to_string();
+            self.note(MsgCat::Warn, "nothing to copy".to_string());
             return;
         }
-        self.copy_restore = Some((self.show_actions, self.panel_tab));
+        self.copy_restore = Some(self.show_actions);
         self.show_actions = true;
-        self.panel_tab = PanelTab::Copy;
         self.mode = Mode::Copy;
     }
 
     fn exit_copy_mode(&mut self) {
-        if let Some((show, tab)) = self.copy_restore.take() {
+        if let Some(show) = self.copy_restore.take() {
             self.show_actions = show;
-            self.panel_tab = tab;
         }
         if matches!(self.mode, Mode::Copy) {
             self.mode = Mode::Normal;
@@ -976,6 +1068,9 @@ impl App {
                 }
                 CopyItem::PdfPath => pdf::is_cached(&k)
                     .then(|| pdf::cache_path(&k).to_string_lossy().into_owned()),
+                CopyItem::Abstract => {
+                    (!e.abstract_().is_empty()).then(|| e.abstract_().to_string())
+                }
                 CopyItem::Title => {
                     let t = e.title().trim_matches(['{', '}']).to_string();
                     (!t.is_empty()).then_some(t)
@@ -998,7 +1093,7 @@ impl App {
     fn do_copy(&mut self, item: CopyItem) {
         self.exit_copy_mode();
         let Some(text) = self.copy_value(item) else {
-            self.status = "nothing to copy".to_string();
+            self.note(MsgCat::Warn, "nothing to copy".to_string());
             return;
         };
         if copy_to_clipboard(&text) {
@@ -1007,7 +1102,7 @@ impl App {
             if shown.len() < text.len() {
                 shown.push('…');
             }
-            self.status = format!("Copied: {shown}");
+            self.note(MsgCat::Ok, format!("Copied: {shown}"));
         } else {
             self.status =
                 "clipboard copy failed — terminal may not support OSC 52".to_string();
@@ -1077,13 +1172,14 @@ impl App {
                     KeyCode::Char('d') => Some(CopyItem::DoiUrl),
                     KeyCode::Char('p') => Some(CopyItem::PdfPath),
                     KeyCode::Char('t') => Some(CopyItem::Title),
+                    KeyCode::Char('A') => Some(CopyItem::Abstract),
                     _ => None,
                 };
                 match item {
                     Some(item) => self.do_copy(item),
                     None => {
                         self.exit_copy_mode();
-                        self.status = "copy cancelled".to_string();
+                        self.note(MsgCat::Warn, "copy cancelled".to_string());
                     }
                 }
             }
@@ -1095,7 +1191,7 @@ impl App {
                 }
                 KeyCode::Esc | KeyCode::Char('n') => {
                     self.mode = Mode::Normal;
-                    self.status = "removal cancelled".to_string();
+                    self.note(MsgCat::Warn, "removal cancelled".to_string());
                 }
                 _ => {}
             },
@@ -1110,6 +1206,7 @@ impl App {
                 KeyCode::Char('X') => self.run_action(Action::ClearPdf),
                 KeyCode::Char('B') => self.run_action(Action::BrowserDl),
                 KeyCode::Char('D') | KeyCode::Char('z') => self.run_action(Action::Card),
+                KeyCode::Char('L') => self.run_action(Action::Log),
                 KeyCode::Char('y') => self.run_action(Action::Copy),
                 KeyCode::Char('Y') => self.do_copy(CopyItem::FullKey),
                 KeyCode::Char('v') => self.run_action(Action::TextSelect),
@@ -1141,27 +1238,38 @@ impl App {
         match pdf::import_file(key, file) {
             Some(dest) => {
                 let kb = dest.metadata().map(|m| m.len() / 1024).unwrap_or(0);
-                self.status = format!(
+                let msg = format!(
                     "Imported {} for {key}  ({kb} KB)",
                     file.file_name().unwrap_or_default().to_string_lossy()
                 );
+                self.note(MsgCat::Ok, msg);
             }
             None => {
-                self.status = format!(
+                let msg = format!(
                     "{} does not look like a PDF",
                     file.file_name().unwrap_or_default().to_string_lossy()
                 );
+                self.note(MsgCat::Err, msg);
             }
         }
     }
 
     fn draw(&mut self, f: &mut Frame) {
         self.card_buttons.clear();
+        self.card_yanks.clear();
         self.panel_rows.clear();
         self.panel_copy_rows.clear();
-        self.panel_tabs.clear();
-        let [main, status] =
-            Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).areas(f.area());
+        let log_h = if self.show_log {
+            (self.log.len().min(8) + 1) as u16
+        } else {
+            0
+        };
+        let [main, log_area, status] = Layout::vertical([
+            Constraint::Min(1),
+            Constraint::Length(log_h),
+            Constraint::Length(1),
+        ])
+        .areas(f.area());
         let mut constraints = vec![Constraint::Min(40)];
         if self.show_detail {
             constraints.push(Constraint::Length(48));
@@ -1183,6 +1291,9 @@ impl App {
             self.draw_panel(f, area);
         } else {
             self.panel_area = Rect::default();
+        }
+        if self.show_log {
+            self.draw_log(f, log_area);
         }
         self.draw_status(f, status);
         if let Mode::Pick { .. } = self.mode {
@@ -1237,10 +1348,28 @@ impl App {
             Rect { x: bx + rw + 2, y: by, width: cw, height: 1 },
             false,
         ));
+        let hov_remove = self
+            .confirm_btns
+            .first()
+            .is_some_and(|(r, _)| hit(*r, self.hover.0, self.hover.1));
+        let hov_cancel = self
+            .confirm_btns
+            .get(1)
+            .is_some_and(|(r, _)| hit(*r, self.hover.0, self.hover.1));
         let mut bspans: Vec<Span> = vec![];
-        push_pill(&mut bspans, "remove", Color::Red, Color::White);
+        push_pill(
+            &mut bspans,
+            "remove",
+            if hov_remove { Color::LightRed } else { Color::Red },
+            Color::White,
+        );
         bspans.push(Span::raw("  "));
-        push_pill(&mut bspans, "cancel", Color::DarkGray, Color::White);
+        push_pill(
+            &mut bspans,
+            "cancel",
+            if hov_cancel { Color::Rgb(58, 63, 72) } else { Color::Rgb(40, 44, 52) },
+            Color::White,
+        );
         lines.push(Line::from(bspans));
         let title = format!(
             " Remove {} paper(s) from the library? ",
@@ -1257,103 +1386,95 @@ impl App {
     /// y-chord the same way. Tab headers are clickable.
     fn draw_panel(&mut self, f: &mut Frame, area: Rect) {
         self.panel_area = area;
-        let mut header: Vec<Span> = vec![];
-        let mut tx = area.x + 2; // left border + padding
-        for (label, tab) in [("Actions", PanelTab::Actions), ("Copy", PanelTab::Copy)] {
-            let wl = label.chars().count() as u16;
-            self.panel_tabs
-                .push((Rect { x: tx, y: area.y, width: wl, height: 1 }, tab));
-            header.push(Span::styled(
-                label.to_string(),
-                if self.panel_tab == tab {
-                    Style::default().add_modifier(Modifier::BOLD)
-                } else {
-                    Style::default().fg(Color::DarkGray)
-                },
-            ));
-            header.push(Span::raw("  "));
-            tx += wl + 2;
-        }
-        let mut lines: Vec<Line> = vec![Line::from(header)];
-        let row_styles = |avail: bool| {
-            if avail {
+        let copy_menu = matches!(self.mode, Mode::Copy);
+        let hover_row = |slf: &App, y: u16| -> bool {
+            hit(slf.panel_area, slf.hover.0, slf.hover.1) && slf.hover.1 == y
+        };
+        let row_styles = |avail: bool, hov: bool| {
+            let (mut ks, mut ls) = if avail {
                 (Style::default().fg(Color::Cyan), Style::default())
             } else {
                 (
                     Style::default().fg(Color::DarkGray),
                     Style::default().fg(Color::DarkGray),
                 )
+            };
+            if avail && hov {
+                ks = ks.bg(Color::Rgb(50, 54, 62));
+                ls = ls.bg(Color::Rgb(50, 54, 62)).add_modifier(Modifier::BOLD);
             }
+            (ks, ls)
         };
-        match self.panel_tab {
-            PanelTab::Actions => {
-                let entries: &[(&str, &str, Action)] = &[
-                    ("␣", if self.select_mode { "sel. done (Esc)" } else { "select" }, Action::Select),
-                    ("s", "star ★", Action::Star),
-                    ("m", "manuscript ◆", Action::Manuscript),
-                    ("p", "download PDF", Action::Download),
-                    ("B", "browser DL", Action::BrowserDl),
-                    ("", "pick PDF…", Action::PickPdf),
-                    ("o", "open PDF", Action::OpenPdf),
-                    (
-                        "X",
-                        if self.poll_cancel.is_some() { "cancel DL" } else { "clear PDF" },
-                        Action::ClearPdf,
-                    ),
-                    ("y", "copy…", Action::Copy),
-                    (
-                        "v",
-                        if self.text_select { "mouse on" } else { "select text" },
-                        Action::TextSelect,
-                    ),
-                    ("⌫", "remove…", Action::Remove),
-                    ("/", "filter", Action::Filter),
-                    ("D", "pub card", Action::Card),
-                    ("q", "quit", Action::Quit),
-                ];
-                for (i, (key, label, action)) in entries.iter().enumerate() {
-                    let y = area.y + 1 + i as u16;
-                    let avail = self.available(*action);
-                    if avail && y < area.y + area.height {
-                        self.panel_rows.push((y, *action));
-                    }
-                    let (key_style, label_style) = row_styles(avail);
-                    lines.push(Line::from(vec![
-                        Span::styled(format!("{key:>3} "), key_style),
-                        Span::styled((*label).to_string(), label_style),
-                    ]));
+        let mut lines: Vec<Line> = vec![Line::from(Span::styled(
+            if copy_menu { "Copy → clipboard" } else { "Actions" },
+            Style::default().add_modifier(Modifier::BOLD),
+        ))];
+        if copy_menu {
+            let entries: &[(&str, &str, CopyItem)] = &[
+                ("y", "cite key", CopyItem::Key),
+                ("Y", "full key", CopyItem::FullKey),
+                ("b", "bibcode", CopyItem::Bibcode),
+                ("a", "ADS URL", CopyItem::AdsUrl),
+                ("x", "arXiv URL", CopyItem::ArxivUrl),
+                ("d", "DOI URL", CopyItem::DoiUrl),
+                ("p", "PDF path", CopyItem::PdfPath),
+                ("t", "title", CopyItem::Title),
+                ("A", "abstract", CopyItem::Abstract),
+            ];
+            for (i, (key, label, item)) in entries.iter().enumerate() {
+                let y = area.y + 1 + i as u16;
+                let avail = self.copy_value(*item).is_some();
+                if avail && y < area.y + area.height {
+                    self.panel_copy_rows.push((y, *item));
                 }
+                let (key_style, label_style) = row_styles(avail, hover_row(self, y));
+                lines.push(Line::from(vec![
+                    Span::styled(format!("{key:>3} "), key_style),
+                    Span::styled((*label).to_string(), label_style),
+                ]));
             }
-            PanelTab::Copy => {
-                let entries: &[(&str, &str, CopyItem)] = &[
-                    ("y", "cite key", CopyItem::Key),
-                    ("Y", "full key", CopyItem::FullKey),
-                    ("b", "bibcode", CopyItem::Bibcode),
-                    ("a", "ADS URL", CopyItem::AdsUrl),
-                    ("x", "arXiv URL", CopyItem::ArxivUrl),
-                    ("d", "DOI URL", CopyItem::DoiUrl),
-                    ("p", "PDF path", CopyItem::PdfPath),
-                    ("t", "title", CopyItem::Title),
-                ];
-                for (i, (key, label, item)) in entries.iter().enumerate() {
-                    let y = area.y + 1 + i as u16;
-                    let avail = self.copy_value(*item).is_some();
-                    if avail && y < area.y + area.height {
-                        self.panel_copy_rows.push((y, *item));
-                    }
-                    let (key_style, label_style) = row_styles(avail);
-                    lines.push(Line::from(vec![
-                        Span::styled(format!("{key:>3} "), key_style),
-                        Span::styled((*label).to_string(), label_style),
-                    ]));
+            lines.push(Line::default());
+            lines.push(Line::from(Span::styled(
+                "Esc cancel",
+                Style::default().fg(Color::DarkGray),
+            )));
+        } else {
+            let entries: &[(&str, &str, Action)] = &[
+                ("␣", if self.select_mode { "sel. done (Esc)" } else { "select" }, Action::Select),
+                ("s", "star ★", Action::Star),
+                ("m", "manuscript ◆", Action::Manuscript),
+                ("p", "download PDF", Action::Download),
+                ("B", "browser DL", Action::BrowserDl),
+                ("", "pick PDF…", Action::PickPdf),
+                ("o", "open PDF", Action::OpenPdf),
+                (
+                    "X",
+                    if self.poll_cancel.is_some() { "cancel DL" } else { "clear PDF" },
+                    Action::ClearPdf,
+                ),
+                ("y", "copy…", Action::Copy),
+                (
+                    "v",
+                    if self.text_select { "mouse on" } else { "select text" },
+                    Action::TextSelect,
+                ),
+                ("⌫", "remove…", Action::Remove),
+                ("/", "filter", Action::Filter),
+                ("D", "pub card", Action::Card),
+                ("L", "event log", Action::Log),
+                ("q", "quit", Action::Quit),
+            ];
+            for (i, (key, label, action)) in entries.iter().enumerate() {
+                let y = area.y + 1 + i as u16;
+                let avail = self.available(*action);
+                if avail && y < area.y + area.height {
+                    self.panel_rows.push((y, *action));
                 }
-                if matches!(self.mode, Mode::Copy) {
-                    lines.push(Line::default());
-                    lines.push(Line::from(Span::styled(
-                        "Esc cancel",
-                        Style::default().fg(Color::DarkGray),
-                    )));
-                }
+                let (key_style, label_style) = row_styles(avail, hover_row(self, y));
+                lines.push(Line::from(vec![
+                    Span::styled(format!("{key:>3} "), key_style),
+                    Span::styled((*label).to_string(), label_style),
+                ]));
             }
         }
         let p = Paragraph::new(Text::from(lines)).block(
@@ -1383,8 +1504,12 @@ impl App {
         let mut lines: Vec<Line> = vec![];
         for (i, p) in files.iter().take(15).enumerate() {
             let name = p.file_name().unwrap_or_default().to_string_lossy().to_string();
+            let row_y = area.y + 1 + i as u16;
+            let hov = self.hover.1 == row_y && hit(area, self.hover.0, self.hover.1);
             let style = if i == *sel {
                 Style::default().bg(Color::DarkGray).add_modifier(Modifier::BOLD)
+            } else if hov {
+                Style::default().bg(Color::Rgb(50, 54, 62))
             } else {
                 Style::default()
             };
@@ -1399,11 +1524,27 @@ impl App {
     }
 
     fn draw_table(&mut self, f: &mut Frame, area: Rect) {
+        use ratatui::widgets::Cell;
         self.table_area = area;
+        self.sort_headers.clear();
+        // subtle per-column palette; the terminal theme supplies the hues
+        let c_ind = Style::default().fg(Color::Cyan);
+        let c_pdf = Style::default().fg(Color::Green);
+        let c_ms = Style::default().fg(Color::Magenta);
+        let c_star = Style::default().fg(Color::Yellow);
+        let c_year = Style::default().fg(Color::Green).add_modifier(Modifier::DIM);
+        let c_author = Style::default().fg(Color::Gray);
+        let c_key = Style::default().fg(Color::Cyan).add_modifier(Modifier::DIM);
+        let hov_row = if hit(area, self.hover.0, self.hover.1) && self.hover.1 > area.y {
+            Some(self.table.offset() + (self.hover.1 - area.y - 1) as usize)
+        } else {
+            None
+        };
         let rows: Vec<Row> = self
             .filtered
             .iter()
-            .map(|&i| {
+            .enumerate()
+            .map(|(pos, &i)| {
                 let e = self.lib.get(&self.order[i]).unwrap();
                 let circle = if !self.select_mode {
                     ""
@@ -1412,18 +1553,75 @@ impl App {
                 } else {
                     "◯"
                 };
-                Row::new(vec![
-                    circle.to_string(),
-                    if has_cached_pdf(e.key()) { "↓" } else { "" }.to_string(),
-                    if self.lib.in_manuscript(e.key()) { "●" } else { "" }.to_string(),
-                    if e.starred() { "★" } else { "" }.to_string(),
-                    e.year(),
-                    e.first_author_last().trim_start_matches('{').to_string(),
-                    e.title().trim_matches(['{', '}']).to_string(),
-                    e.short_key.clone(),
-                ])
+                let row = Row::new(vec![
+                    Cell::from(Span::styled(circle, c_ind)),
+                    Cell::from(Span::styled(
+                        if has_cached_pdf(e.key()) { "↓" } else { "" },
+                        c_pdf,
+                    )),
+                    Cell::from(Span::styled(
+                        if self.lib.in_manuscript(e.key()) { "●" } else { "" },
+                        c_ms,
+                    )),
+                    Cell::from(Span::styled(if e.starred() { "★" } else { "" }, c_star)),
+                    Cell::from(Span::styled(e.year(), c_year)),
+                    Cell::from(Span::styled(
+                        e.first_author_last().trim_start_matches('{').to_string(),
+                        c_author,
+                    )),
+                    Cell::from(Span::styled(
+                        e.title().trim_matches(['{', '}']).to_string(),
+                        Style::default().add_modifier(Modifier::ITALIC),
+                    )),
+                    Cell::from(Span::styled(e.short_key.clone(), c_key)),
+                ]);
+                if hov_row == Some(pos) {
+                    row.style(Style::default().bg(Color::Rgb(38, 42, 50)))
+                } else {
+                    row
+                }
             })
             .collect();
+
+        // header: sortable columns get a click rect and a ▲/▼ marker
+        let widths: [u16; 8] = [2, 2, 2, 2, 6, 18, 0, 20];
+        let (sort_col, asc) = self.sort;
+        let mut hx = area.x;
+        let mut header_cells: Vec<Cell> = vec![];
+        let title_w = area
+            .width
+            .saturating_sub(widths.iter().sum::<u16>() + 7); // 7 col spacers
+        for (ci, base) in ["", "↓", "●", "★", "Year", "Author", "Title", "Key"]
+            .iter()
+            .enumerate()
+        {
+            let cw = if ci == 6 { title_w } else { widths[ci] };
+            let col = match ci {
+                1 => Some(SortCol::Pdf),
+                3 => Some(SortCol::Star),
+                4 => Some(SortCol::Year),
+                5 => Some(SortCol::Author),
+                6 => Some(SortCol::Title),
+                7 => Some(SortCol::Key),
+                _ => None,
+            };
+            let mut label = base.to_string();
+            let mut style = Style::default().add_modifier(Modifier::BOLD);
+            if let Some(col) = col {
+                let r = Rect { x: hx, y: area.y, width: cw, height: 1 };
+                self.sort_headers.push((r, col));
+                if sort_col == col {
+                    let arrow = if asc { "▲" } else { "▼" };
+                    // narrow indicator columns fit glyph+arrow only
+                    label = if cw <= 2 { format!("{base}{arrow}") } else { format!("{base} {arrow}") };
+                }
+                if hit(r, self.hover.0, self.hover.1) {
+                    style = style.fg(Color::Cyan).add_modifier(Modifier::UNDERLINED);
+                }
+            }
+            header_cells.push(Cell::from(Span::styled(label, style)));
+            hx += cw + 1;
+        }
 
         let table = Table::new(
             rows,
@@ -1438,10 +1636,7 @@ impl App {
                 Constraint::Length(20),
             ],
         )
-        .header(
-            Row::new(vec!["", "↓", "●", "★", "Year", "Author", "Title", "Key"])
-                .style(Style::default().add_modifier(Modifier::BOLD)),
-        )
+        .header(Row::new(header_cells))
         .row_highlight_style(
             Style::default()
                 .bg(Color::DarkGray)
@@ -1477,9 +1672,34 @@ impl App {
             }
         };
 
+        let hv = self.hover;
+        let mut yanks: Vec<(Rect, CopyItem)> = vec![];
+        let yank_span = |x: u16, y: u16, item: CopyItem, yanks: &mut Vec<(Rect, CopyItem)>| {
+            let r = Rect { x, y, width: 1, height: 1 };
+            yanks.push((r, item));
+            Span::styled(
+                "⧉",
+                if hit(r, hv.0, hv.1) {
+                    Style::default().fg(Color::White).add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(Color::Cyan).add_modifier(Modifier::DIM)
+                },
+            )
+        };
         // ── body ─────────────────────────────────────────────────────
-        for l in wrap_text(e.title().trim_matches(['{', '}']), w) {
-            line_at(f, y, Line::from(Span::styled(l, Style::default().add_modifier(Modifier::BOLD))));
+        let title_lines = wrap_text(e.title().trim_matches(['{', '}']), w.saturating_sub(3));
+        let tn = title_lines.len();
+        for (i, l) in title_lines.into_iter().enumerate() {
+            let mut spans = vec![Span::styled(
+                l.clone(),
+                Style::default().add_modifier(Modifier::BOLD | Modifier::ITALIC),
+            )];
+            if i == tn - 1 {
+                let tw = l.chars().count() as u16;
+                spans.push(Span::raw("  "));
+                spans.push(yank_span(x0 + tw + 2, y, CopyItem::Title, &mut yanks));
+            }
+            line_at(f, y, Line::from(spans));
             y += 1;
         }
         y += 1;
@@ -1514,8 +1734,18 @@ impl App {
             y += 1;
             let shown: String = abs.chars().take(1000).collect();
             let avail = (bottom - y).saturating_sub(rest);
-            for l in wrap_text(&shown, w).into_iter().take(avail as usize) {
-                line_at(f, y, Line::from(l));
+            for (i, l) in wrap_text(&shown, w.saturating_sub(3))
+                .into_iter()
+                .take(avail as usize)
+                .enumerate()
+            {
+                let mut spans = vec![Span::raw(l.clone())];
+                if i == 0 {
+                    let lw = l.chars().count() as u16;
+                    spans.push(Span::raw("  "));
+                    spans.push(yank_span(x0 + lw + 2, y, CopyItem::Abstract, &mut yanks));
+                }
+                line_at(f, y, Line::from(spans));
                 y += 1;
             }
         }
@@ -1533,7 +1763,13 @@ impl App {
             if y < bottom {
                 links.push((Rect { x: *lx, y, width: wl, height: 1 }, url));
             }
-            spans.push(Span::styled(label, cyan));
+            let r = Rect { x: *lx, y, width: wl, height: 1 };
+            let style = if hit(r, hv.0, hv.1) {
+                cyan.add_modifier(Modifier::UNDERLINED)
+            } else {
+                cyan
+            };
+            spans.push(Span::styled(label, style));
             spans.push(Span::raw("  "));
             *lx += wl + 2;
         };
@@ -1582,10 +1818,16 @@ impl App {
         let mut bx = x0;
         for (label, btn, fg) in buttons {
             let wl = pill_width(label);
+            let r = Rect { x: bx, y, width: wl, height: 1 };
             if y < bottom {
-                self.card_buttons.push((Rect { x: bx, y, width: wl, height: 1 }, btn));
+                self.card_buttons.push((r, btn));
             }
-            push_pill(&mut spans, label, Color::DarkGray, fg);
+            let bg = if hit(r, hv.0, hv.1) {
+                Color::Rgb(58, 63, 72)
+            } else {
+                Color::Rgb(40, 44, 52)
+            };
+            push_pill(&mut spans, label, bg, fg);
             spans.push(Span::raw(" "));
             bx += wl + 1;
         }
@@ -1629,11 +1871,75 @@ impl App {
         if preprint {
             spans.push(Span::styled("  (preprint)", Style::default().fg(Color::DarkGray)));
         }
+        let used: u16 = spans.iter().map(|s| s.content.chars().count() as u16).sum();
+        spans.push(Span::raw("  "));
+        spans.push(yank_span(x0 + used + 2, y, CopyItem::Key, &mut yanks));
         line_at(f, y, Line::from(spans));
+        self.card_yanks = yanks;
     }
 
 
-    fn draw_status(&self, f: &mut Frame, area: Rect) {
+    /// Right-aligned clickable show/hide badges for each app-wide view.
+    fn draw_badges(&mut self, f: &mut Frame, area: Rect) {
+        self.footer_badges.clear();
+        let badges: [(&str, bool, Action); 3] = [
+            ("card", self.show_detail, Action::Card),
+            ("keys", self.show_actions, Action::Panel),
+            ("log", self.show_log, Action::Log),
+        ];
+        let total: u16 = badges.iter().map(|(l, _, _)| l.chars().count() as u16 + 3).sum();
+        let mut bx = (area.x + area.width).saturating_sub(total);
+        let mut spans: Vec<Span> = vec![];
+        for (label, on, action) in badges {
+            let wl = label.chars().count() as u16 + 2;
+            let r = Rect { x: bx, y: area.y, width: wl, height: 1 };
+            self.footer_badges.push((r, action));
+            let hov = hit(r, self.hover.0, self.hover.1);
+            let style = match (on, hov) {
+                (true, true) => Style::default().fg(Color::Cyan).add_modifier(Modifier::UNDERLINED),
+                (true, false) => Style::default().fg(Color::Cyan),
+                (false, true) => Style::default().fg(Color::Gray).add_modifier(Modifier::UNDERLINED),
+                (false, false) => Style::default().fg(Color::DarkGray),
+            };
+            spans.push(Span::styled(
+                format!("{} {label}", if on { "◼" } else { "◻" }),
+                style,
+            ));
+            spans.push(Span::raw(" "));
+            bx += wl + 1;
+        }
+        let w = total.min(area.width);
+        let badge_area = Rect {
+            x: (area.x + area.width).saturating_sub(w),
+            y: area.y,
+            width: w,
+            height: 1,
+        };
+        f.render_widget(Paragraph::new(Line::from(spans)), badge_area);
+    }
+
+    /// The event-log pane: newest entries at the bottom, one line each,
+    /// color-coded by category, mm:ss timestamps since launch.
+    fn draw_log(&self, f: &mut Frame, area: Rect) {
+        let n = area.height.saturating_sub(1) as usize;
+        let start = self.log.len().saturating_sub(n);
+        let mut lines: Vec<Line> = vec![];
+        for (cat, secs, msg) in &self.log[start..] {
+            lines.push(Line::from(vec![
+                Span::styled(
+                    format!("{:02}:{:02}  ", secs / 60, secs % 60),
+                    Style::default().fg(Color::DarkGray),
+                ),
+                Span::styled(msg.clone(), Style::default().fg(cat.color())),
+            ]));
+        }
+        let block = Block::default()
+            .borders(Borders::TOP)
+            .title(Span::styled(" Log ", Style::default().fg(Color::DarkGray)));
+        f.render_widget(Paragraph::new(Text::from(lines)).block(block), area);
+    }
+
+    fn draw_status(&mut self, f: &mut Frame, area: Rect) {
         let line = match self.mode {
             Mode::Filter => Line::from(vec![
                 Span::styled("/", Style::default().fg(Color::Cyan)),
@@ -1672,13 +1978,22 @@ impl App {
                 } else {
                     format!("  ·  /{}", self.filter)
                 };
-                Line::from(Span::styled(
-                    format!("{n}/{total}  ·  {}{filt}  ·  ctrl+p actions", self.status),
-                    Style::default().fg(Color::DarkGray),
-                ))
+                let msg_color = match self.log.last() {
+                    Some((cat, _, m)) if *m == self.status => cat.color(),
+                    _ => Color::Gray,
+                };
+                Line::from(vec![
+                    Span::styled(
+                        format!("{n}/{total}  ·  "),
+                        Style::default().fg(Color::DarkGray),
+                    ),
+                    Span::styled(self.status.clone(), Style::default().fg(msg_color)),
+                    Span::styled(filt, Style::default().fg(Color::DarkGray)),
+                ])
             }
         };
         f.render_widget(line, area);
+        self.draw_badges(f, area);
     }
 }
 
