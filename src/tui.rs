@@ -1730,6 +1730,25 @@ fn base64(data: &[u8]) -> String {
     out
 }
 
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn base64_rfc4648_vectors() {
+        for (input, want) in [
+            ("", ""),
+            ("f", "Zg=="),
+            ("fo", "Zm8="),
+            ("foo", "Zm9v"),
+            ("foob", "Zm9vYg=="),
+            ("fooba", "Zm9vYmE="),
+            ("foobar", "Zm9vYmFy"),
+            ("Zrake2019abcde", "WnJha2UyMDE5YWJjZGU="),
+        ] {
+            assert_eq!(super::base64(input.as_bytes()), want);
+        }
+    }
+}
+
 /// "Zrake, J. and MacFadyen, A." → "Zrake, MacFadyen" (surnames, truncated).
 fn format_authors(author: &str) -> String {
     let surnames: Vec<&str> = author
