@@ -6,4 +6,5 @@ pub mod library;
 pub mod pdf;
 pub mod query;
 pub mod tabs;
+pub mod text;
 pub mod tui;
