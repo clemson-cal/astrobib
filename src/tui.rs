@@ -1476,6 +1476,11 @@ impl App {
             self.show_help = false; // any click dismisses the cheat-sheet
             return;
         }
+        // clicking away from the query prompt dismisses it, and the click
+        // then performs its normal action (e.g. switching scope)
+        if matches!(self.mode, Mode::AdsPrompt { .. }) {
+            self.mode = Mode::Normal;
+        }
         // confirm modal: only its two buttons act; other clicks are inert
         if let Mode::Confirm { keys } = &self.mode {
             if let Some(&(_, is_confirm)) = self.confirm_btns.iter().find(|(r, _)| hit(*r, x, y)) {
