@@ -884,7 +884,7 @@ impl App {
                 KeyCode::Char('/') => self.run_action(Action::Filter),
                 KeyCode::Char('s') => self.run_action(Action::Star),
                 KeyCode::Char('m') => self.run_action(Action::Manuscript),
-                KeyCode::Delete => self.run_action(Action::Remove),
+                KeyCode::Delete | KeyCode::Backspace => self.run_action(Action::Remove),
                 KeyCode::Char('p') => self.run_action(Action::Download),
                 KeyCode::Char('o') => self.run_action(Action::OpenPdf),
                 KeyCode::Char('X') => self.run_action(Action::ClearPdf),
