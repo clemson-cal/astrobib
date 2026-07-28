@@ -8,6 +8,7 @@
 use crate::library::{has_cached_pdf, MergedLibrary};
 use crate::pdf;
 use crate::query::{self, QueryContext};
+use crate::text::fit_authors;
 use ratatui::crossterm::event::{
     self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, KeyModifiers,
     MouseButton, MouseEvent, MouseEventKind,
@@ -199,6 +200,9 @@ struct App {
     // pane, the footer always shows the newest entry color-coded
     log: Vec<(MsgCat, u64, String)>,
     show_log: bool,
+    // scrollback offset from the tail (0 = newest); PageUp/PageDown move
+    // it while the pane is open, any new message snaps back to the tail
+    log_scroll: usize,
     started: std::time::Instant,
     // table scopes: index 0 is always Library; ADS query results follow
     scopes: Vec<Scope>,
@@ -225,6 +229,20 @@ struct App {
 
 fn hit(r: Rect, x: u16, y: u16) -> bool {
     x >= r.x && x < r.x + r.width && y >= r.y && y < r.y + r.height
+}
+
+/// Centered dim hint for an empty table (no results / empty library).
+fn draw_empty_hint(f: &mut Frame, area: Rect, msg: &str) {
+    if area.height == 0 {
+        return;
+    }
+    let y = area.y + (area.height / 3).min(area.height - 1);
+    let line = Line::from(Span::styled(msg, Style::default().fg(Color::DarkGray)))
+        .alignment(ratatui::layout::Alignment::Center);
+    f.render_widget(
+        Paragraph::new(line),
+        Rect { x: area.x, y, width: area.width, height: 1 },
+    );
 }
 
 /// Plain chips instead of powerline pills, for terminals without Nerd
@@ -329,6 +347,7 @@ impl App {
             hover_hint: None,
             log: vec![],
             show_log: false,
+            log_scroll: 0,
             started: std::time::Instant::now(),
             scopes: vec![Scope::Library],
             active_scope: 0,
@@ -688,10 +707,24 @@ impl App {
     }
 
     /// Emit an event message: color-coded in the log pane and shown in
-    /// the footer while it is the newest entry.
+    /// the footer while it is the newest entry. A new message snaps the
+    /// log pane back to the tail; the log keeps at most 500 entries.
     fn note(&mut self, cat: MsgCat, msg: String) {
         self.status = msg.clone();
         self.log.push((cat, self.started.elapsed().as_secs(), msg));
+        self.log_scroll = 0;
+        if self.log.len() > 500 {
+            let cut = self.log.len() - 500;
+            self.log.drain(..cut);
+        }
+    }
+
+    /// PageUp/PageDown while the log pane is open: page through history,
+    /// clamped to the stored entries (positive = older).
+    fn scroll_log(&mut self, delta: isize) {
+        let visible = self.log.len().min(8);
+        let max = self.log.len().saturating_sub(visible) as isize;
+        self.log_scroll = (self.log_scroll as isize + delta).clamp(0, max) as usize;
     }
 
     /// Availability policy: single-target actions dim under multi-selection,
@@ -873,9 +906,10 @@ impl App {
         (pos < self.row_count()).then_some(pos)
     }
 
-    /// The entry the pub card shows: hovering the citekey column previews
-    /// that row in the card (full-row hover proved too twitchy); otherwise
-    /// the cursor row.
+    /// The entry the pub card shows: hovering a scope-specific trigger
+    /// column previews that row in the card (full-row hover proved too
+    /// twitchy) — the Key column in the library, the Cited column in the
+    /// manuscript scope; otherwise the cursor row.
     fn card_key(&self) -> Option<&str> {
         if self.active_scope == 0 {
             let a = self.table_area;
@@ -888,7 +922,35 @@ impl App {
                 }
             }
         }
+        if let Some(Scope::Manuscript { rows }) = self.scopes.get(self.active_scope) {
+            // Cited column: after the 2-wide gutter and state columns
+            // (spacing 1), x spans [6, 6+26)
+            let a = self.table_area;
+            if self.hover.0 >= a.x + 6 && self.hover.0 < a.x + 6 + 26 {
+                if let Some(k) = self
+                    .hovered_table_pos()
+                    .and_then(|pos| rows.get(pos))
+                    .and_then(|r| r.key.as_deref())
+                {
+                    return Some(k);
+                }
+            }
+        }
         self.selected_key()
+    }
+
+    /// The ADS article position the card shows: hovering the Title
+    /// column previews that row; otherwise the cursor row.
+    fn card_article_pos(&self) -> Option<usize> {
+        let a = self.table_area;
+        let (author_w, _) = column_layout(a.width);
+        // Title column: gutter, ↓, ●, Year, Author plus 1-wide spacing
+        if self.hover.0 >= a.x + 17 + author_w {
+            if let Some(pos) = self.hovered_table_pos() {
+                return Some(pos);
+            }
+        }
+        self.table.selected()
     }
 
     fn selected_key(&self) -> Option<&str> {
@@ -1698,8 +1760,22 @@ impl App {
                 KeyCode::Char('G') | KeyCode::End => {
                     self.table.select(self.row_count().checked_sub(1))
                 }
-                KeyCode::PageDown => self.move_sel(20),
-                KeyCode::PageUp => self.move_sel(-20),
+                KeyCode::PageDown => {
+                    if self.show_log {
+                        let page = self.log.len().min(8) as isize;
+                        self.scroll_log(-page);
+                    } else {
+                        self.move_sel(20);
+                    }
+                }
+                KeyCode::PageUp => {
+                    if self.show_log {
+                        let page = self.log.len().min(8) as isize;
+                        self.scroll_log(page);
+                    } else {
+                        self.move_sel(-20);
+                    }
+                }
                 _ => {}
             },
         }
@@ -1933,23 +2009,25 @@ impl App {
     }
 
     /// Centered keyboard cheat-sheet (ctrl+p); any key or click dismisses.
+    /// Entries whose action is currently unavailable render dimmed, the
+    /// old actions panel's behavior (available() is the single policy).
     fn draw_help(&mut self, f: &mut Frame) {
-        let entries: &[(&str, &str)] = &[
-            ("␣", "select / toggle row"),
-            ("j k", "move cursor"),
-            ("g G", "first / last row"),
-            ("m", "manuscript ± (selection)"),
-            ("p", "download PDF"),
-            ("B", "browser download"),
-            ("o", "open PDF"),
-            ("X", "clear PDF / cancel DL"),
-            ("y", "copy…"),
-            ("⌫", "remove…"),
-            ("/", "filter"),
-            ("D", "pub card"),
-            ("L", "event log"),
-            ("?", "this cheat-sheet"),
-            ("q", "quit"),
+        let entries: &[(&str, &str, Option<Action>)] = &[
+            ("␣", "select / toggle row", Some(Action::Select)),
+            ("j k", "move cursor", None),
+            ("g G", "first / last row", None),
+            ("m", "manuscript ± (selection)", Some(Action::Manuscript)),
+            ("p", "download PDF", Some(Action::Download)),
+            ("B", "browser download", Some(Action::BrowserDl)),
+            ("o", "open PDF", Some(Action::OpenPdf)),
+            ("X", "clear PDF / cancel DL", Some(Action::ClearPdf)),
+            ("y", "copy…", Some(Action::Copy)),
+            ("⌫", "remove…", Some(Action::Remove)),
+            ("/", "filter", Some(Action::Filter)),
+            ("D", "pub card", Some(Action::Card)),
+            ("L", "event log", Some(Action::Log)),
+            ("?", "this cheat-sheet", Some(Action::Help)),
+            ("q", "quit", Some(Action::Quit)),
         ];
         let frame = f.area();
         let rows = entries.len().div_ceil(2) as u16;
@@ -1967,14 +2045,20 @@ impl App {
         for r in 0..rows as usize {
             let mut spans: Vec<Span> = vec![];
             for c in 0..2usize {
-                if let Some((key, label)) = entries.get(r + c * rows as usize) {
+                if let Some((key, label, action)) = entries.get(r + c * rows as usize) {
+                    let avail = action.map_or(true, |a| self.available(a));
+                    let (ks, ls) = if avail {
+                        (Style::default().fg(Color::Cyan), Style::default())
+                    } else {
+                        (
+                            Style::default().fg(Color::DarkGray).add_modifier(Modifier::DIM),
+                            Style::default().fg(Color::DarkGray),
+                        )
+                    };
                     let text = format!(" {key:>3}  {label}");
                     let pad = (colw as usize).saturating_sub(text.chars().count());
-                    spans.push(Span::styled(
-                        format!(" {key:>3}  "),
-                        Style::default().fg(Color::Cyan),
-                    ));
-                    spans.push(Span::raw(format!("{label}{}", " ".repeat(pad))));
+                    spans.push(Span::styled(format!(" {key:>3}  "), ks));
+                    spans.push(Span::styled(format!("{label}{}", " ".repeat(pad)), ls));
                 }
             }
             lines.push(Line::from(spans));
@@ -2260,6 +2344,9 @@ impl App {
             )
             .block(Block::default().borders(Borders::NONE));
             f.render_stateful_widget(table, data_area, &mut self.table);
+            if self.row_count() == 0 {
+                draw_empty_hint(f, data_area, "no results — r re-runs, +/- changes n");
+            }
             return;
         }
         // subtle per-column palette; the terminal theme supplies the hues.
@@ -2432,6 +2519,15 @@ impl App {
         let table = Table::new(rows, constraints)
         .block(Block::default().borders(Borders::NONE));
         f.render_stateful_widget(table, data_area, &mut self.table);
+        if self.order.is_empty() {
+            draw_empty_hint(
+                f,
+                data_area,
+                "library is empty — S searches ADS, or: astrobib add <bibcode>",
+            );
+        } else if self.filtered.is_empty() {
+            draw_empty_hint(f, data_area, "no matches — Esc clears the filter");
+        }
     }
 
     /// The pub card for an ADS result: body and links, plus import state.
@@ -2442,7 +2538,7 @@ impl App {
         let Some(Scope::Ads { articles, .. }) = self.scopes.get(self.active_scope) else {
             return;
         };
-        let Some(a) = self.table.selected().and_then(|p| articles.get(p)) else {
+        let Some(a) = self.card_article_pos().and_then(|p| articles.get(p)) else {
             return;
         };
         let title = a.title.clone();
@@ -2893,12 +2989,16 @@ impl App {
     }
 
     /// The event-log pane: newest entries at the bottom, one line each,
-    /// color-coded by category, mm:ss timestamps since launch.
+    /// color-coded by category, mm:ss timestamps since launch. PageUp
+    /// pages into history (the title shows how far back); any new
+    /// message snaps back to the tail.
     fn draw_log(&self, f: &mut Frame, area: Rect) {
         let n = area.height.saturating_sub(2) as usize;
-        let start = self.log.len().saturating_sub(n);
+        let scroll = self.log_scroll.min(self.log.len().saturating_sub(n));
+        let start = self.log.len().saturating_sub(n + scroll);
+        let end = (start + n).min(self.log.len());
         let mut lines: Vec<Line> = vec![];
-        for (cat, secs, msg) in &self.log[start..] {
+        for (cat, secs, msg) in &self.log[start..end] {
             lines.push(Line::from(vec![
                 Span::styled(
                     format!("{:02}:{:02}  ", secs / 60, secs % 60),
@@ -2907,9 +3007,14 @@ impl App {
                 Span::styled(msg.clone(), Style::default().fg(cat.color())),
             ]));
         }
+        let title = if scroll > 0 {
+            format!(" Log ↑{scroll} ")
+        } else {
+            " Log ".to_string()
+        };
         let block = Block::default()
             .borders(Borders::TOP | Borders::BOTTOM)
-            .title(Span::styled(" Log ", Style::default().fg(Color::DarkGray)));
+            .title(Span::styled(title, Style::default().fg(Color::DarkGray)));
         f.render_widget(Paragraph::new(Text::from(lines)).block(block), area);
     }
 
@@ -3073,27 +3178,6 @@ mod tests {
     }
 
     #[test]
-    fn fit_authors_candidates() {
-        let a3 = "{Zrake}, J. and {Clyburn}, M. and {Fearing}, S.";
-        assert_eq!(super::fit_authors(a3, 40), "Zrake, Clyburn, and Fearing");
-        assert_eq!(super::fit_authors(a3, 20), "Zrake, Clyburn, +1");
-        assert_eq!(super::fit_authors(a3, 14), "Zrake, +2");
-        assert_eq!(super::fit_authors(a3, 9), "Zrake, +2");
-        assert_eq!(super::fit_authors("{Zrake}, J.", 20), "Zrake");
-        assert_eq!(
-            super::fit_authors("{Zrake}, J. and {MacFadyen}, A.", 30),
-            "Zrake and MacFadyen"
-        );
-        let many = (0..13)
-            .map(|i| format!("{{A{i}}}, X."))
-            .collect::<Vec<_>>()
-            .join(" and ");
-        assert_eq!(super::fit_authors(&many, 14), "A0, A1, +11");
-        assert_eq!(super::fit_authors(&many, 10), "A0, +12");
-        assert_eq!(super::fit_authors("{Verylongsurname}, Q. and {B}, C.", 8), "Verylon…");
-    }
-
-    #[test]
     fn base64_rfc4648_vectors() {
         for (input, want) in [
             ("", ""),
@@ -3130,48 +3214,6 @@ fn column_layout(width: u16) -> (u16, bool) {
         author -= 1;
     }
     (author, false)
-}
-
-/// Densest author description that fits `width`. Candidates from most
-/// to least verbose — the full "A, B, and C" list, then "A, B, +N"
-/// prefixes with a count, then "A et al." — and the first that fits
-/// wins; a truncated surname is the last resort.
-fn fit_authors(author: &str, width: usize) -> String {
-    let surnames: Vec<String> = author
-        .split(" and ")
-        .map(|a| {
-            a.trim()
-                .split(',')
-                .next()
-                .unwrap_or("")
-                .trim_matches(['{', '}'])
-                .to_string()
-        })
-        .filter(|s| !s.is_empty())
-        .collect();
-    let n = surnames.len();
-    if n == 0 {
-        return String::new();
-    }
-    let mut candidates: Vec<String> = vec![match n {
-        1 => surnames[0].clone(),
-        2 => format!("{} and {}", surnames[0], surnames[1]),
-        _ => format!("{}, and {}", surnames[..n - 1].join(", "), surnames[n - 1]),
-    }];
-    for k in (1..n).rev() {
-        candidates.push(format!("{}, +{}", surnames[..k].join(", "), n - k));
-    }
-    if n > 1 {
-        candidates.push(format!("{} et al.", surnames[0]));
-    }
-    for c in &candidates {
-        if c.chars().count() <= width {
-            return c.clone();
-        }
-    }
-    let mut s: String = surnames[0].chars().take(width.saturating_sub(1)).collect();
-    s.push('…');
-    s
 }
 
 /// "Zrake, J. and MacFadyen, A." → "Zrake, MacFadyen" (surnames, truncated).

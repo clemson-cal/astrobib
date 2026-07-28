@@ -60,17 +60,20 @@ fn main() -> anyhow::Result<()> {
                     Some(doi) => format!("doi:\"{doi}\""),
                     None => query,
                 };
-                for a in astrobib::ads::search(&q, limit)? {
-                    let first = a.author.first().map(String::as_str).unwrap_or("");
-                    let first = first.split(',').next().unwrap_or("");
+                // same columns as local search, with the bibcode standing
+                // in for the cite key (results aren't imported yet)
+                let results = astrobib::ads::search(&q, limit)?;
+                for a in &results {
+                    let author = a.author.join(" and ");
                     println!(
-                        "{:<20} {:<6} {:<18} {}",
+                        "{:<24} {:<6} {:<18} {}",
                         a.bibcode,
                         a.year,
-                        truncate(first, 18),
+                        astrobib::text::fit_authors(&author, 18),
                         truncate(&a.title, 60)
                     );
                 }
+                println!("{} result(s)", results.len());
                 return Ok(());
             }
             let groups = query::tokenize(&query);
@@ -128,7 +131,7 @@ fn print_entries(
             "{:<24} {:<6} {:<18} {}",
             e.short_key,
             e.year(),
-            truncate(e.first_author_last().trim_start_matches('{'), 18),
+            astrobib::text::fit_authors(e.author(), 18),
             truncate(e.title().trim_matches(['{', '}']), 60),
         );
     }
