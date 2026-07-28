@@ -1,4 +1,12 @@
 # astrobib
+
+An ADS-native BibTeX library manager for astrophysics manuscripts, written in Rust (ratatui). This is the official implementation; the earlier Python/Textual version is preserved at tag [`v0.4.0`](https://github.com/clemson-cal/astrobib/tree/v0.4.0) and as the latest [PyPI release](https://pypi.org/project/astrobib/).
+
+See [RUST.md](RUST.md) for current features and status, and [DESIGN.md](DESIGN.md) for the data-format contract. A fuller user guide will replace this stub once the CLI/TUI surface settles.
+
+<details><summary>Python 0.4.0 documentation (historical)</summary>
+
+# astrobib
 *A terminal-based literature manager for astrophysics research*
 
 astrobib is a personal astrophysics literature manager. It connects to the [NASA/Harvard ADS](https://ui.adsabs.harvard.edu) to search and fetch papers, stores BibTeX in `~/.local/share/astrobib/library/`, and generates `refs.bib` files for LaTeX manuscripts by scanning for cite keys.
@@ -298,3 +306,5 @@ The cache can be deleted freely; everything is re-fetchable.
 The pub card offers per-paper sources: `arXiv ↓` and `ADS OA ↓` download directly, `browser ↓` opens the publisher page and watches `~/Downloads` for the arriving file, and `pick …` browses the filesystem (starting in `~/Downloads`) to import a PDF you already have.
 
 If macOS blocks your terminal from reading `~/Downloads`, the browser watcher says so instead of waiting silently; grant access in System Settings → Privacy & Security → Files and Folders, or use `pick …`.
+
+</details>

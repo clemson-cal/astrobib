@@ -2,7 +2,7 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-Read [DESIGN.md](DESIGN.md) before adding features or changing data formats. It is the authoritative statement of design constraints.
+Read [DESIGN.md](DESIGN.md) before adding features or changing data formats. It is the authoritative statement of design constraints. [RUST.md](RUST.md) tracks implementation status.
 
 **Parallel agents: one writer per working tree.** Concurrent agent sessions must not share this working tree — spawn writing subagents with worktree isolation (`isolation: "worktree"` / `git worktree add`) and integrate through commits. When committing here, stage explicit paths (never `git add -A`) and review `git status --short` first: another session's uncommitted work may be present.
 
@@ -11,82 +11,22 @@ Read [DESIGN.md](DESIGN.md) before adding features or changing data formats. It 
 ## Development commands
 
 ```bash
-# Always use the project-local venv
-source .venv/bin/activate
-# or prefix commands with .venv/bin/
-
-# Install in editable mode
-.venv/bin/pip install -e .
-
-# Run the TUI
-.venv/bin/astrobib
-
-# Run CLI commands
-.venv/bin/astrobib db clone <url>
-.venv/bin/astrobib uat update
-.venv/bin/astrobib search --ads "query"
-
-# Python is 3.11 from /opt/homebrew/bin/python3.11
-# If recreating the venv: /opt/homebrew/bin/python3.11 -m venv .venv
+cargo build --release        # binary at target/release/astrobib
+cargo test                   # includes golden parity vectors
+cargo run --release          # TUI
+cargo run --release -- list  # CLI
 ```
 
-There are no tests. Verify changes by importing the affected modules and running the CLI/TUI manually.
+Verify TUI changes headlessly with the pyte pty harness (drive the real binary in a pseudo-terminal against a scratch `ASTROBIB_LIBRARY` / `ASTROBIB_STATE_DIR` — never the real library; reconstruct screens with pyte, do not grep raw bytes).
 
 ---
+
+## History and parity
+
+The Python implementation this port derives from lives at tag `v0.4.0` (also the latest Python release on PyPI). Golden test vectors (`tests/golden_keys.json`, `tests/golden_format.json`) were generated from it; to regenerate, check out the tag and use its venv. Anything both implementations wrote had to be byte-identical: cite keys, short keys, `.bib` serialization. The bib database format is the contract — see DESIGN.md.
+
+Format quirk, faithfully reproduced: bibtexparser v1 stored fields in reverse file order, so every parse→rewrite cycle flips the trailing (non-FIELD_ORDER) fields; files oscillate between two stable forms.
 
 ## Releasing
 
-Releases go to PyPI via `scripts/release.py` (details in PUBLISHING.md; credentials live in the `[astrobib]` section of `~/.pypirc`):
-
-```bash
-# 1. Write a "## X.Y.Z" entry in CHANGELOG.md (may stay uncommitted; the
-#    script commits it with the version bump). Patch = fixes only,
-#    minor = features.
-# 2. Rehearse — validates branch/tree/changelog/tag, builds, twine-checks,
-#    then reverts everything:
-.venv/bin/python scripts/release.py X.Y.Z --dry-run
-# 3. Release — bumps astrobib/__init__.py, commits "Release X.Y.Z",
-#    uploads to PyPI, tags vX.Y.Z, pushes main + tag:
-.venv/bin/python scripts/release.py X.Y.Z
-```
-
-Nothing is committed, uploaded, tagged, or pushed until the build and twine check pass; the tag and push happen only after a successful upload. Do not run the release script without the user's explicit request.
-
----
-
-## Architecture
-
-**Tool vs. data separation.** astrobib is a pip-installable tool. The personal library lives at `~/.local/share/astrobib/library/` (override root with `ASTROBIB_STATE_DIR`); manuscript databases live inside manuscript repos. The tool never stores data inside its own package directory.
-
-**Package layout:**
-
-- `astrobib/state.py` — user-local app state: library path (relocatable via `--library` flag / `ASTROBIB_LIBRARY` env, flag wins; caches and `state.json` are unaffected), ADS token, cache constants, `find_manuscript_db()` (excludes the active library root from the walk-up)
-- `astrobib/library.py` — `Entry`, `Library`, `MergedLibrary`; reads `bib/*.bib` files through an mtime-keyed parse cache (`~/.cache/astrobib/parsecache/`); bibcode index, memoized merge, O(N log N) short keys — sized for 1e4-entry libraries
-- `astrobib/keys.py` — deterministic cite key generation: `AuthorYYYY` + 5-char hash, with both year and hash derived from the stable identifier (arXiv submission year / bibcode year), so keys are identical across preprint and published states
-- `astrobib/query.py` — local filter language (ADS-flavored: fielded terms, year ranges, phrases, negation, `is:` state filters); `to_ads_query()` translates a filter for ADS escalation
-- `astrobib/ads_client.py` — direct ADS API client (httpx): `Article` dataclass, search, BibTeX export, link resolver, quota tracking; no third-party ADS dependency
-- `astrobib/uat.py` — UAT loader and hierarchy traversal; cached at `UAT_CACHE`
-- `astrobib/export.py` — scans `.tex` files for cite keys, writes `refs.bib`; `manuscript_tex_files()`: `main.tex` is the sole root when present (else all top-level `.tex`), expanded recursively via `\input`/`\include`
-- `astrobib/pdf.py` — ephemeral PDF cache at `PDF_CACHE_DIR`
-- `astrobib/cli.py` — Click commands: `add`, `import`, `update`, `convert`, `export`, `refs`, `search`, `show`, `list`, `keywords`, `quota`, plus `config`, `pdf`, `uat` groups
-- `astrobib/tui/app.py` — Textual TUI: library tab, ADS search tab (via `S`), UAT browser panel (via `u`)
-- `astrobib/tui/tabs_state.py` — persistent ADS query tabs (`tabs.json`, keyed per manuscript context), tab labels, result limits
-- `astrobib/tui/uat_browser.py` — standalone UAT browser app and screen
-- `astrobib/tui/help_screen.py` — modal help screen; content loaded from `astrobib/help.md` (symlink to `../README.md`)
-- `astrobib/tui/key_panel.py` — ctrl+p key panel subclasses that dim disabled bindings (stock Textual panel ignores enablement)
-- `astrobib/tui/file_pick.py` — modal DirectoryTree PDF picker (pub card `pick …` button; roots at ~/Downloads, backspace re-roots at parent)
-
-Note: `astrobib/config.py` and `astrobib/db.py` are dead code from an earlier multi-database design — nothing imports them.
-
-**Manuscript databases.** A `bib/` directory inside a manuscript's git repo, discovered by walk-up from cwd (`bib/` + `.git`), at most one active per session. `MergedLibrary` merges it with the personal library for reads; imports write to both; `m` toggles membership; `astrobib refs` syncs it against `.tex` cite keys and writes `refs.bib`. Manuscripts may cite any unambiguous prefix of a key or a raw ADS bibcode (`MergedLibrary.resolve_citation`); `refs.bib` entries are keyed by the cited string, so hash suffixes stay out of the `.tex`. The TUI adds a Manuscript tab (`ManuscriptView`) that polls `.tex` mtimes and `bib/` (2 s `set_interval`), classifies each key as ok/library/missing/uncited, and auto-regenerates `refs.bib` on content change — but never auto-copies or auto-prunes entries; membership changes go through `m`. astrobib never runs git on the manuscript repo. See DESIGN.md.
-
-**UAT.** The Unified Astronomy Thesaurus JSON is a plain recursive tree (not SKOS). Cached at `~/.cache/astrobib/uat.json`. The TUI keyword tree groups library entries by top-level UAT ancestor of their keywords.
-
----
-
-## Key constraints
-
-- Python ≥ 3.11 (`tomllib`, match statements, walrus operator)
-- `bibtexparser` v1 (not v2 — the API differs significantly)
-- Textual ≥ 0.60
-- `pyyaml` is not a dependency (was removed when `keywords.yaml` was eliminated)
+Not wired yet. Plan: maturin `bindings = "bin"` wheels to PyPI (per-platform, CI matrix) so `pipx install astrobib` keeps working. Do not publish anything without the user's explicit request.
