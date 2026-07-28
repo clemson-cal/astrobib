@@ -1,3 +1,4 @@
+pub mod ads;
 pub mod bib;
 pub mod keys;
 pub mod library;

@@ -16,11 +16,19 @@ enum Command {
         #[arg(short = 'n', long, default_value_t = 20)]
         limit: usize,
     },
-    /// Search the local library with the filter language
+    /// Search the local library, or ADS with --ads
     Search {
         query: String,
         #[arg(short = 'n', long, default_value_t = 10)]
         limit: usize,
+        #[arg(long)]
+        ads: bool,
+    },
+    /// Add a paper by ADS bibcode (or pasted ADS URL)
+    Add {
+        bibcode: String,
+        #[arg(short, long)]
+        force: bool,
     },
     /// Print the BibTeX entry for a cite key (full or shortened)
     Show { key: String },
@@ -42,10 +50,46 @@ fn main() -> anyhow::Result<()> {
             print_entries(&lib, |_| true, limit);
             Ok(())
         }
-        Some(Command::Search { query, limit }) => {
+        Some(Command::Search { query, limit, ads }) => {
+            if ads {
+                // a pasted DOI or DOI URL becomes a fielded query
+                let q = match astrobib::ads::doi_from_text(&query) {
+                    Some(doi) => format!("doi:\"{doi}\""),
+                    None => query,
+                };
+                for a in astrobib::ads::search(&q, limit)? {
+                    let first = a.author.first().map(String::as_str).unwrap_or("");
+                    let first = first.split(',').next().unwrap_or("");
+                    println!(
+                        "{:<20} {:<6} {:<18} {}",
+                        a.bibcode,
+                        a.year,
+                        truncate(first, 18),
+                        truncate(&a.title, 60)
+                    );
+                }
+                return Ok(());
+            }
             let groups = query::tokenize(&query);
             let ctx = QueryContext::default();
             print_entries(&lib, |e| query::matches(&groups, e, &ctx), limit);
+            Ok(())
+        }
+        Some(Command::Add { bibcode, force }) => {
+            let bc = astrobib::ads::bibcode_from_url(&bibcode).unwrap_or(bibcode);
+            let Some(data) = astrobib::ads::fetch_bibtex(&bc)? else {
+                eprintln!("Could not fetch BibTeX for {bc}");
+                std::process::exit(1);
+            };
+            let key = astrobib::keys::generate_key(&data);
+            if lib.personal.has(&key) && !force {
+                eprintln!("{key} already in library. Use --force to overwrite.");
+                std::process::exit(1);
+            }
+            let key = lib.save_entry(&data)?;
+            let e = lib.get(&key).unwrap();
+            let display = if e.short_key.is_empty() { &key } else { &e.short_key };
+            println!("Added {display}  ({key})");
             Ok(())
         }
         Some(Command::Show { key }) => match lib.resolve(&key) {

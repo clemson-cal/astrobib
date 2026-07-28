@@ -247,6 +247,27 @@ impl Library {
         self.by_key.contains_key(key)
     }
 
+    /// Write an entry under its generated key — port of save_entry.
+    /// Returns the key; overwrites any existing entry with the same key.
+    pub fn save_entry(&mut self, data: &Data) -> std::io::Result<String> {
+        let mut data = data.clone();
+        let key = crate::keys::generate_key(&data);
+        data.insert("ID".to_string(), key.clone());
+        let bib_dir = self.root.join("bib");
+        std::fs::create_dir_all(&bib_dir)?;
+        let path = bib_dir.join(format!("{key}.bib"));
+        std::fs::write(&path, bib::format_entry(&data))?;
+        let entry = Entry::new(data, path);
+        if let Some(&i) = self.by_key.get(&key) {
+            self.entries[i] = entry;
+        } else {
+            self.entries.push(entry);
+        }
+        self.reindex();
+        self.compute_short_keys();
+        Ok(key)
+    }
+
     /// Set or clear the personal astrobib_starred flag and rewrite the
     /// entry file — port of set_starred. shift_remove keeps the field
     /// order of the remaining entries stable, like Python's dict.pop.
@@ -331,6 +352,15 @@ impl MergedLibrary {
 
     pub fn set_starred(&mut self, key: &str, starred: bool) -> std::io::Result<()> {
         self.personal.set_starred(key, starred)
+    }
+
+    /// Import: write to the personal library and the manuscript db (if any).
+    pub fn save_entry(&mut self, data: &crate::bib::Data) -> std::io::Result<String> {
+        let key = self.personal.save_entry(data)?;
+        if let Some(ms) = &mut self.manuscript {
+            ms.save_entry(data)?;
+        }
+        Ok(key)
     }
 }
 

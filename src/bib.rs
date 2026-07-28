@@ -93,24 +93,27 @@ pub fn parse_entry(text: &str) -> Option<Data> {
                     .find(|c| c == ',' || c == '}')
                     .map(|o| i + o)
                     .unwrap_or(bytes.len());
-                let val = text[i..end].trim().to_string();
+                let val = text[i..end].trim();
                 i = end;
-                val
+                // bare values are @string macros: expand the common ones
+                // (BibTexParser(common_strings=True) month names)
+                expand_common_string(val).to_string()
             }
         };
         if !name.is_empty() {
             fields.push((name, latex_to_unicode(&raw)));
         }
     }
-    // bibtexparser v1 stores fields in reverse file order; serialization
-    // writes unknown fields in dict order, so reproduce the reversal or
-    // rewritten files shuffle their trailing fields vs. the Python tool.
+    // bibtexparser v1 stores fields in reverse file order with
+    // ENTRYTYPE/ID appended last; serialization writes unknown fields in
+    // dict order, so reproduce the layout exactly or rewritten files
+    // shuffle their trailing fields vs. the Python tool.
     let mut data = Data::new();
-    data.insert("ENTRYTYPE".to_string(), etype);
-    data.insert("ID".to_string(), key);
     for (name, value) in fields.into_iter().rev() {
         data.insert(name, value);
     }
+    data.insert("ENTRYTYPE".to_string(), etype);
+    data.insert("ID".to_string(), key);
     Some(data)
 }
 
@@ -163,6 +166,25 @@ fn combining(accent: char) -> Option<char> {
     })
 }
 
+/// bibtexparser's COMMON_STRINGS: month macro → full name.
+fn expand_common_string(name: &str) -> &str {
+    match name {
+        "jan" => "January",
+        "feb" => "February",
+        "mar" => "March",
+        "apr" => "April",
+        "may" => "May",
+        "jun" => "June",
+        "jul" => "July",
+        "aug" => "August",
+        "sep" => "September",
+        "oct" => "October",
+        "nov" => "November",
+        "dec" => "December",
+        other => other,
+    }
+}
+
 /// Standalone letter macros (\o, \aa, \ss, …) and escaped specials.
 fn simple_macro(name: &str) -> Option<&'static str> {
     Some(match name {
@@ -183,12 +205,17 @@ fn simple_macro(name: &str) -> Option<&'static str> {
         "$" => "$",
         "#" => "#",
         "_" => "_",
+        "{" => "{",
+        "}" => "}",
         _ => return None,
     })
 }
 
-/// Best-effort conversion of LaTeX accent/letter macros to Unicode,
-/// normalized to NFC. Unknown macros and ordinary braces pass through.
+/// Conversion of LaTeX accent/letter macros to Unicode, normalized to
+/// NFC, with every remaining brace removed afterward — matching
+/// bibtexparser.latexenc.latex_to_unicode, which strips all braces
+/// (grouping and protective alike, and even escaped ones, since \{
+/// converts to a literal brace before the strip).
 pub fn latex_to_unicode(s: &str) -> String {
     use unicode_normalization::UnicodeNormalization;
     let chars: Vec<char> = s.chars().collect();
@@ -213,6 +240,7 @@ pub fn latex_to_unicode(s: &str) -> String {
             i += 1;
         }
     }
+    let out: String = out.chars().filter(|&c| c != '{' && c != '}').collect();
     out.nfc().collect()
 }
 
@@ -334,8 +362,9 @@ mod tests {
         let d = parse_entry(text).unwrap();
         assert_eq!(d["ID"], "Zrake2019abcde");
         assert_eq!(d["ENTRYTYPE"], "article");
-        assert_eq!(d["author"], "{Zrake}, Jonathan and {MacFadyen}, Andrew");
-        assert_eq!(d["title"], "{Magnetic energy production}");
+        // braces are stripped on parse, as bibtexparser's convert_to_unicode does
+        assert_eq!(d["author"], "Zrake, Jonathan and MacFadyen, Andrew");
+        assert_eq!(d["title"], "Magnetic energy production");
         assert_eq!(d["year"], "2019");
     }
 
@@ -350,7 +379,8 @@ mod tests {
         assert_eq!(latex_to_unicode(r"{\o}"), "ø");
         assert_eq!(latex_to_unicode(r"\&"), "&");
         assert_eq!(latex_to_unicode(r"M{\'u}noz"), "Múnoz");
-        assert_eq!(latex_to_unicode("{Title Case}"), "{Title Case}");
+        assert_eq!(latex_to_unicode("{Title Case}"), "Title Case");
+        assert_eq!(latex_to_unicode(r"{{Double} braced}"), "Double braced");
     }
 
     #[test]
