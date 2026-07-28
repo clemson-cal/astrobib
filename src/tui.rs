@@ -2342,7 +2342,7 @@ impl App {
         let mut x = area.x;
         let scope_labels: Vec<String> =
             self.scopes.iter().map(|s| s.label().to_string()).collect();
-        let mut push_one = |label: &str, bg: Color, fg: Color, idx: usize,
+        let push_one = |label: &str, bg: Color, fg: Color, idx: usize,
                             x: &mut u16,
                             spans: &mut Vec<Span>,
                             rects: &mut Vec<(Rect, usize)>| {
