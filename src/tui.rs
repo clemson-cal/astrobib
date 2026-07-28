@@ -16,7 +16,7 @@ use ratatui::crossterm::execute;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
-use ratatui::widgets::{Block, Borders, Paragraph, Row, Table, TableState, Wrap};
+use ratatui::widgets::{Block, Borders, Paragraph, Row, Table, TableState};
 use ratatui::Frame;
 use std::collections::HashSet;
 use std::time::Duration;
@@ -39,6 +39,8 @@ enum Mode {
         files: Vec<std::path::PathBuf>,
         sel: usize,
     },
+    /// Confirm modal for removing papers (Delete key).
+    Confirm { keys: Vec<String> },
 }
 
 /// Every user action; the panel lists them all, dimming the unavailable.
@@ -91,15 +93,45 @@ struct App {
     show_actions: bool,
     panel_rows: Vec<(u16, Action)>,
     panel_area: Rect,
-    // pub card button row rects, rebuilt each draw
+    // pub card button and link rects, rebuilt each draw
     card_buttons: Vec<(Rect, CardBtn)>,
+    card_links: Vec<(Rect, String)>,
+    // transient PDF status shown on the card (waiting/result), like the
+    // Python card's #pdf-status line
+    pdf_status: String,
     // browser-download watcher cancel flag (X / clear cancels the poll)
     poll_cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     pick_area: Rect,
+    confirm_btns: Vec<(Rect, bool)>, // (rect, is_confirm)
 }
 
 fn hit(r: Rect, x: u16, y: u16) -> bool {
     x >= r.x && x < r.x + r.width && y >= r.y && y < r.y + r.height
+}
+
+/// Greedy word wrap producing the exact lines we render — placement math
+/// (links/buttons following variable-height text) depends on the count.
+fn wrap_text(s: &str, w: usize) -> Vec<String> {
+    if w == 0 {
+        return vec![String::new()];
+    }
+    let mut lines: Vec<String> = vec![];
+    let mut cur = String::new();
+    for word in s.split_whitespace() {
+        let wl = word.chars().count();
+        let cl = cur.chars().count();
+        if cl == 0 {
+            cur = word.chars().take(w).collect();
+        } else if cl + 1 + wl <= w {
+            cur.push(' ');
+            cur.push_str(word);
+        } else {
+            lines.push(std::mem::take(&mut cur));
+            cur = word.chars().take(w).collect();
+        }
+    }
+    lines.push(cur);
+    lines
 }
 
 enum DlMsg {
@@ -148,8 +180,11 @@ impl App {
             panel_rows: vec![],
             panel_area: Rect::default(),
             card_buttons: vec![],
+            card_links: vec![],
+            pdf_status: String::new(),
             poll_cancel: None,
             pick_area: Rect::default(),
+            confirm_btns: vec![],
         }
     }
 
@@ -345,6 +380,7 @@ impl App {
         let cur = self.table.selected().unwrap_or(0) as isize;
         let next = (cur + delta).clamp(0, self.filtered.len() as isize - 1);
         self.table.select(Some(next as usize));
+        self.pdf_status.clear(); // stale per-entry message
     }
 
     /// Toggle selection membership of the row at a filtered position.
@@ -423,15 +459,18 @@ impl App {
         self.rebuild_order();
     }
 
-    /// d — remove targets from both databases (no confirmation, matching
-    /// the Python TUI); exits selection mode afterward.
+    /// Delete — ask for confirmation before removing.
     fn remove_papers(&mut self) {
         let keys = self.action_keys();
-        if keys.is_empty() {
-            return;
+        if !keys.is_empty() {
+            self.mode = Mode::Confirm { keys };
         }
+    }
+
+    /// Confirmed removal from both databases; exits selection mode after.
+    fn remove_confirmed(&mut self, keys: &[String]) {
         let mut n = 0;
-        for k in &keys {
+        for k in keys {
             if self.lib.remove_entry(k).is_ok() {
                 n += 1;
             }
@@ -625,6 +664,13 @@ impl App {
                             if failed.len() > 3 { "…" } else { "" }
                         )
                     };
+                    self.pdf_status = if failed.is_empty() && done > 0 {
+                        "✓ downloaded".to_string()
+                    } else if done == 0 && !failed.is_empty() {
+                        "✗ no PDF found — try browser ↓".to_string()
+                    } else {
+                        String::new()
+                    };
                     self.dl_rx = None;
                     self.poll_cancel = None;
                 }
@@ -654,6 +700,26 @@ impl App {
                 }
             }
             self.mode = Mode::Normal;
+            return;
+        }
+        // confirm modal: only its two buttons act; other clicks are inert
+        if let Mode::Confirm { keys } = &self.mode {
+            if let Some(&(_, is_confirm)) = self.confirm_btns.iter().find(|(r, _)| hit(*r, x, y)) {
+                let keys = keys.clone();
+                self.mode = Mode::Normal;
+                if is_confirm {
+                    self.remove_confirmed(&keys);
+                } else {
+                    self.status = "removal cancelled".to_string();
+                }
+            }
+            return;
+        }
+        // pub card links open the browser
+        if let Some((_, url)) = self.card_links.iter().find(|(r, _)| hit(*r, x, y)) {
+            let url = url.clone();
+            pdf::browser_open(&url);
+            self.status = "opened in browser".to_string();
             return;
         }
         // actions panel rows
@@ -801,12 +867,24 @@ impl App {
                 }
                 _ => {}
             },
+            Mode::Confirm { keys } => match code {
+                KeyCode::Enter | KeyCode::Char('y') => {
+                    let keys = keys.clone();
+                    self.mode = Mode::Normal;
+                    self.remove_confirmed(&keys);
+                }
+                KeyCode::Esc | KeyCode::Char('n') => {
+                    self.mode = Mode::Normal;
+                    self.status = "removal cancelled".to_string();
+                }
+                _ => {}
+            },
             Mode::Normal => match code {
                 KeyCode::Char('q') => self.run_action(Action::Quit),
                 KeyCode::Char('/') => self.run_action(Action::Filter),
                 KeyCode::Char('s') => self.run_action(Action::Star),
                 KeyCode::Char('m') => self.run_action(Action::Manuscript),
-                KeyCode::Char('d') => self.run_action(Action::Remove),
+                KeyCode::Delete => self.run_action(Action::Remove),
                 KeyCode::Char('p') => self.run_action(Action::Download),
                 KeyCode::Char('o') => self.run_action(Action::OpenPdf),
                 KeyCode::Char('X') => self.run_action(Action::ClearPdf),
@@ -887,6 +965,73 @@ impl App {
         } else {
             self.pick_area = Rect::default();
         }
+        if let Mode::Confirm { .. } = self.mode {
+            self.draw_confirm(f);
+        } else {
+            self.confirm_btns.clear();
+        }
+    }
+
+    /// Centered confirm modal for Delete: lists the targets, offers
+    /// clickable remove/cancel (⏎/y confirms, Esc/n cancels).
+    fn draw_confirm(&mut self, f: &mut Frame) {
+        self.confirm_btns.clear();
+        let Mode::Confirm { keys } = &self.mode else { return };
+        let frame = f.area();
+        let listed: Vec<&String> = keys.iter().take(8).collect();
+        let extra = keys.len().saturating_sub(listed.len());
+        let h = (listed.len() + if extra > 0 { 1 } else { 0 } + 4) as u16;
+        let w = 52.min(frame.width.saturating_sub(4));
+        let area = Rect {
+            x: frame.width.saturating_sub(w) / 2,
+            y: frame.height.saturating_sub(h) / 2,
+            width: w,
+            height: h.min(frame.height),
+        };
+        f.render_widget(ratatui::widgets::Clear, area);
+        let mut lines: Vec<Line> = vec![];
+        for k in &listed {
+            lines.push(Line::from(Span::styled(
+                k.to_string(),
+                Style::default().fg(Color::Cyan),
+            )));
+        }
+        if extra > 0 {
+            lines.push(Line::from(Span::styled(
+                format!("… and {extra} more"),
+                Style::default().fg(Color::DarkGray),
+            )));
+        }
+        lines.push(Line::default());
+        let by = area.y + h.saturating_sub(2);
+        let bx = area.x + 1;
+        let remove_label = " remove ";
+        let cancel_label = " cancel ";
+        self.confirm_btns.push((
+            Rect { x: bx, y: by, width: remove_label.len() as u16, height: 1 },
+            true,
+        ));
+        self.confirm_btns.push((
+            Rect {
+                x: bx + remove_label.len() as u16 + 2,
+                y: by,
+                width: cancel_label.len() as u16,
+                height: 1,
+            },
+            false,
+        ));
+        lines.push(Line::from(vec![
+            Span::styled(remove_label, Style::default().bg(Color::Red).fg(Color::White)),
+            Span::raw("  "),
+            Span::styled(cancel_label, Style::default().bg(Color::DarkGray)),
+        ]));
+        let title = format!(
+            " Remove {} paper(s) from the library? ",
+            keys.len()
+        );
+        let p = Paragraph::new(Text::from(lines))
+            .block(Block::default().borders(Borders::ALL).title(title));
+        f.render_widget(p, area);
     }
 
     /// The ctrl+p actions panel: every action, with key, label, and click
@@ -907,7 +1052,7 @@ impl App {
                 if self.poll_cancel.is_some() { "cancel DL" } else { "clear PDF" },
                 Action::ClearPdf,
             ),
-            ("d", "remove", Action::Remove),
+            ("Del", "remove…", Action::Remove),
             ("/", "filter", Action::Filter),
             ("D", "pub card", Action::Card),
             ("q", "quit", Action::Quit),
@@ -1033,109 +1178,187 @@ impl App {
         f.render_stateful_widget(table, area, &mut self.table);
     }
 
+    /// The pub card, emulating the Python DetailPanel's flow: body (title,
+    /// authors · year, abstract), a bordered links row (ADS · arXiv:id ·
+    /// DOI, cyan, browser-opening), the PDF buttons (Python labels/colors;
+    /// ineligible ones hidden, not dimmed), a transient PDF status line,
+    /// and a footer (keywords, cite key with dim hash suffix, preprint
+    /// note). Text is pre-wrapped so every row's click rect is exact.
     fn draw_detail(&mut self, f: &mut Frame, area: Rect) {
-        let block = Block::default().borders(Borders::LEFT);
+        self.card_links.clear();
+        f.render_widget(Block::default().borders(Borders::LEFT), area);
         let Some(key) = self.selected_key().map(str::to_string) else {
-            f.render_widget(block, area);
             return;
         };
-        let [area, btn_area] =
-            Layout::vertical([Constraint::Min(1), Constraint::Length(2)]).areas(area);
-        self.draw_card_buttons(f, btn_area, &key);
-        let e = self.lib.get(&key).unwrap();
-        let mut lines: Vec<Line> = vec![];
-        lines.push(Line::from(Span::styled(
-            e.title().trim_matches(['{', '}']).to_string(),
-            Style::default().add_modifier(Modifier::BOLD),
-        )));
-        lines.push(Line::default());
-        lines.push(Line::from(vec![
-            Span::styled(
-                format_authors(e.author()),
-                Style::default().fg(Color::DarkGray),
-            ),
-            Span::raw("   ·   "),
-            Span::styled(e.year(), Style::default().fg(Color::Green)),
-        ]));
+        let Some(e) = self.lib.get(&key) else { return };
+        let x0 = area.x + 3; // border + 2 padding
+        let w = area.width.saturating_sub(5) as usize;
+        let bottom = area.y + area.height;
+        let mut y = area.y + 1;
+        let line_at = |f: &mut Frame, y: u16, line: Line| {
+            if y < bottom {
+                f.render_widget(
+                    Paragraph::new(line),
+                    Rect { x: x0, y, width: w as u16, height: 1 },
+                );
+            }
+        };
+
+        // ── body ─────────────────────────────────────────────────────
+        for l in wrap_text(e.title().trim_matches(['{', '}']), w) {
+            line_at(f, y, Line::from(Span::styled(l, Style::default().add_modifier(Modifier::BOLD))));
+            y += 1;
+        }
+        y += 1;
+        let year = e.year();
+        let byline = format!("{}   ·   {year}", format_authors(e.author()));
+        let by_lines = wrap_text(&byline, w);
+        for (i, l) in by_lines.iter().enumerate() {
+            let line = if i == by_lines.len() - 1 && l.chars().count() > year.chars().count() {
+                let split = l.chars().count() - year.chars().count();
+                let head: String = l.chars().take(split).collect();
+                Line::from(vec![
+                    Span::styled(head, Style::default().fg(Color::DarkGray)),
+                    Span::styled(year.clone(), Style::default().fg(Color::Green)),
+                ])
+            } else {
+                Line::from(Span::styled(l.clone(), Style::default().fg(Color::DarkGray)))
+            };
+            line_at(f, y, line);
+            y += 1;
+        }
+        let (eprint, adsurl, doi) = (
+            e.eprint().to_string(),
+            e.adsurl().to_string(),
+            e.doi().to_string(),
+        );
+        // footer + links/buttons need this much room below the abstract
+        let kws = e.keywords().join(" · ");
+        let kw_lines = if kws.is_empty() { 0 } else { wrap_text(&kws, w).len() as u16 + 1 };
+        let rest = 3 + 1 + 1 + kw_lines + 2;
         let abs = e.abstract_();
-        if !abs.is_empty() {
-            lines.push(Line::default());
+        if !abs.is_empty() && y + rest < bottom {
+            y += 1;
             let shown: String = abs.chars().take(1000).collect();
-            lines.push(Line::from(shown));
+            let avail = (bottom - y).saturating_sub(rest);
+            for l in wrap_text(&shown, w).into_iter().take(avail as usize) {
+                line_at(f, y, Line::from(l));
+                y += 1;
+            }
         }
-        let kws = e.keywords();
+
+        // ── links row (bordered top and bottom, like #detail-links) ──
+        let sep = "─".repeat(w);
+        let dimsep = Style::default().fg(Color::DarkGray);
+        line_at(f, y, Line::from(Span::styled(sep.clone(), dimsep)));
+        y += 1;
+        let mut spans: Vec<Span> = vec![];
+        let mut lx = x0;
+        let cyan = Style::default().fg(Color::Cyan);
+        let link = |label: String, url: String, spans: &mut Vec<Span>, lx: &mut u16, links: &mut Vec<(Rect, String)>| {
+            let wl = label.chars().count() as u16;
+            if y < bottom {
+                links.push((Rect { x: *lx, y, width: wl, height: 1 }, url));
+            }
+            spans.push(Span::styled(label, cyan));
+            spans.push(Span::raw("  "));
+            *lx += wl + 2;
+        };
+        if !adsurl.is_empty() {
+            link("ADS".into(), adsurl.clone(), &mut spans, &mut lx, &mut self.card_links);
+        }
+        if !eprint.is_empty() {
+            link(
+                format!("arXiv:{eprint}"),
+                format!("https://arxiv.org/abs/{eprint}"),
+                &mut spans,
+                &mut lx,
+                &mut self.card_links,
+            );
+        }
+        if !doi.is_empty() {
+            link("DOI".into(), format!("https://doi.org/{doi}"), &mut spans, &mut lx, &mut self.card_links);
+        }
+        line_at(f, y, Line::from(spans));
+        y += 1;
+        line_at(f, y, Line::from(Span::styled(sep, dimsep)));
+        y += 1;
+
+        // ── PDF buttons (Python labels, colors, and visibility rules) ─
+        let cached = pdf::is_cached(&key);
+        let muted = Style::default().fg(Color::Gray);
+        let raised = Style::default().bg(Color::DarkGray);
+        let mut buttons: Vec<(&str, CardBtn, Style)> = vec![];
+        if !cached && !eprint.is_empty() {
+            buttons.push((" arXiv ↓ ", CardBtn::Arxiv, raised.fg(Color::Cyan)));
+        }
+        if !cached && !adsurl.is_empty() {
+            buttons.push((" ADS OA ↓ ", CardBtn::Oa, raised.fg(Color::Cyan)));
+        }
+        if !cached && (!doi.is_empty() || !adsurl.is_empty()) {
+            buttons.push((" browser ↓ ", CardBtn::Browser, raised.fg(Color::Yellow)));
+        }
+        if !cached {
+            buttons.push((" pick … ", CardBtn::Pick, raised.fg(Color::Magenta)));
+        }
+        if cached {
+            buttons.push((" Open ↗ ", CardBtn::Open, raised.fg(Color::Green)));
+            buttons.push((" Clear ✕ ", CardBtn::Clear, raised.patch(muted)));
+        }
+        let mut spans: Vec<Span> = vec![];
+        let mut bx = x0;
+        for (label, btn, style) in buttons {
+            let wl = label.chars().count() as u16;
+            if y < bottom {
+                self.card_buttons.push((Rect { x: bx, y, width: wl, height: 1 }, btn));
+            }
+            spans.push(Span::styled(label.to_string(), style));
+            spans.push(Span::raw(" "));
+            bx += wl + 1;
+        }
+        line_at(f, y, Line::from(spans));
+        y += 1;
+
+        // ── PDF status (⏳ waiting…, ✓/✗ results) ────────────────────
+        if self.poll_cancel.is_some() {
+            let label = "⏳ waiting for download…  cancel ✕";
+            if y < bottom {
+                self.card_buttons.push((
+                    Rect { x: x0, y, width: label.chars().count() as u16, height: 1 },
+                    CardBtn::Cancel,
+                ));
+            }
+            line_at(f, y, Line::from(Span::styled(label, Style::default().fg(Color::Yellow))));
+        } else if !self.pdf_status.is_empty() {
+            line_at(f, y, Line::from(Span::styled(self.pdf_status.clone(), muted)));
+        }
+        y += 2;
+
+        // ── footer ───────────────────────────────────────────────────
         if !kws.is_empty() {
-            lines.push(Line::default());
-            lines.push(Line::from(Span::styled(
-                kws.join(" · "),
-                Style::default().fg(Color::DarkGray),
-            )));
+            for l in wrap_text(&kws, w) {
+                line_at(f, y, Line::from(Span::styled(l, Style::default().fg(Color::DarkGray))));
+                y += 1;
+            }
+            y += 1;
         }
-        lines.push(Line::default());
-        lines.push(Line::from(vec![
-            Span::styled(
-                if e.short_key.is_empty() { e.key() } else { &e.short_key }.to_string(),
-                Style::default().fg(Color::Cyan),
-            ),
-            Span::styled(
-                format!("  ({})", e.key()),
-                Style::default().fg(Color::DarkGray),
-            ),
-        ]));
-        let p = Paragraph::new(Text::from(lines))
-            .wrap(Wrap { trim: false })
-            .block(block.padding(ratatui::widgets::Padding::horizontal(1)));
-        f.render_widget(p, area);
+        let short = if e.short_key.is_empty() { e.key() } else { &e.short_key };
+        let suffix: String = e.key().chars().skip(short.chars().count()).collect();
+        let mut spans = vec![
+            Span::styled(short.to_string(), cyan),
+            Span::styled(suffix, Style::default().fg(Color::DarkGray).add_modifier(Modifier::DIM)),
+        ];
+        let preprint = e
+            .adsurl()
+            .rsplit('/')
+            .next()
+            .is_some_and(|bc| bc.len() > 9 && bc[..4].chars().all(|c| c.is_ascii_digit()) && &bc[4..9] == "arXiv");
+        if preprint {
+            spans.push(Span::styled("  (preprint)", Style::default().fg(Color::DarkGray)));
+        }
+        line_at(f, y, Line::from(spans));
     }
 
-    /// The pub card's PDF button row: source buttons when uncached
-    /// (arXiv/OA/browser/pick, individually dimmed when their prerequisite
-    /// is missing), open/clear when cached, cancel while a browser watch
-    /// is pending. Clickable — rects recorded into card_buttons.
-    fn draw_card_buttons(&mut self, f: &mut Frame, area: Rect, key: &str) {
-        let Some(e) = self.lib.get(key) else { return };
-        let (eprint, adsurl, doi) = (e.eprint(), e.adsurl(), e.doi());
-        let buttons: Vec<(&str, CardBtn, bool)> = if self.poll_cancel.is_some() {
-            vec![("⏳ waiting…", CardBtn::Cancel, false), (" cancel ", CardBtn::Cancel, true)]
-        } else if pdf::is_cached(key) {
-            vec![(" open ", CardBtn::Open, true), (" clear ", CardBtn::Clear, true)]
-        } else {
-            vec![
-                (" arXiv ↓ ", CardBtn::Arxiv, !eprint.is_empty()),
-                (" OA ↓ ", CardBtn::Oa, !adsurl.is_empty()),
-                (
-                    " browser ↓ ",
-                    CardBtn::Browser,
-                    !doi.is_empty() || !adsurl.is_empty() || !eprint.is_empty(),
-                ),
-                (" pick … ", CardBtn::Pick, true),
-            ]
-        };
-        let y = area.y + 1;
-        let mut x = area.x + 2;
-        let mut spans = vec![];
-        for (label, btn, enabled) in buttons {
-            let w = label.chars().count() as u16;
-            if enabled {
-                self.card_buttons
-                    .push((Rect { x, y, width: w, height: 1 }, btn));
-            }
-            let style = if enabled {
-                Style::default().bg(Color::DarkGray)
-            } else {
-                Style::default().fg(Color::DarkGray)
-            };
-            spans.push(Span::styled(label.to_string(), style));
-            spans.push(Span::raw("  "));
-            x += w + 2;
-        }
-        let p = Paragraph::new(Line::from(spans)).block(
-            Block::default()
-                .borders(Borders::LEFT)
-                .padding(ratatui::widgets::Padding::horizontal(1)),
-        );
-        f.render_widget(p, area);
-    }
 
     fn draw_status(&self, f: &mut Frame, area: Rect) {
         let line = match self.mode {
@@ -1144,7 +1367,7 @@ impl App {
                 Span::raw(self.filter.clone()),
                 Span::styled("▏", Style::default().fg(Color::Cyan)),
             ]),
-            Mode::Normal | Mode::Pick { .. } if self.select_mode => Line::from(vec![
+            Mode::Normal | Mode::Pick { .. } | Mode::Confirm { .. } if self.select_mode => Line::from(vec![
                 Span::styled(
                     format!("◉ {} selected", self.selected.len()),
                     Style::default().fg(Color::Cyan),
@@ -1154,7 +1377,7 @@ impl App {
                     Style::default().fg(Color::DarkGray),
                 ),
             ]),
-            Mode::Normal | Mode::Pick { .. } => {
+            Mode::Normal | Mode::Pick { .. } | Mode::Confirm { .. } => {
                 let n = self.filtered.len();
                 let total = self.order.len();
                 let filt = if self.filter.is_empty() {
