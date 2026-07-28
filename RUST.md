@@ -38,6 +38,9 @@ A format quirk worth knowing, faithfully reproduced: bibtexparser v1 stores fiel
 
 Warm full-library load + query + print measures ~7 ms end to end (vs ~1 s Python+Textual startup floor).
 
+- ADS query scopes: one table, switchable data sources. A scope strip above the table (`Library │ <query> │ …`, clickable, `[`/`]` cycle, `ctrl+w` closes a query scope, `r` refreshes with its stored limit). `S` opens the query prompt, pre-filled from the active local filter via `to_ads_query`; a pasted DOI becomes a fielded query and a pasted ADS abstract URL imports directly. Fetches run on worker threads with results/errors in the event log. Result rows derive ● from the bibcode index and ↓ from the canonical cache key (cite key once imported); the pub card shows the article (body, links, citation count, import state) and `i` imports via the parity-verified save path. Selection mode, local filter, and library-entry actions are gated to the Library scope. Not yet: scope persistence (tabs.json), manuscript scope, batch import.
+- Abstract truncation is height-driven only: the full abstract renders whenever the card has room; a cut ends in an ellipsis (the Python 1000-char cap is gone).
+
 ## Not yet ported
 
 ADS search tabs in the TUI, the `refs`/`.tex` sync flow and export, UAT browser/keyword tree, the `update` (arXiv→published) command, config/token writing (the ADS token is read from state.json — set it with the Python tool). Distribution plan when ready: maturin `bindings = "bin"` wheels to PyPI so `pipx install astrobib` keeps working, per the discussion in the main repo.

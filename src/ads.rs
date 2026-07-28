@@ -161,6 +161,15 @@ pub fn resolve_pdf_url(bibcode: &str, link_type: &str) -> Option<String> {
     v["link"].as_str().filter(|s| !s.is_empty()).map(str::to_string)
 }
 
+/// The arXiv ID among an article's identifiers, if any (entries look
+/// like "arXiv:2405.12345").
+pub fn arxiv_id(article: &Article) -> Option<&str> {
+    article
+        .identifier
+        .iter()
+        .find_map(|i| i.strip_prefix("arXiv:"))
+}
+
 /// Strip HTML tags and LaTeX braces from abstract text (display-only field).
 pub fn clean_abstract(text: &str) -> String {
     static TAG: OnceLock<Regex> = OnceLock::new();

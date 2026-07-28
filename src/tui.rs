@@ -41,6 +41,8 @@ enum Mode {
     },
     /// Confirm modal for removing papers (Delete key).
     Confirm { keys: Vec<String> },
+    /// S — compose an ADS query; ⏎ runs it into a new scope.
+    AdsPrompt { input: String },
     /// y pressed — the next key picks what to copy (the Copy panel tab
     /// shows the menu, which-key style); Esc cancels.
     Copy,
@@ -101,6 +103,42 @@ enum CopyItem {
     Abstract,
 }
 
+/// A data source for the table: the library, or one ADS query's
+/// results. One table widget, one interaction path — the scope only
+/// decides rows and columns.
+enum Scope {
+    Library,
+    Ads {
+        label: String,
+        query: String,
+        articles: Vec<crate::ads::Article>,
+        limit: usize,
+    },
+}
+
+impl Scope {
+    fn label(&self) -> &str {
+        match self {
+            Scope::Library => "Library",
+            Scope::Ads { label, .. } => label,
+        }
+    }
+}
+
+enum AdsMsg {
+    Done {
+        label: String,
+        query: String,
+        limit: usize,
+        refresh_of: Option<usize>,
+        result: Result<Vec<crate::ads::Article>, String>,
+    },
+    Imported {
+        bibcode: String,
+        result: Result<crate::bib::Data, String>,
+    },
+}
+
 /// Sortable table columns; clicking a header toggles direction.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum SortCol {
@@ -154,6 +192,11 @@ struct App {
     log: Vec<(MsgCat, u64, String)>,
     show_log: bool,
     started: std::time::Instant,
+    // table scopes: index 0 is always Library; ADS query results follow
+    scopes: Vec<Scope>,
+    active_scope: usize,
+    scope_rects: Vec<(Rect, usize)>,
+    ads_rx: Option<std::sync::mpsc::Receiver<AdsMsg>>,
     // table sort (clickable column headers) and their header hit rects
     sort: (SortCol, bool), // (column, ascending)
     sort_headers: Vec<(Rect, SortCol)>,
@@ -279,6 +322,10 @@ impl App {
             log: vec![],
             show_log: false,
             started: std::time::Instant::now(),
+            scopes: vec![Scope::Library],
+            active_scope: 0,
+            scope_rects: vec![],
+            ads_rx: None,
             sort: (SortCol::Year, false),
             sort_headers: vec![],
             footer_badges: vec![],
@@ -289,6 +336,167 @@ impl App {
             poll_cancel: None,
             pick_area: Rect::default(),
             confirm_btns: vec![],
+        }
+    }
+
+    fn active_ads(&self) -> Option<&Scope> {
+        match self.scopes.get(self.active_scope) {
+            Some(s @ Scope::Ads { .. }) => Some(s),
+            _ => None,
+        }
+    }
+
+    fn set_scope(&mut self, idx: usize) {
+        self.active_scope = idx.min(self.scopes.len().saturating_sub(1));
+        self.table.select(Some(0));
+        *self.table.offset_mut() = 0;
+        self.pdf_status.clear();
+        if self.select_mode {
+            self.exit_select_mode();
+        }
+    }
+
+    fn cycle_scope(&mut self, d: isize) {
+        let n = self.scopes.len() as isize;
+        let cur = self.active_scope as isize;
+        self.set_scope(((cur + d).rem_euclid(n)) as usize);
+    }
+
+    fn close_scope(&mut self) {
+        if self.active_scope == 0 {
+            return; // the library scope is permanent
+        }
+        self.scopes.remove(self.active_scope);
+        let idx = self.active_scope.saturating_sub(1);
+        self.set_scope(idx);
+    }
+
+    /// S — compose an ADS query. Pre-filled from the active local filter
+    /// via to_ads_query (filter locally, escalate in one keystroke).
+    fn open_ads_prompt(&mut self) {
+        if crate::ads::get_token().is_none() {
+            self.note(
+                MsgCat::Warn,
+                "no ADS token — set ADS_API_TOKEN or configure the Python tool".to_string(),
+            );
+            return;
+        }
+        let input = if self.filter.is_empty() {
+            String::new()
+        } else {
+            query::to_ads_query(&self.filter)
+        };
+        self.mode = Mode::AdsPrompt { input };
+    }
+
+    /// Run a query on a worker thread into a scope. A pasted DOI or ADS
+    /// abstract URL short-circuits: DOI becomes a fielded query, an ADS
+    /// URL imports the paper directly.
+    fn run_ads_query_limit(&mut self, raw: String, refresh_of: Option<usize>, limit: usize) {
+        let raw = raw.trim().to_string();
+        if raw.is_empty() {
+            return;
+        }
+        if let Some(bc) = crate::ads::bibcode_from_url(&raw) {
+            self.import_bibcode(bc);
+            return;
+        }
+        let query = match crate::ads::doi_from_text(&raw) {
+            Some(doi) => format!("doi:\"{doi}\""),
+            None => raw.clone(),
+        };
+        let label: String = raw.chars().take(18).collect();
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.ads_rx = Some(rx);
+        self.note(MsgCat::Info, format!("Searching ADS: {query}"));
+        std::thread::spawn(move || {
+            let result = crate::ads::search(&query, limit).map_err(|e| e.to_string());
+            let _ = tx.send(AdsMsg::Done { label, query, limit, refresh_of, result });
+        });
+    }
+
+    fn run_ads_query(&mut self, raw: String, refresh_of: Option<usize>) {
+        self.run_ads_query_limit(raw, refresh_of, 20);
+    }
+
+    fn refresh_scope(&mut self) {
+        if let Some(Scope::Ads { query, limit, .. }) = self.scopes.get(self.active_scope) {
+            self.run_ads_query_limit(query.clone(), Some(self.active_scope), *limit);
+        }
+    }
+
+    /// i — import the highlighted ADS result into the library (and the
+    /// manuscript db when active), via the parity-verified save path.
+    fn import_highlighted(&mut self) {
+        let Some(Scope::Ads { articles, .. }) = self.scopes.get(self.active_scope) else {
+            return;
+        };
+        let Some(a) = self.table.selected().and_then(|p| articles.get(p)) else {
+            return;
+        };
+        if self.lib.get_by_bibcode(&a.bibcode).is_some() {
+            self.note(MsgCat::Warn, format!("{} already in library", a.bibcode));
+            return;
+        }
+        self.import_bibcode(a.bibcode.clone());
+    }
+
+    fn import_bibcode(&mut self, bibcode: String) {
+        if self.ads_rx.is_some() {
+            self.note(MsgCat::Warn, "an ADS request is already running".to_string());
+            return;
+        }
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.ads_rx = Some(rx);
+        self.note(MsgCat::Info, format!("Importing {bibcode}…"));
+        std::thread::spawn(move || {
+            let result = match crate::ads::fetch_bibtex(&bibcode) {
+                Ok(Some(data)) => Ok(data),
+                Ok(None) => Err("no BibTeX returned".to_string()),
+                Err(e) => Err(e.to_string()),
+            };
+            let _ = tx.send(AdsMsg::Imported { bibcode, result });
+        });
+    }
+
+    fn drain_ads(&mut self) {
+        let mut msgs = vec![];
+        if let Some(rx) = &self.ads_rx {
+            while let Ok(m) = rx.try_recv() {
+                msgs.push(m);
+            }
+        }
+        for m in msgs {
+            self.ads_rx = None;
+            match m {
+                AdsMsg::Done { label, query, limit, refresh_of, result } => match result {
+                    Ok(articles) => {
+                        let n = articles.len();
+                        let scope = Scope::Ads { label, query, articles, limit };
+                        match refresh_of {
+                            Some(i) if i < self.scopes.len() => self.scopes[i] = scope,
+                            _ => {
+                                self.scopes.push(scope);
+                                self.set_scope(self.scopes.len() - 1);
+                            }
+                        }
+                        self.note(MsgCat::Ok, format!("{n} ADS result(s)"));
+                    }
+                    Err(e) => self.note(MsgCat::Err, format!("ADS search failed: {e}")),
+                },
+                AdsMsg::Imported { bibcode, result } => match result {
+                    Ok(data) => match self.lib.save_entry(&data) {
+                        Ok(key) => {
+                            self.rebuild_order();
+                            self.note(MsgCat::Ok, format!("Added {key}"));
+                        }
+                        Err(e) => self.note(MsgCat::Err, format!("import failed: {e}")),
+                    },
+                    Err(e) => {
+                        self.note(MsgCat::Err, format!("import of {bibcode} failed: {e}"))
+                    }
+                },
+            }
         }
     }
 
@@ -342,6 +550,9 @@ impl App {
         }
         match a {
             Action::Select => {
+                if self.active_scope != 0 {
+                    return; // selection lives in the Library scope
+                }
                 self.select_mode = true;
                 if let Some(pos) = self.table.selected() {
                     self.toggle_row_selected(pos);
@@ -354,7 +565,13 @@ impl App {
             Action::BrowserDl => self.browser_download(),
             Action::Remove => self.remove_papers(),
             Action::Copy => self.enter_copy_mode(),
-            Action::Filter => self.mode = Mode::Filter,
+            Action::Filter => {
+                if self.active_scope == 0 {
+                    self.mode = Mode::Filter;
+                } else {
+                    self.note(MsgCat::Warn, "the filter applies to the Library scope".to_string());
+                }
+            }
             Action::Card => self.show_detail = !self.show_detail,
             Action::Log => self.show_log = !self.show_log,
             Action::Help => self.show_help = !self.show_help,
@@ -412,6 +629,7 @@ impl App {
         ));
         while !self.quit {
             self.drain_downloads();
+            self.drain_ads();
             terminal.draw(|f| self.draw(f))?;
             if let Some(ev) = pending.take() {
                 debug_layout(&format!("{:>6}ms pending {ev:?}", t0.elapsed().as_millis()));
@@ -426,7 +644,10 @@ impl App {
             }
             // fast cadence for the first second (late terminal resizes that
             // slip past the settle window) and while downloads report progress
-            let tick = if t0.elapsed() < Duration::from_secs(1) || self.dl_rx.is_some() {
+            let tick = if t0.elapsed() < Duration::from_secs(1)
+                || self.dl_rx.is_some()
+                || self.ads_rx.is_some()
+            {
                 25
             } else {
                 250
@@ -460,7 +681,7 @@ impl App {
             return None;
         }
         let pos = self.table.offset() + (self.hover.1 - a.y - 2) as usize;
-        (pos < self.filtered.len()).then_some(pos)
+        (pos < self.row_count()).then_some(pos)
     }
 
     /// The entry the pub card shows: hovering the citekey column previews
@@ -479,6 +700,9 @@ impl App {
     }
 
     fn selected_key(&self) -> Option<&str> {
+        if self.active_scope != 0 {
+            return None; // library-entry actions don't apply to ADS rows
+        }
         let pos = self.table.selected()?;
         let idx = *self.filtered.get(pos)?;
         Some(self.order[idx].as_str())
@@ -511,12 +735,19 @@ impl App {
         });
     }
 
+    fn row_count(&self) -> usize {
+        match self.scopes.get(self.active_scope) {
+            Some(Scope::Ads { articles, .. }) => articles.len(),
+            _ => self.filtered.len(),
+        }
+    }
+
     fn move_sel(&mut self, delta: isize) {
-        if self.filtered.is_empty() {
+        if self.row_count() == 0 {
             return;
         }
         let cur = self.table.selected().unwrap_or(0) as isize;
-        let next = (cur + delta).clamp(0, self.filtered.len() as isize - 1);
+        let next = (cur + delta).clamp(0, self.row_count() as isize - 1);
         self.table.select(Some(next as usize));
         self.pdf_status.clear(); // stale per-entry message
     }
@@ -955,6 +1186,11 @@ impl App {
             }
             return;
         }
+        // scope strip
+        if let Some(&(_, idx)) = self.scope_rects.iter().find(|(r, _)| hit(*r, x, y)) {
+            self.set_scope(idx);
+            return;
+        }
         // footer view badges
         if let Some(&(_, action)) = self.footer_badges.iter().find(|(r, _)| hit(*r, x, y)) {
             self.run_action(action);
@@ -983,7 +1219,7 @@ impl App {
         let modified = mods.intersects(
             KeyModifiers::SUPER | KeyModifiers::ALT | KeyModifiers::CONTROL,
         );
-        if modified || x < a.x + 2 {
+        if (modified || x < a.x + 2) && self.active_scope == 0 {
             self.select_mode = true;
             self.toggle_row_selected(pos);
         }
@@ -1161,6 +1397,19 @@ impl App {
                     }
                 }
             }
+            Mode::AdsPrompt { input } => match code {
+                KeyCode::Esc => self.mode = Mode::Normal,
+                KeyCode::Enter => {
+                    let q = input.clone();
+                    self.mode = Mode::Normal;
+                    self.run_ads_query(q, None);
+                }
+                KeyCode::Backspace => {
+                    input.pop();
+                }
+                KeyCode::Char(c) => input.push(c),
+                _ => {}
+            },
             Mode::Confirm { keys } => match code {
                 KeyCode::Enter | KeyCode::Char('y') => {
                     let keys = keys.clone();
@@ -1184,6 +1433,14 @@ impl App {
                 KeyCode::Char('B') => self.run_action(Action::BrowserDl),
                 KeyCode::Char('D') | KeyCode::Char('z') => self.run_action(Action::Card),
                 KeyCode::Char('?') => self.run_action(Action::Help),
+                KeyCode::Char('S') => self.open_ads_prompt(),
+                KeyCode::Char('[') => self.cycle_scope(-1),
+                KeyCode::Char(']') => self.cycle_scope(1),
+                KeyCode::Char('r') => self.refresh_scope(),
+                KeyCode::Char('w') if mods.contains(KeyModifiers::CONTROL) => {
+                    self.close_scope()
+                }
+                KeyCode::Char('i') => self.import_highlighted(),
                 KeyCode::Char('L') => self.run_action(Action::Log),
                 KeyCode::Char('y') => self.run_action(Action::Copy),
                 KeyCode::Char('Y') => self.do_copy(CopyItem::FullKey),
@@ -1199,10 +1456,10 @@ impl App {
                 KeyCode::Char('j') | KeyCode::Down => self.move_sel(1),
                 KeyCode::Char('k') | KeyCode::Up => self.move_sel(-1),
                 KeyCode::Char('g') | KeyCode::Home => {
-                    self.table.select((!self.filtered.is_empty()).then_some(0))
+                    self.table.select((self.row_count() > 0).then_some(0))
                 }
                 KeyCode::Char('G') | KeyCode::End => {
-                    self.table.select(self.filtered.len().checked_sub(1))
+                    self.table.select(self.row_count().checked_sub(1))
                 }
                 KeyCode::PageDown => self.move_sel(20),
                 KeyCode::PageUp => self.move_sel(-20),
@@ -1255,6 +1512,12 @@ impl App {
         let table_area = *it.next().unwrap();
         let detail_area = self.show_detail.then(|| *it.next().unwrap());
 
+        let (strip_area, table_area) = {
+            let [s, t] = Layout::vertical([Constraint::Length(1), Constraint::Min(1)])
+                .areas(table_area);
+            (s, t)
+        };
+        self.draw_scope_strip(f, strip_area);
         self.draw_table(f, table_area);
         if let Some(area) = detail_area {
             self.draw_detail(f, area);
@@ -1522,10 +1785,132 @@ impl App {
         f.render_widget(p, area);
     }
 
+    /// One-line scope strip: Library │ query │ query …, clickable, the
+    /// active scope bold cyan; [ and ] cycle, ctrl+w closes, r refreshes.
+    fn draw_scope_strip(&mut self, f: &mut Frame, area: Rect) {
+        self.scope_rects.clear();
+        let mut spans: Vec<Span> = vec![];
+        let mut x = area.x;
+        for (i, scope) in self.scopes.iter().enumerate() {
+            let label = scope.label().to_string();
+            let wl = label.chars().count() as u16;
+            let r = Rect { x, y: area.y, width: wl, height: 1 };
+            self.scope_rects.push((r, i));
+            let active = i == self.active_scope;
+            let hov = hit(r, self.hover.0, self.hover.1);
+            let mut style = if active {
+                Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::DarkGray)
+            };
+            if hov && !active {
+                style = style.fg(Color::Gray).add_modifier(Modifier::UNDERLINED);
+            }
+            spans.push(Span::styled(label, style));
+            spans.push(Span::styled(" │ ", Style::default().fg(Color::DarkGray)));
+            x += wl + 3;
+        }
+        spans.push(Span::styled(
+            "S new query",
+            Style::default().fg(Color::DarkGray),
+        ));
+        f.render_widget(Paragraph::new(Line::from(spans)), area);
+    }
+
     fn draw_table(&mut self, f: &mut Frame, area: Rect) {
         use ratatui::widgets::Cell;
         self.table_area = area;
         self.sort_headers.clear();
+        if let Some(Scope::Ads { articles, .. }) = self.scopes.get(self.active_scope) {
+            // ADS results: ↓ ● Year Author Title; ● from the bibcode
+            // index, ↓ from the canonical cache key (cite key once
+            // imported, bibcode otherwise)
+            let (author_w, _) = column_layout(area.width);
+            let cursor = self.table.selected();
+            let hov_row = self.hovered_table_pos();
+            let rows: Vec<Row> = articles
+                .iter()
+                .enumerate()
+                .map(|(pos, a)| {
+                    let entry = self.lib.get_by_bibcode(&a.bibcode);
+                    let cache_key = entry.map(|e| e.key()).unwrap_or(&a.bibcode);
+                    let author = a.author.join(" and ");
+                    let row = Row::new(vec![
+                        Cell::from(Span::styled(
+                            if cursor == Some(pos) { "◉" } else { "" },
+                            Style::default().fg(Color::Cyan),
+                        )),
+                        Cell::from(Span::styled(
+                            if pdf::is_cached(cache_key) { "↓" } else { "" },
+                            Style::default().fg(Color::Green),
+                        )),
+                        Cell::from(Span::styled(
+                            if entry.is_some() { "●" } else { "" },
+                            Style::default().fg(Color::Magenta),
+                        )),
+                        Cell::from(Span::styled(
+                            a.year.clone(),
+                            Style::default().fg(Color::Green).add_modifier(Modifier::DIM),
+                        )),
+                        Cell::from(Span::styled(
+                            fit_authors(&author, author_w as usize),
+                            Style::default().fg(Color::Gray),
+                        )),
+                        Cell::from(Span::styled(
+                            a.title.clone(),
+                            Style::default().add_modifier(Modifier::ITALIC),
+                        )),
+                    ]);
+                    if hov_row == Some(pos) {
+                        row.style(Style::default().bg(Color::Rgb(38, 42, 50)))
+                    } else {
+                        row
+                    }
+                })
+                .collect();
+            let header: Vec<Span> = ["", "↓", "●", "Year", "Author", "Title"]
+                .iter()
+                .zip([2u16, 2, 2, 6, author_w, 0])
+                .flat_map(|(l, w)| {
+                    let pad = (w as usize).saturating_sub(l.chars().count());
+                    [
+                        Span::styled(*l, Style::default().add_modifier(Modifier::BOLD)),
+                        Span::raw(" ".repeat(pad + 1)),
+                    ]
+                })
+                .collect();
+            f.render_widget(
+                Paragraph::new(Line::from(header)),
+                Rect { x: area.x, y: area.y, width: area.width, height: 1 },
+            );
+            f.render_widget(
+                Paragraph::new(Span::styled(
+                    "─".repeat(area.width as usize),
+                    Style::default().fg(Color::DarkGray),
+                )),
+                Rect { x: area.x, y: area.y + 1, width: area.width, height: 1 },
+            );
+            let data_area = Rect {
+                x: area.x,
+                y: area.y + 2,
+                width: area.width,
+                height: area.height.saturating_sub(2),
+            };
+            let table = Table::new(
+                rows,
+                [
+                    Constraint::Length(2),
+                    Constraint::Length(2),
+                    Constraint::Length(2),
+                    Constraint::Length(6),
+                    Constraint::Length(author_w),
+                    Constraint::Min(20),
+                ],
+            )
+            .block(Block::default().borders(Borders::NONE));
+            f.render_stateful_widget(table, data_area, &mut self.table);
+            return;
+        }
         // subtle per-column palette; the terminal theme supplies the hues
         let c_ind = Style::default().fg(Color::Cyan);
         let c_pdf = Style::default().fg(Color::Green);
@@ -1671,6 +2056,136 @@ impl App {
         f.render_stateful_widget(table, data_area, &mut self.table);
     }
 
+    /// The pub card for an ADS result: body and links, plus import state.
+    fn draw_article_card(&mut self, f: &mut Frame, area: Rect) {
+        self.card_yanks.clear();
+        self.card_buttons.clear();
+        self.card_links.clear();
+        let Some(Scope::Ads { articles, .. }) = self.scopes.get(self.active_scope) else {
+            return;
+        };
+        let Some(a) = self.table.selected().and_then(|p| articles.get(p)) else {
+            return;
+        };
+        let title = a.title.clone();
+        let authors = a.author.join(" and ");
+        let year = a.year.clone();
+        let abstract_ = crate::ads::clean_abstract(&a.abstract_);
+        let bibcode = a.bibcode.clone();
+        let doi = a.doi.first().cloned().unwrap_or_default();
+        let eprint = crate::ads::arxiv_id(a).map(str::to_string).unwrap_or_default();
+        let cites = a.citation_count;
+        let in_lib = self.lib.get_by_bibcode(&bibcode).map(|e| e.key().to_string());
+
+        let x0 = area.x + 3;
+        let w = area.width.saturating_sub(5) as usize;
+        let bottom = area.y + area.height;
+        let mut y = area.y + 1;
+        let line_at = |f: &mut Frame, y: u16, line: Line| {
+            if y < bottom {
+                f.render_widget(
+                    Paragraph::new(line),
+                    Rect { x: x0, y, width: w as u16, height: 1 },
+                );
+            }
+        };
+        for l in wrap_text(&title, w) {
+            line_at(
+                f,
+                y,
+                Line::from(Span::styled(
+                    l,
+                    Style::default().add_modifier(Modifier::BOLD | Modifier::ITALIC),
+                )),
+            );
+            y += 1;
+        }
+        y += 1;
+        let byline = format!("{}   ·   {year}", format_authors(&authors));
+        for l in wrap_text(&byline, w) {
+            line_at(f, y, Line::from(Span::styled(l, Style::default().fg(Color::DarkGray))));
+            y += 1;
+        }
+        let rest = 3 + 2; // links row + footer
+        if !abstract_.is_empty() && y + rest < bottom {
+            y += 1;
+            let avail = (bottom - y).saturating_sub(rest) as usize;
+            let mut abs_lines = wrap_text(&abstract_, w);
+            if abs_lines.len() > avail && avail > 0 {
+                abs_lines.truncate(avail);
+                if let Some(last) = abs_lines.last_mut() {
+                    last.push_str(" …");
+                }
+            }
+            for l in abs_lines {
+                line_at(f, y, Line::from(l));
+                y += 1;
+            }
+        }
+        let sep = "─".repeat(w);
+        let dimsep = Style::default().fg(Color::DarkGray);
+        line_at(f, y, Line::from(Span::styled(sep.clone(), dimsep)));
+        y += 1;
+        let cyan = Style::default().fg(Color::Cyan);
+        let hv = self.hover;
+        let mut spans: Vec<Span> = vec![];
+        let mut lx = x0;
+        let link = |label: String, url: String, spans: &mut Vec<Span>, lx: &mut u16, links: &mut Vec<(Rect, String)>| {
+            let wl = label.chars().count() as u16;
+            let r = Rect { x: *lx, y, width: wl, height: 1 };
+            let style = if hit(r, hv.0, hv.1) {
+                cyan.add_modifier(Modifier::UNDERLINED)
+            } else {
+                cyan
+            };
+            links.push((r, url));
+            spans.push(Span::styled(label, style));
+            spans.push(Span::raw("  "));
+            *lx += wl + 2;
+        };
+        link(
+            "ADS".into(),
+            format!("https://ui.adsabs.harvard.edu/abs/{bibcode}/abstract"),
+            &mut spans,
+            &mut lx,
+            &mut self.card_links,
+        );
+        if !eprint.is_empty() {
+            link(
+                format!("arXiv:{eprint}"),
+                format!("https://arxiv.org/abs/{eprint}"),
+                &mut spans,
+                &mut lx,
+                &mut self.card_links,
+            );
+        }
+        if !doi.is_empty() {
+            link("DOI".into(), format!("https://doi.org/{doi}"), &mut spans, &mut lx, &mut self.card_links);
+        }
+        line_at(f, y, Line::from(spans));
+        y += 1;
+        line_at(f, y, Line::from(Span::styled(sep, dimsep)));
+        y += 2;
+        let mut foot: Vec<Span> = vec![];
+        match &in_lib {
+            Some(key) => {
+                foot.push(Span::styled("● in library  ", Style::default().fg(Color::Magenta)));
+                foot.push(Span::styled(key.clone(), cyan));
+            }
+            None => {
+                foot.push(Span::styled(bibcode.clone(), Style::default().fg(Color::DarkGray)));
+                foot.push(Span::styled("   i imports", Style::default().fg(Color::Cyan)));
+            }
+        }
+        if let Some(n) = cites {
+            foot.push(Span::styled(
+                format!("   · cited by {n}"),
+                Style::default().fg(Color::DarkGray),
+            ));
+        }
+        line_at(f, y, Line::from(foot));
+    }
+
     /// The pub card, emulating the Python DetailPanel's flow: body (title,
     /// authors · year, abstract), a bordered links row (ADS · arXiv:id ·
     /// DOI, cyan, browser-opening), the PDF buttons (Python labels/colors;
@@ -1680,6 +2195,10 @@ impl App {
     fn draw_detail(&mut self, f: &mut Frame, area: Rect) {
         self.card_links.clear();
         f.render_widget(Block::default().borders(Borders::LEFT), area);
+        if self.active_ads().is_some() {
+            self.draw_article_card(f, area);
+            return;
+        }
         let Some(key) = self.card_key().map(str::to_string) else {
             return;
         };
@@ -1766,9 +2285,21 @@ impl App {
         let abs = e.abstract_();
         if !abs.is_empty() && y + rest < bottom {
             y += 1;
-            let shown: String = abs.chars().take(1000).collect();
-            let avail = (bottom - y).saturating_sub(rest);
-            for l in wrap_text(&shown, w).into_iter().take(avail as usize) {
+            // truncation is height-driven only: the full abstract shows
+            // whenever the card has room, and a cut ends in an ellipsis
+            let avail = (bottom - y).saturating_sub(rest) as usize;
+            let mut abs_lines = wrap_text(abs, w);
+            if abs_lines.len() > avail && avail > 0 {
+                abs_lines.truncate(avail);
+                if let Some(last) = abs_lines.last_mut() {
+                    let keep = w.saturating_sub(2);
+                    if last.chars().count() > keep {
+                        *last = last.chars().take(keep).collect();
+                    }
+                    last.push_str(" …");
+                }
+            }
+            for l in abs_lines.into_iter().take(avail) {
                 let lw = l.chars().count() as u16;
                 yanks.push((
                     Rect { x: x0, y, width: lw.max(1), height: 1 },
@@ -2008,6 +2539,15 @@ impl App {
                 Span::styled("/", Style::default().fg(Color::Cyan)),
                 Span::raw(self.filter.clone()),
                 Span::styled("▏", Style::default().fg(Color::Cyan)),
+            ]),
+            Mode::AdsPrompt { ref input } => Line::from(vec![
+                Span::styled("ADS query: ", Style::default().fg(Color::Cyan)),
+                Span::raw(input.clone()),
+                Span::styled("▏", Style::default().fg(Color::Cyan)),
+                Span::styled(
+                    "   ⏎ search · Esc cancel · paste DOI/ADS URL to import",
+                    Style::default().fg(Color::DarkGray),
+                ),
             ]),
             Mode::Copy => Line::from(vec![
                 Span::styled("copy: ", Style::default().fg(Color::Cyan)),
