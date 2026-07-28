@@ -92,14 +92,52 @@ impl App {
 
     fn run(mut self, terminal: &mut ratatui::DefaultTerminal) -> anyhow::Result<()> {
         let t0 = std::time::Instant::now();
+        // Hold the first paint until the pty size settles. Some terminals
+        // (Warp) resize the pty in reaction to alt-screen entry — often
+        // before crossterm's SIGWINCH handler exists, so no Resize event
+        // arrives. Painting at the transient size shows as a visible
+        // reflow; a blank alt screen for ~50ms does not. Wait until the
+        // size is stable for 50ms (cap 250ms); any user input ends the
+        // wait and is handled after the first paint.
+        let mut pending: Option<Event> = None;
+        let mut size = terminal.size()?;
+        let mut stable = std::time::Instant::now();
+        while t0.elapsed() < Duration::from_millis(250) {
+            if event::poll(Duration::from_millis(10))? {
+                let ev = event::read()?;
+                if !matches!(ev, Event::Resize(..)) {
+                    pending = Some(ev);
+                    break;
+                }
+            }
+            let now_size = terminal.size()?;
+            if now_size != size {
+                size = now_size;
+                stable = std::time::Instant::now();
+            }
+            if stable.elapsed() >= Duration::from_millis(50) {
+                break;
+            }
+        }
+        debug_layout(&format!(
+            "{:>6}ms settled at {size:?}",
+            t0.elapsed().as_millis()
+        ));
         while !self.quit {
             terminal.draw(|f| self.draw(f))?;
-            // Poll fast while the terminal settles: some terminals (Warp)
-            // resize the pty just after alt-screen entry, before crossterm's
-            // SIGWINCH handler exists, so no Resize event ever arrives —
-            // the size change is only visible to the next draw. A quick
-            // cadence for the first second turns that half-second width
-            // jump into an imperceptible one-frame reflow.
+            if let Some(ev) = pending.take() {
+                debug_layout(&format!("{:>6}ms pending {ev:?}", t0.elapsed().as_millis()));
+                match ev {
+                    Event::Key(key) if key.kind == KeyEventKind::Press => {
+                        self.on_key(key.code, key.modifiers)
+                    }
+                    Event::Mouse(m) => self.on_mouse(m),
+                    _ => {}
+                }
+                continue;
+            }
+            // fast cadence for the first second as a safety net in case a
+            // late terminal resize slips past the settle window above
             let tick = if t0.elapsed() < Duration::from_secs(1) { 25 } else { 250 };
             debug_layout(&format!(
                 "{:>6}ms draw frame={:?} table={:?}",
