@@ -133,7 +133,6 @@ fn term_matches(term: &Term, e: &Entry, ctx: &QueryContext) -> bool {
         Some(Field::Key) => doc.key.contains(&v),
         Some(Field::Kw) => doc.kw.contains(&v),
         Some(Field::Is) => match v.as_str() {
-            "starred" => e.starred(),
             "ms" => ctx.in_manuscript.as_ref().is_some_and(|f| f(e.key())),
             "pdf" => ctx.has_pdf.as_ref().is_some_and(|f| f(e.key())),
             _ => false,

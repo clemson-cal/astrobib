@@ -72,10 +72,6 @@ impl Entry {
             .collect()
     }
 
-    pub fn starred(&self) -> bool {
-        self.get("astrobib_starred").trim().eq_ignore_ascii_case("true")
-    }
-
     pub fn first_author_last(&self) -> &str {
         let author = self.author();
         author
@@ -301,22 +297,6 @@ impl Library {
         Ok(())
     }
 
-    /// Set or clear the personal astrobib_starred flag and rewrite the
-    /// entry file — port of set_starred. shift_remove keeps the field
-    /// order of the remaining entries stable, like Python's dict.pop.
-    pub fn set_starred(&mut self, key: &str, starred: bool) -> std::io::Result<()> {
-        let Some(&i) = self.by_key.get(key) else {
-            return Ok(());
-        };
-        let e = &mut self.entries[i];
-        if starred {
-            e.data
-                .insert("astrobib_starred".to_string(), "true".to_string());
-        } else {
-            e.data.shift_remove("astrobib_starred");
-        }
-        std::fs::write(&e.path, bib::format_entry(&e.data))
-    }
 }
 
 /// Personal library merged with an optional manuscript database — port of
@@ -383,10 +363,6 @@ impl MergedLibrary {
         self.manuscript.as_ref().is_some_and(|m| m.has(key))
     }
 
-    pub fn set_starred(&mut self, key: &str, starred: bool) -> std::io::Result<()> {
-        self.personal.set_starred(key, starred)
-    }
-
     /// Import: write to the personal library and the manuscript db (if any).
     pub fn save_entry(&mut self, data: &crate::bib::Data) -> std::io::Result<String> {
         let key = self.personal.save_entry(data)?;
@@ -417,7 +393,9 @@ impl MergedLibrary {
             return Ok(false);
         };
         let mut data = entry.data.clone();
-        data.shift_remove("astrobib_starred"); // stars are personal
+        // legacy personal field from the Python tool never enters a
+        // shared manuscript db
+        data.shift_remove("astrobib_starred");
         let Some(ms) = &mut self.manuscript else {
             return Ok(false);
         };

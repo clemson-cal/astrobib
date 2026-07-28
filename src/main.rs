@@ -32,12 +32,6 @@ enum Command {
     },
     /// Print the BibTeX entry for a cite key (full or shortened)
     Show { key: String },
-    /// Star an entry (personal library only); --off unstars
-    Star {
-        key: String,
-        #[arg(long)]
-        off: bool,
-    },
 }
 
 fn main() -> anyhow::Result<()> {
@@ -110,15 +104,6 @@ fn main() -> anyhow::Result<()> {
                 std::process::exit(1);
             }
         },
-        Some(Command::Star { key, off }) => {
-            let Some(full) = lib.resolve(&key).map(|e| e.key().to_string()) else {
-                eprintln!("{key} not found.");
-                std::process::exit(1);
-            };
-            lib.set_starred(&full, !off)?;
-            println!("{} {full}", if off { "Unstarred" } else { "★ Starred" });
-            Ok(())
-        }
     }
 }
 

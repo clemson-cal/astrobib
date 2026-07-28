@@ -50,7 +50,6 @@ enum Mode {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Action {
     Select,
-    Star,
     Manuscript,
     Download,
     OpenPdf,
@@ -108,7 +107,6 @@ enum CopyItem {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum SortCol {
     Pdf,
-    Star,
     Year,
     Author,
     Title,
@@ -318,7 +316,6 @@ impl App {
         match a {
             Action::Select | Action::Filter | Action::Card | Action::Log | Action::Panel
             | Action::Quit => true,
-            Action::Star => keys.iter().any(|k| self.lib.in_personal(k)),
             Action::Manuscript => self.lib.manuscript.is_some() && !keys.is_empty(),
             Action::Download => {
                 self.dl_rx.is_none()
@@ -360,7 +357,6 @@ impl App {
                     self.toggle_row_selected(pos);
                 }
             }
-            Action::Star => self.toggle_star(),
             Action::Manuscript => self.toggle_manuscript(),
             Action::Download => self.download_pdfs(),
             Action::OpenPdf => self.open_pdfs(),
@@ -548,7 +544,6 @@ impl App {
             let (ea, eb) = (lib.get(a).unwrap(), lib.get(b).unwrap());
             let ord = match col {
                 SortCol::Pdf => has_cached_pdf(ea.key()).cmp(&has_cached_pdf(eb.key())),
-                SortCol::Star => ea.starred().cmp(&eb.starred()),
                 SortCol::Year => ea.year().cmp(&eb.year()),
                 SortCol::Author => ea
                     .first_author_last()
@@ -576,7 +571,7 @@ impl App {
         } else {
             // bool-ish and recency columns start with the interesting side
             // up: cached/starred/newest first; text columns start A→Z
-            (col, !matches!(col, SortCol::Year | SortCol::Star | SortCol::Pdf))
+            (col, !matches!(col, SortCol::Year | SortCol::Pdf))
         };
         self.rebuild_order();
     }
@@ -944,12 +939,12 @@ impl App {
             self.sort_by(col);
             return;
         }
-        // table: header at a.y, data rows below
+        // table: header at a.y, rule below it, data rows after
         let a = self.table_area;
-        if !hit(a, x, y) || y <= a.y {
+        if !hit(a, x, y) || y <= a.y + 1 {
             return;
         }
-        let pos = self.table.offset() + (y - a.y - 1) as usize;
+        let pos = self.table.offset() + (y - a.y - 2) as usize;
         if pos >= self.filtered.len() {
             return;
         }
@@ -979,58 +974,6 @@ impl App {
         let p = pdf::cache_path(key);
         if p.exists() && std::fs::remove_file(&p).is_ok() {
             self.note(MsgCat::Ok, format!("Cleared cached PDF for {key}"));
-        }
-    }
-
-    /// Star/unstar: the whole selection in selection mode (any unstarred →
-    /// star all, like the Python TUI), else the highlighted entry.
-    fn toggle_star(&mut self) {
-        if self.select_mode && !self.selected.is_empty() {
-            let keys: Vec<String> = self
-                .order
-                .iter()
-                .filter(|k| self.selected.contains(*k) && self.lib.personal.has(k))
-                .cloned()
-                .collect();
-            if keys.is_empty() {
-                self.note(MsgCat::Warn, "selection has no personal-library papers".to_string());
-                return;
-            }
-            let target = keys
-                .iter()
-                .any(|k| !self.lib.get(k).map(|e| e.starred()).unwrap_or(false));
-            let mut n = 0;
-            for k in &keys {
-                if self.lib.set_starred(k, target).is_ok() {
-                    n += 1;
-                }
-            }
-            self.note(
-                MsgCat::Ok,
-                format!("{} {n} paper(s)", if target { "★ Starred" } else { "Unstarred" }),
-            );
-            return;
-        }
-        let Some(key) = self.selected_key().map(str::to_string) else {
-            return;
-        };
-        // stars are personal: entries not in the personal library can't star
-        if !self.lib.personal.has(&key) {
-            self.note(MsgCat::Warn, format!("{key} is not in the personal library"));
-            return;
-        }
-        let starred = self.lib.get(&key).map(|e| e.starred()).unwrap_or(false);
-        match self.lib.set_starred(&key, !starred) {
-            Ok(()) => {
-                let e = self.lib.get(&key).unwrap();
-                let short = if e.short_key.is_empty() { &key } else { &e.short_key };
-                let msg = format!(
-                    "{} {short}",
-                    if !starred { "★ Starred" } else { "Unstarred" }
-                );
-                self.note(MsgCat::Ok, msg);
-            }
-            Err(err) => self.note(MsgCat::Err, format!("star failed: {err}")),
         }
     }
 
@@ -1209,7 +1152,6 @@ impl App {
             Mode::Normal => match code {
                 KeyCode::Char('q') => self.run_action(Action::Quit),
                 KeyCode::Char('/') => self.run_action(Action::Filter),
-                KeyCode::Char('s') => self.run_action(Action::Star),
                 KeyCode::Char('m') => self.run_action(Action::Manuscript),
                 KeyCode::Delete | KeyCode::Backspace => self.run_action(Action::Remove),
                 KeyCode::Char('p') => self.run_action(Action::Download),
@@ -1271,7 +1213,7 @@ impl App {
         self.panel_rows.clear();
         self.panel_copy_rows.clear();
         let log_h = if self.show_log {
-            (self.log.len().min(8) + 1) as u16
+            (self.log.len().min(8) + 2) as u16
         } else {
             0
         };
@@ -1467,7 +1409,6 @@ impl App {
             let text_label = if self.text_select { "mouse on" } else { "select text" };
             [
                 ("␣", sel_label, Action::Select),
-                ("s", "star ★", Action::Star),
                 ("m", "manuscr. ◆", Action::Manuscript),
                 ("p", "get PDF", Action::Download),
                 ("B", "browser DL", Action::BrowserDl),
@@ -1575,12 +1516,11 @@ impl App {
         let c_ind = Style::default().fg(Color::Cyan);
         let c_pdf = Style::default().fg(Color::Green);
         let c_ms = Style::default().fg(Color::Magenta);
-        let c_star = Style::default().fg(Color::Yellow);
         let c_year = Style::default().fg(Color::Green).add_modifier(Modifier::DIM);
         let c_author = Style::default().fg(Color::Gray);
         let c_key = Style::default().fg(Color::Cyan).add_modifier(Modifier::DIM);
-        let hov_row = if hit(area, self.hover.0, self.hover.1) && self.hover.1 > area.y {
-            Some(self.table.offset() + (self.hover.1 - area.y - 1) as usize)
+        let hov_row = if hit(area, self.hover.0, self.hover.1) && self.hover.1 > area.y + 1 {
+            Some(self.table.offset() + (self.hover.1 - area.y - 2) as usize)
         } else {
             None
         };
@@ -1607,7 +1547,6 @@ impl App {
                         if self.lib.in_manuscript(e.key()) { "●" } else { "" },
                         c_ms,
                     )),
-                    Cell::from(Span::styled(if e.starred() { "★" } else { "" }, c_star)),
                     Cell::from(Span::styled(e.year(), c_year)),
                     Cell::from(Span::styled(
                         e.first_author_last().trim_start_matches('{').to_string(),
@@ -1628,25 +1567,25 @@ impl App {
             .collect();
 
         // header: sortable columns get a click rect and a ▲/▼ marker
-        let widths: [u16; 8] = [2, 2, 2, 2, 6, 18, 0, 20];
+        let widths: [u16; 7] = [2, 2, 2, 6, 18, 0, 20];
         let (sort_col, asc) = self.sort;
         let mut hx = area.x;
         let mut header_cells: Vec<Cell> = vec![];
         let title_w = area
             .width
             .saturating_sub(widths.iter().sum::<u16>() + 7); // 7 col spacers
-        for (ci, base) in ["", "↓", "●", "★", "Year", "Author", "Title", "Key"]
+        let ms_header = if self.lib.manuscript.is_some() { "●" } else { "" };
+        for (ci, base) in ["", "↓", ms_header, "Year", "Author", "Title", "Key"]
             .iter()
             .enumerate()
         {
-            let cw = if ci == 6 { title_w } else { widths[ci] };
+            let cw = if ci == 5 { title_w } else { widths[ci] };
             let col = match ci {
                 1 => Some(SortCol::Pdf),
-                3 => Some(SortCol::Star),
-                4 => Some(SortCol::Year),
-                5 => Some(SortCol::Author),
-                6 => Some(SortCol::Title),
-                7 => Some(SortCol::Key),
+                3 => Some(SortCol::Year),
+                4 => Some(SortCol::Author),
+                5 => Some(SortCol::Title),
+                6 => Some(SortCol::Key),
                 _ => None,
             };
             let mut label = base.to_string();
@@ -1673,14 +1612,13 @@ impl App {
                 Constraint::Length(2),
                 Constraint::Length(2),
                 Constraint::Length(2),
-                Constraint::Length(2),
                 Constraint::Length(6),
                 Constraint::Length(18),
                 Constraint::Min(20),
                 Constraint::Length(20),
             ],
         )
-        .header(Row::new(header_cells))
+        .header(Row::new(header_cells).bottom_margin(1))
         .row_highlight_style(
             Style::default()
                 .bg(Color::DarkGray)
@@ -1688,6 +1626,16 @@ impl App {
         )
         .block(Block::default().borders(Borders::NONE));
         f.render_stateful_widget(table, area, &mut self.table);
+        // thin rule in the header's bottom margin
+        if area.height > 1 {
+            f.render_widget(
+                Paragraph::new(Span::styled(
+                    "─".repeat(area.width as usize),
+                    Style::default().fg(Color::DarkGray),
+                )),
+                Rect { x: area.x, y: area.y + 1, width: area.width, height: 1 },
+            );
+        }
     }
 
     /// The pub card, emulating the Python DetailPanel's flow: body (title,
@@ -1985,7 +1933,7 @@ impl App {
     /// The event-log pane: newest entries at the bottom, one line each,
     /// color-coded by category, mm:ss timestamps since launch.
     fn draw_log(&self, f: &mut Frame, area: Rect) {
-        let n = area.height.saturating_sub(1) as usize;
+        let n = area.height.saturating_sub(2) as usize;
         let start = self.log.len().saturating_sub(n);
         let mut lines: Vec<Line> = vec![];
         for (cat, secs, msg) in &self.log[start..] {
@@ -1998,7 +1946,7 @@ impl App {
             ]));
         }
         let block = Block::default()
-            .borders(Borders::TOP)
+            .borders(Borders::TOP | Borders::BOTTOM)
             .title(Span::styled(" Log ", Style::default().fg(Color::DarkGray)));
         f.render_widget(Paragraph::new(Text::from(lines)).block(block), area);
     }
