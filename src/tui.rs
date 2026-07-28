@@ -146,12 +146,12 @@ struct App {
     // ctrl+p actions panel: every action listed, unavailable ones dimmed,
     // rows clickable (hit-tested via panel_rows rebuilt each draw)
     show_actions: bool,
-    panel_rows: Vec<(u16, Action)>,
+    panel_rows: Vec<(Rect, Action)>,
     panel_area: Rect,
-    panel_copy_rows: Vec<(u16, CopyItem)>,
+    panel_copy_rows: Vec<(Rect, CopyItem)>,
     // panel visibility to restore when the y-chord finishes — the chord
     // force-shows the panel as a which-key menu, which shouldn't stick
-    copy_restore: Option<bool>,
+    copy_restore: Option<(bool, bool)>,
     // last known mouse position, for roll-over styling of clickables
     hover: (u16, u16),
     // event log: (category, seconds-since-start, message); L toggles the
@@ -373,7 +373,12 @@ impl App {
             Action::Filter => self.mode = Mode::Filter,
             Action::Card => self.show_detail = !self.show_detail,
             Action::Log => self.show_log = !self.show_log,
-            Action::Panel => self.show_actions = !self.show_actions,
+            Action::Panel => {
+                self.show_actions = !self.show_actions;
+                if self.show_actions {
+                    self.show_detail = true; // the panel lives in the card
+                }
+            }
             Action::Quit => self.quit = true,
         }
     }
@@ -898,12 +903,16 @@ impl App {
         }
         // control panel rows: the copy menu while the y-chord is active,
         // the actions list otherwise
-        if self.show_actions && hit(self.panel_area, x, y) {
+        if hit(self.panel_area, x, y) {
             if matches!(self.mode, Mode::Copy) {
-                if let Some(&(_, item)) = self.panel_copy_rows.iter().find(|(ry, _)| *ry == y) {
+                if let Some(&(_, item)) =
+                    self.panel_copy_rows.iter().find(|(r, _)| hit(*r, x, y))
+                {
                     self.do_copy(item);
                 }
-            } else if let Some(&(_, action)) = self.panel_rows.iter().find(|(ry, _)| *ry == y) {
+            } else if let Some(&(_, action)) =
+                self.panel_rows.iter().find(|(r, _)| hit(*r, x, y))
+            {
                 self.run_action(action);
             }
             return;
@@ -1032,14 +1041,16 @@ impl App {
             self.note(MsgCat::Warn, "nothing to copy".to_string());
             return;
         }
-        self.copy_restore = Some(self.show_actions);
+        self.copy_restore = Some((self.show_actions, self.show_detail));
         self.show_actions = true;
+        self.show_detail = true;
         self.mode = Mode::Copy;
     }
 
     fn exit_copy_mode(&mut self) {
-        if let Some(show) = self.copy_restore.take() {
-            self.show_actions = show;
+        if let Some((actions, detail)) = self.copy_restore.take() {
+            self.show_actions = actions;
+            self.show_detail = detail;
         }
         if matches!(self.mode, Mode::Copy) {
             self.mode = Mode::Normal;
@@ -1128,7 +1139,7 @@ impl App {
             return;
         }
         if mods.contains(KeyModifiers::CONTROL) && code == KeyCode::Char('p') {
-            self.show_actions = !self.show_actions;
+            self.run_action(Action::Panel);
             return;
         }
         match &mut self.mode {
@@ -1274,21 +1285,14 @@ impl App {
         if self.show_detail {
             constraints.push(Constraint::Length(48));
         }
-        if self.show_actions {
-            constraints.push(Constraint::Length(20));
-        }
         let areas = Layout::horizontal(constraints).split(main);
         let mut it = areas.iter();
         let table_area = *it.next().unwrap();
         let detail_area = self.show_detail.then(|| *it.next().unwrap());
-        let panel_area = self.show_actions.then(|| *it.next().unwrap());
 
         self.draw_table(f, table_area);
         if let Some(area) = detail_area {
             self.draw_detail(f, area);
-        }
-        if let Some(area) = panel_area {
-            self.draw_panel(f, area);
         } else {
             self.panel_area = Rect::default();
         }
@@ -1384,33 +1388,64 @@ impl App {
     /// key, label, and click target, unavailable ones dimmed (the Python
     /// key panel's behavior); Copy lists the clipboard targets of the
     /// y-chord the same way. Tab headers are clickable.
+    /// Height the actions/copy block needs at the card bottom (0 when
+    /// hidden): a separator plus items laid out in two columns.
+    fn panel_block_height(&self) -> u16 {
+        if matches!(self.mode, Mode::Copy) {
+            1 + 1 + 5 + 1 // separator, heading, 9 items / 2 cols, Esc hint
+        } else if self.show_actions {
+            1 + 8 // separator, 15 items / 2 cols
+        } else {
+            0
+        }
+    }
+
+    /// The actions (or copy-chord) block at the bottom of the pub card:
+    /// two columns, no title, every item clickable, unavailable dimmed.
     fn draw_panel(&mut self, f: &mut Frame, area: Rect) {
         self.panel_area = area;
         let copy_menu = matches!(self.mode, Mode::Copy);
-        let hover_row = |slf: &App, y: u16| -> bool {
-            hit(slf.panel_area, slf.hover.0, slf.hover.1) && slf.hover.1 == y
-        };
-        let row_styles = |avail: bool, hov: bool| {
-            let (mut ks, mut ls) = if avail {
-                (Style::default().fg(Color::Cyan), Style::default())
-            } else {
-                (
-                    Style::default().fg(Color::DarkGray),
-                    Style::default().fg(Color::DarkGray),
-                )
-            };
-            if avail && hov {
-                ks = ks.bg(Color::Rgb(50, 54, 62));
-                ls = ls.bg(Color::Rgb(50, 54, 62)).add_modifier(Modifier::BOLD);
+        let x0 = area.x + 3;
+        let w = area.width.saturating_sub(5);
+        let colw = w / 2;
+        let hv = self.hover;
+        let line_at = |f: &mut Frame, y: u16, line: Line| {
+            if y < area.y + area.height {
+                f.render_widget(
+                    Paragraph::new(line),
+                    Rect { x: x0, y, width: w, height: 1 },
+                );
             }
-            (ks, ls)
         };
-        let mut lines: Vec<Line> = vec![Line::from(Span::styled(
-            if copy_menu { "Copy → clipboard" } else { "Actions" },
-            Style::default().add_modifier(Modifier::BOLD),
-        ))];
+        f.render_widget(Block::default().borders(Borders::LEFT), area);
+        line_at(
+            f,
+            area.y,
+            Line::from(Span::styled(
+                "─".repeat(w as usize),
+                Style::default().fg(Color::DarkGray),
+            )),
+        );
+        let mut y = area.y + 1;
         if copy_menu {
-            let entries: &[(&str, &str, CopyItem)] = &[
+            line_at(
+                f,
+                y,
+                Line::from(Span::styled(
+                    "copy → clipboard",
+                    Style::default().add_modifier(Modifier::BOLD),
+                )),
+            );
+            y += 1;
+        }
+
+        // (key, label, avail, panel row payload)
+        enum Payload {
+            Act(Action),
+            Cp(CopyItem),
+        }
+        let items: Vec<(String, String, bool, Payload)> = if copy_menu {
+            [
                 ("y", "cite key", CopyItem::Key),
                 ("Y", "full key", CopyItem::FullKey),
                 ("b", "bibcode", CopyItem::Bibcode),
@@ -1420,69 +1455,78 @@ impl App {
                 ("p", "PDF path", CopyItem::PdfPath),
                 ("t", "title", CopyItem::Title),
                 ("A", "abstract", CopyItem::Abstract),
-            ];
-            for (i, (key, label, item)) in entries.iter().enumerate() {
-                let y = area.y + 1 + i as u16;
-                let avail = self.copy_value(*item).is_some();
-                if avail && y < area.y + area.height {
-                    self.panel_copy_rows.push((y, *item));
-                }
-                let (key_style, label_style) = row_styles(avail, hover_row(self, y));
-                lines.push(Line::from(vec![
-                    Span::styled(format!("{key:>3} "), key_style),
-                    Span::styled((*label).to_string(), label_style),
-                ]));
-            }
-            lines.push(Line::default());
-            lines.push(Line::from(Span::styled(
-                "Esc cancel",
-                Style::default().fg(Color::DarkGray),
-            )));
+            ]
+            .into_iter()
+            .map(|(k, l, it)| {
+                (k.to_string(), l.to_string(), self.copy_value(it).is_some(), Payload::Cp(it))
+            })
+            .collect()
         } else {
-            let entries: &[(&str, &str, Action)] = &[
-                ("␣", if self.select_mode { "sel. done (Esc)" } else { "select" }, Action::Select),
+            let sel_label = if self.select_mode { "done" } else { "select" };
+            let clear_label = if self.poll_cancel.is_some() { "cancel DL" } else { "clear PDF" };
+            let text_label = if self.text_select { "mouse on" } else { "select text" };
+            [
+                ("␣", sel_label, Action::Select),
                 ("s", "star ★", Action::Star),
-                ("m", "manuscript ◆", Action::Manuscript),
-                ("p", "download PDF", Action::Download),
+                ("m", "manuscr. ◆", Action::Manuscript),
+                ("p", "get PDF", Action::Download),
                 ("B", "browser DL", Action::BrowserDl),
                 ("", "pick PDF…", Action::PickPdf),
                 ("o", "open PDF", Action::OpenPdf),
-                (
-                    "X",
-                    if self.poll_cancel.is_some() { "cancel DL" } else { "clear PDF" },
-                    Action::ClearPdf,
-                ),
+                ("X", clear_label, Action::ClearPdf),
                 ("y", "copy…", Action::Copy),
-                (
-                    "v",
-                    if self.text_select { "mouse on" } else { "select text" },
-                    Action::TextSelect,
-                ),
+                ("v", text_label, Action::TextSelect),
                 ("⌫", "remove…", Action::Remove),
                 ("/", "filter", Action::Filter),
                 ("D", "pub card", Action::Card),
                 ("L", "event log", Action::Log),
                 ("q", "quit", Action::Quit),
-            ];
-            for (i, (key, label, action)) in entries.iter().enumerate() {
-                let y = area.y + 1 + i as u16;
-                let avail = self.available(*action);
-                if avail && y < area.y + area.height {
-                    self.panel_rows.push((y, *action));
+            ]
+            .into_iter()
+            .map(|(k, l, a)| (k.to_string(), l.to_string(), self.available(a), Payload::Act(a)))
+            .collect()
+        };
+
+        for pair in items.chunks(2) {
+            let mut spans: Vec<Span> = vec![];
+            for (ci, (key, label, avail, payload)) in pair.iter().enumerate() {
+                let cx = x0 + ci as u16 * (colw + 1);
+                let r = Rect { x: cx, y, width: colw, height: 1 };
+                if *avail {
+                    match payload {
+                        Payload::Act(a) => self.panel_rows.push((r, *a)),
+                        Payload::Cp(it) => self.panel_copy_rows.push((r, *it)),
+                    }
                 }
-                let (key_style, label_style) = row_styles(avail, hover_row(self, y));
-                lines.push(Line::from(vec![
-                    Span::styled(format!("{key:>3} "), key_style),
-                    Span::styled((*label).to_string(), label_style),
-                ]));
+                let hov = *avail && hit(r, hv.0, hv.1);
+                let (mut ks, mut ls) = if *avail {
+                    (Style::default().fg(Color::Cyan), Style::default())
+                } else {
+                    (
+                        Style::default().fg(Color::DarkGray),
+                        Style::default().fg(Color::DarkGray),
+                    )
+                };
+                if hov {
+                    ks = ks.bg(Color::Rgb(50, 54, 62));
+                    ls = ls.bg(Color::Rgb(50, 54, 62)).add_modifier(Modifier::BOLD);
+                }
+                let text = format!("{key:>2} {label}");
+                let pad = (colw as usize).saturating_sub(text.chars().count());
+                spans.push(Span::styled(format!("{key:>2} "), ks));
+                spans.push(Span::styled(format!("{label}{}", " ".repeat(pad)), ls));
+                spans.push(Span::raw(" "));
             }
+            line_at(f, y, Line::from(spans));
+            y += 1;
         }
-        let p = Paragraph::new(Text::from(lines)).block(
-            Block::default()
-                .borders(Borders::LEFT)
-                .padding(ratatui::widgets::Padding::horizontal(1)),
-        );
-        f.render_widget(p, area);
+        if copy_menu {
+            line_at(
+                f,
+                y,
+                Line::from(Span::styled("Esc cancel", Style::default().fg(Color::DarkGray))),
+            );
+        }
     }
 
     /// Centered modal list of ~/Downloads PDFs for the pick action.
@@ -1658,6 +1702,26 @@ impl App {
         let Some(key) = self.selected_key().map(str::to_string) else {
             return;
         };
+        // actions/copy menu occupies the card bottom, as tall as needed
+        let block_h = self.panel_block_height().min(area.height.saturating_sub(6));
+        let (area, panel_rect) = if block_h > 0 {
+            (
+                Rect { height: area.height - block_h, ..area },
+                Some(Rect {
+                    x: area.x,
+                    y: area.y + area.height - block_h,
+                    width: area.width,
+                    height: block_h,
+                }),
+            )
+        } else {
+            (area, None)
+        };
+        if let Some(pr) = panel_rect {
+            self.draw_panel(f, pr);
+        } else {
+            self.panel_area = Rect::default();
+        }
         let Some(e) = self.lib.get(&key) else { return };
         let x0 = area.x + 3; // border + 2 padding
         let w = area.width.saturating_sub(5) as usize;
@@ -1791,7 +1855,7 @@ impl App {
         line_at(f, y, Line::from(spans));
         y += 1;
         line_at(f, y, Line::from(Span::styled(sep, dimsep)));
-        y += 1;
+        y += 2; // a little air below the links row
 
         // ── PDF buttons (Python labels, colors, and visibility rules),
         //    drawn as rounded pills ─────────────────────────────────────
