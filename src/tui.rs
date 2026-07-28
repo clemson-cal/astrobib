@@ -109,10 +109,8 @@ enum CopyItem {
 enum Scope {
     Library,
     Ads {
-        label: String,
-        query: String,
+        tab: crate::tabs::Tab,
         articles: Vec<crate::ads::Article>,
-        limit: usize,
     },
 }
 
@@ -120,16 +118,14 @@ impl Scope {
     fn label(&self) -> &str {
         match self {
             Scope::Library => "Library",
-            Scope::Ads { label, .. } => label,
+            Scope::Ads { tab, .. } => &tab.label,
         }
     }
 }
 
 enum AdsMsg {
     Done {
-        label: String,
-        query: String,
-        limit: usize,
+        tab: crate::tabs::Tab,
         refresh_of: Option<usize>,
         result: Result<Vec<crate::ads::Article>, String>,
     },
@@ -369,6 +365,7 @@ impl App {
         self.scopes.remove(self.active_scope);
         let idx = self.active_scope.saturating_sub(1);
         self.set_scope(idx);
+        self.save_tabs();
     }
 
     /// S — compose an ADS query. Pre-filled from the active local filter
@@ -405,13 +402,69 @@ impl App {
             Some(doi) => format!("doi:\"{doi}\""),
             None => raw.clone(),
         };
-        let label: String = raw.chars().take(18).collect();
+        // refreshing keeps the existing tab identity; new queries mint one
+        let tab = match refresh_of.and_then(|i| self.scopes.get(i)) {
+            Some(Scope::Ads { tab, .. }) => {
+                let mut t = tab.clone();
+                t.limit = limit;
+                t
+            }
+            _ => crate::tabs::make_tab(&query, limit),
+        };
         let (tx, rx) = std::sync::mpsc::channel();
         self.ads_rx = Some(rx);
         self.note(MsgCat::Info, format!("Searching ADS: {query}"));
         std::thread::spawn(move || {
             let result = crate::ads::search(&query, limit).map_err(|e| e.to_string());
-            let _ = tx.send(AdsMsg::Done { label, query, limit, refresh_of, result });
+            let _ = tx.send(AdsMsg::Done { tab, refresh_of, result });
+        });
+    }
+
+    fn ms_root(&self) -> Option<std::path::PathBuf> {
+        self.lib.manuscript.as_ref().map(|m| m.root.clone())
+    }
+
+    /// Persist the current ADS scopes in tabs.json-compatible form,
+    /// user-local and keyed per manuscript context (shared with Python).
+    fn save_tabs(&self) {
+        let tabs: Vec<crate::tabs::Tab> = self
+            .scopes
+            .iter()
+            .filter_map(|s| match s {
+                Scope::Ads { tab, .. } => Some(tab.clone()),
+                _ => None,
+            })
+            .collect();
+        crate::tabs::save(&tabs, self.ms_root().as_deref());
+    }
+
+    /// Restore saved query scopes and refresh them all on one worker.
+    fn restore_tabs(&mut self) {
+        let saved = crate::tabs::load(self.ms_root().as_deref());
+        if saved.is_empty() {
+            return;
+        }
+        let first_idx = self.scopes.len();
+        let jobs: Vec<(usize, crate::tabs::Tab)> = saved
+            .iter()
+            .cloned()
+            .enumerate()
+            .map(|(i, t)| (first_idx + i, t))
+            .collect();
+        for t in saved {
+            self.scopes.push(Scope::Ads { tab: t, articles: vec![] });
+        }
+        if crate::ads::get_token().is_none() {
+            return; // scopes restore without results; refresh needs a token
+        }
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.ads_rx = Some(rx);
+        std::thread::spawn(move || {
+            for (idx, tab) in jobs {
+                let result =
+                    crate::ads::search(&tab.query, tab.limit).map_err(|e| e.to_string());
+                let _ = tx.send(AdsMsg::Done { tab, refresh_of: Some(idx), result });
+            }
         });
     }
 
@@ -423,23 +476,23 @@ impl App {
     /// Python steps (20/50/100/200) and re-run the query.
     fn step_limit(&mut self, dir: isize) {
         const STEPS: [usize; 4] = [20, 50, 100, 200];
-        let Some(Scope::Ads { query, limit, .. }) = self.scopes.get_mut(self.active_scope) else {
+        let Some(Scope::Ads { tab, .. }) = self.scopes.get_mut(self.active_scope) else {
             return;
         };
-        let idx = STEPS.iter().position(|&s| s >= *limit).unwrap_or(STEPS.len() - 1);
+        let idx = STEPS.iter().position(|&s| s >= tab.limit).unwrap_or(STEPS.len() - 1);
         let idx = (idx as isize + dir).clamp(0, STEPS.len() as isize - 1) as usize;
-        if STEPS[idx] == *limit {
+        if STEPS[idx] == tab.limit {
             return;
         }
-        *limit = STEPS[idx];
-        let (q, l) = (query.clone(), *limit);
+        tab.limit = STEPS[idx];
+        let (q, l) = (tab.query.clone(), tab.limit);
         self.note(MsgCat::Info, format!("limit → {l}"));
         self.run_ads_query_limit(q, Some(self.active_scope), l);
     }
 
     fn refresh_scope(&mut self) {
-        if let Some(Scope::Ads { query, limit, .. }) = self.scopes.get(self.active_scope) {
-            self.run_ads_query_limit(query.clone(), Some(self.active_scope), *limit);
+        if let Some(Scope::Ads { tab, .. }) = self.scopes.get(self.active_scope) {
+            self.run_ads_query_limit(tab.query.clone(), Some(self.active_scope), tab.limit);
         }
     }
 
@@ -479,18 +532,30 @@ impl App {
 
     fn drain_ads(&mut self) {
         let mut msgs = vec![];
+        let mut done = false;
         if let Some(rx) = &self.ads_rx {
-            while let Ok(m) = rx.try_recv() {
-                msgs.push(m);
+            loop {
+                match rx.try_recv() {
+                    Ok(m) => msgs.push(m),
+                    Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                        done = true;
+                        break;
+                    }
+                    Err(std::sync::mpsc::TryRecvError::Empty) => break,
+                }
             }
         }
-        for m in msgs {
+        if done {
             self.ads_rx = None;
+        }
+        for m in msgs {
             match m {
-                AdsMsg::Done { label, query, limit, refresh_of, result } => match result {
+                AdsMsg::Done { mut tab, refresh_of, result } => match result {
                     Ok(articles) => {
                         let n = articles.len();
-                        let scope = Scope::Ads { label, query, articles, limit };
+                        tab.refreshed = Some(crate::tabs::now_secs());
+                        tab.bibcodes = articles.iter().map(|a| a.bibcode.clone()).collect();
+                        let scope = Scope::Ads { tab, articles };
                         match refresh_of {
                             Some(i) if i < self.scopes.len() => self.scopes[i] = scope,
                             _ => {
@@ -498,6 +563,7 @@ impl App {
                                 self.set_scope(self.scopes.len() - 1);
                             }
                         }
+                        self.save_tabs();
                         self.note(MsgCat::Ok, format!("{n} ADS result(s)"));
                     }
                     Err(e) => self.note(MsgCat::Err, format!("ADS search failed: {e}")),
@@ -614,6 +680,7 @@ impl App {
 
     fn run(mut self, terminal: &mut ratatui::DefaultTerminal) -> anyhow::Result<()> {
         let t0 = std::time::Instant::now();
+        self.restore_tabs();
         // Hold the first paint until the pty size settles. Some terminals
         // (Warp) resize the pty in reaction to alt-screen entry — often
         // before crossterm's SIGWINCH handler exists, so no Resize event
