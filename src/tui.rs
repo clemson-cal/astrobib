@@ -873,9 +873,10 @@ impl App {
         (pos < self.row_count()).then_some(pos)
     }
 
-    /// The entry the pub card shows: hovering the citekey column previews
-    /// that row in the card (full-row hover proved too twitchy); otherwise
-    /// the cursor row.
+    /// The entry the pub card shows: hovering a scope-specific trigger
+    /// column previews that row in the card (full-row hover proved too
+    /// twitchy) — the Key column in the library, the Cited column in the
+    /// manuscript scope; otherwise the cursor row.
     fn card_key(&self) -> Option<&str> {
         if self.active_scope == 0 {
             let a = self.table_area;
@@ -888,7 +889,35 @@ impl App {
                 }
             }
         }
+        if let Some(Scope::Manuscript { rows }) = self.scopes.get(self.active_scope) {
+            // Cited column: after the 2-wide gutter and state columns
+            // (spacing 1), x spans [6, 6+26)
+            let a = self.table_area;
+            if self.hover.0 >= a.x + 6 && self.hover.0 < a.x + 6 + 26 {
+                if let Some(k) = self
+                    .hovered_table_pos()
+                    .and_then(|pos| rows.get(pos))
+                    .and_then(|r| r.key.as_deref())
+                {
+                    return Some(k);
+                }
+            }
+        }
         self.selected_key()
+    }
+
+    /// The ADS article position the card shows: hovering the Title
+    /// column previews that row; otherwise the cursor row.
+    fn card_article_pos(&self) -> Option<usize> {
+        let a = self.table_area;
+        let (author_w, _) = column_layout(a.width);
+        // Title column: gutter, ↓, ●, Year, Author plus 1-wide spacing
+        if self.hover.0 >= a.x + 17 + author_w {
+            if let Some(pos) = self.hovered_table_pos() {
+                return Some(pos);
+            }
+        }
+        self.table.selected()
     }
 
     fn selected_key(&self) -> Option<&str> {
@@ -2442,7 +2471,7 @@ impl App {
         let Some(Scope::Ads { articles, .. }) = self.scopes.get(self.active_scope) else {
             return;
         };
-        let Some(a) = self.table.selected().and_then(|p| articles.get(p)) else {
+        let Some(a) = self.card_article_pos().and_then(|p| articles.get(p)) else {
             return;
         };
         let title = a.title.clone();
