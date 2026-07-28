@@ -2347,7 +2347,7 @@ impl App {
         let mut x = area.x;
         let scope_labels: Vec<String> =
             self.scopes.iter().map(|s| s.label().to_string()).collect();
-        let push_one = |label: &str, bg: Color, fg: Color, idx: usize,
+        let push_one = |label: &str, bg: Color, fg: Color, idx: usize, rounded: bool,
                         x: &mut u16,
                         lips: &mut Vec<Span>,
                         spans: &mut Vec<Span>,
@@ -2356,15 +2356,26 @@ impl App {
             rects.push((Rect { x: *x, y: lip_y, width: wl, height: 2 }, idx));
             if ascii {
                 lips.push(Span::raw(" ".repeat(wl as usize + 1)));
-            } else {
+            } else if rounded {
                 let mid = "▄".repeat(wl.saturating_sub(2) as usize);
+                lips.push(Span::styled(format!("▗{mid}▖"), Style::default().fg(bg)));
+                lips.push(Span::raw(" "));
+            } else {
+                // square variant (the + new affordance): sharp corners
                 lips.push(Span::styled(
-                    format!("▗{mid}▖"),
+                    "▄".repeat(wl as usize),
                     Style::default().fg(bg),
                 ));
                 lips.push(Span::raw(" "));
             }
-            push_pill(spans, label, bg, fg);
+            if rounded {
+                push_pill(spans, label, bg, fg);
+            } else {
+                spans.push(Span::styled(
+                    format!(" {label} "),
+                    Style::default().bg(bg).fg(fg),
+                ));
+            }
             spans.push(Span::raw(" "));
             *x += wl + 1;
         };
@@ -2379,7 +2390,7 @@ impl App {
             } else {
                 (Color::Rgb(40, 44, 52), Color::Gray)
             };
-            push_one(label, bg, fg, i, &mut x, &mut lips, &mut spans, &mut self.scope_rects);
+            push_one(label, bg, fg, i, true, &mut x, &mut lips, &mut spans, &mut self.scope_rects);
         }
         let label = "+ new";
         let probe = Rect { x, y: lip_y, width: pill_width(label), height: 2 };
@@ -2389,7 +2400,7 @@ impl App {
         } else {
             (Color::Rgb(40, 44, 52), Color::DarkGray)
         };
-        push_one(label, bg, fg, usize::MAX, &mut x, &mut lips, &mut spans, &mut self.scope_rects);
+        push_one(label, bg, fg, usize::MAX, false, &mut x, &mut lips, &mut spans, &mut self.scope_rects);
         f.render_widget(
             Paragraph::new(Line::from(lips)),
             Rect { x: area.x, y: lip_y, width: area.width, height: 1 },
