@@ -127,6 +127,16 @@ The clean migration story for Models 2/3 is a genuine point in their favor — a
 
 ---
 
+## Postscript: the adopted direction — the two-tier model
+
+After reviewing this study the user proposed a synthesis, adopted as the direction forward:
+
+**The app always works on a two-tier model.** Tier 2 is the *pointed-to* local bib library — `astrobib [PATH]`, defaulting to the current directory's context — whether or not a manuscript (`.tex`) is present; local bib dirs become first-class, decoupled from "papers." Tier 1 is the global personal library, always known. In the app, the global tier's **enablement can be toggled**: when enabled, behavior is exactly today's Model 1 (merged reads, dual writes, membership, rescue); when disabled, global entries are hidden and writes target only the local tier — Model 2 behavior, on demand.
+
+Why this resolves the study: it keeps every Model 1 journey intact by default, makes the simple fully-local mode (Model 2) a *view state* instead of an architecture, requires zero on-disk migration (the dumb-format principle again), and leaves Models 3/4 reachable later by reinterpreting the write rule under the same two-tier vocabulary. The split's machinery stops being a hardcoded personal/manuscript pairing and becomes the general rule: *one local tier, one global tier, global participation switchable.*
+
+Specification points to fix during implementation: no-arg resolution (walk-up compatibility vs. literal cwd, and whether `.git` remains required), lazy `bib/` creation at an explicit PATH, toggle persistence (session vs. per-context), the toggle's UI surface (badge + key) and its gating of `●`/`m`/`is:ms`, and `tabs.json` context keying (proposed: unchanged, keyed by the tier-2 root).
+
 ## Recommendation
 
 **Keep Model 1** (with Model 4 as the designated refinement if dual-write ever chafes — see above). The split is ~300 lines and four concepts, purchased against the tool's two defining journeys: one-keystroke offline reuse of a decade of collected papers, and a browsable personal collection that accrues as a side effect of writing. The bug tail that justified this study was real but is now structurally closed — dual writes go through one path, removal goes through the rescue invariant, and identity-derived keys make content divergence impossible (the stores can differ only in *presence*, never in *what a key means*). The Rust port reproduced the whole feature against those invariants without incident, which is evidence the complexity is now specified rather than exploratory.
