@@ -1600,6 +1600,9 @@ class AstrobibApp(App):
                 self._set_status(f"Importing {bibcode}…")
                 self.run_worker(self._fetch_and_add(bibcode, None), exclusive=True)
                 return
+            doi = ads_client.doi_from_text(query)
+            if doi:
+                query = f'doi:"{doi}"'
             tab_data = tabs_state.make_tab(query, limit=limit)
             self._tab_states.append(tab_data)
             await self._create_ads_tab(tab_data, fetch=True)

@@ -32,6 +32,10 @@ _quota: dict | None = None
 
 _ABS_URL_RE = re.compile(r"(?:https?://)?(?:ui\.)?adsabs\.harvard\.edu/abs/([^/?#\s]+)")
 _PREPRINT_RE = re.compile(r"^\d{4}arXiv")
+_DOI_RE = re.compile(
+    r"^(?:(?:https?://)?(?:dx\.)?doi\.org/|doi:\s*)?(10\.\d{4,9}/[^\s\"]+)$",
+    re.IGNORECASE,
+)
 
 
 @dataclass
@@ -69,6 +73,16 @@ class Article:
 def bibcode_from_url(text: str) -> str | None:
     """Extract the bibcode from a pasted ADS abstract URL, or None."""
     m = _ABS_URL_RE.search(text.strip())
+    return unquote(m.group(1)) if m else None
+
+
+def doi_from_text(text: str) -> str | None:
+    """Extract the DOI from a pasted doi.org URL, doi: prefix, or bare DOI.
+
+    Matches only when the whole string is the identifier, so ordinary
+    queries that merely mention a DOI are left alone.
+    """
+    m = _DOI_RE.match(text.strip())
     return unquote(m.group(1)) if m else None
 
 

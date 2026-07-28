@@ -951,6 +951,9 @@ def _search_local(query: str, limit: int):
 
 
 def _search_ads(query: str, limit: int):
+    doi = ads_client.doi_from_text(query)
+    if doi:
+        query = f'doi:"{doi}"'
     try:
         articles = ads_client.search(query, limit=limit)
     except RuntimeError as e:
