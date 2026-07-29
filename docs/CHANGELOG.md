@@ -20,6 +20,8 @@
 - Every divider — the card's horizontal and vertical rules, the table header rule, the log and footer rules — shares one quite-dim color.
 
 ### Fixed
+- Literal `\ensuremath` no longer appears in titles: the wrapper expands to its contents, and common math macros (\sim ∼, \mu μ, Greek letters, \pm ±, \times ×, \deg °, \odot ⊙) convert to Unicode. Golden serialization vectors are untouched (display-only path).
+- Hovering inside the @ about modal (or the picker/confirm modals) no longer underlines or brightens the covered surfaces around the modal's edges: hover is suppressed beneath covering modals, and modals always draw topmost. The pyte driver gained mouse-motion injection and a hover-sweep scenario proving no outside cell changes.
 - A stalled browser download's ✕ ignored clicks: the waiting line began with a double-width ⏳, shifting every rendered cell one column right of its click rect. Single-width glyph; rect and glyphs agree again.
 - Older scanned papers corrupted the TUI: the ADS resolver answers PUB_PDF with a bare DOI (e.g. `10.1086/158924`), which was handed to `open`(1) as a file path — its error text landed in the raw-mode terminal. Resolver links must now be absolute URLs, `open`/`xdg-open` children are silenced and URL-guarded, and both the browser and auto-download ladders fall back to ADS's scan service (`ADS_PDF`) — so `p` now fetches old scanned articles directly.
 - The card's "no open-access PDF" status no longer repeats "browser ↓" directly beneath the browser pill it points at.
