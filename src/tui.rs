@@ -2962,7 +2962,7 @@ impl App {
         // terminals, shifting rows right — several columns of slack
         // beyond the longest line keep everything inside the borders
         let w = 58.min(frame.width.saturating_sub(4));
-        let h = (17 + u16::from(self.update_status.is_some())).min(frame.height);
+        let h = (18 + u16::from(self.update_status.is_some())).min(frame.height);
         let area = Rect {
             x: frame.width.saturating_sub(w) / 2,
             y: frame.height.saturating_sub(h) / 2,
@@ -3010,8 +3010,9 @@ impl App {
         );
         self.about_links = about_links;
         lines.push(Line::default());
+        lines.push(Line::from(Span::styled(" built with ratatui", dim)));
         lines.push(Line::from(Span::styled(
-            " built with ratatui · development assisted by Claude Fable 5",
+            " development assisted by Claude Fable 5",
             dim,
         )));
         lines.push(Line::default());
