@@ -153,6 +153,7 @@ enum AdsMsg {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum SortCol {
     Pdf,
+    InLib,
     Year,
     Author,
     Title,
@@ -170,6 +171,7 @@ enum CardBtn {
     Clear,
     Cancel,
     MsToggle,
+    Import,
 }
 
 struct App {
@@ -1023,14 +1025,34 @@ impl App {
     /// column previews that row; otherwise the cursor row.
     fn card_article_pos(&self) -> Option<usize> {
         let a = self.table_area;
-        let (author_w, _) = column_layout(a.width);
-        // Title column: gutter, ↓, ●, Year, Author plus 1-wide spacing
-        if self.hover.0 >= a.x + 17 + author_w {
+        // Key column (rightmost 20) — the same trigger as the library scope
+        if self.hover.0 >= a.x + a.width.saturating_sub(20) {
             if let Some(pos) = self.hovered_table_pos() {
                 return Some(pos);
             }
         }
         self.table.selected()
+    }
+
+    /// The cite key an article WOULD get on import — computable locally
+    /// because keys derive from stable identity (arXiv ID / bibcode,
+    /// first-author surname, identity year), all present in the article.
+    fn hypothetical_key(&self, a: &crate::ads::Article) -> String {
+        if let Some(e) = self.lib.get_by_bibcode(&a.bibcode) {
+            return e.key().to_string();
+        }
+        let mut d = crate::bib::Data::new();
+        d.insert("author".into(), a.author.join(" and "));
+        d.insert("year".into(), a.year.clone());
+        if let Some(ep) = crate::ads::arxiv_id(a) {
+            d.insert("eprint".into(), ep.to_string());
+            d.insert("archiveprefix".into(), "arXiv".into());
+        }
+        d.insert(
+            "adsurl".into(),
+            format!("https://ui.adsabs.harvard.edu/abs/{}", a.bibcode),
+        );
+        crate::keys::generate_key(&d)
     }
 
     fn selected_key(&self) -> Option<&str> {
@@ -1143,6 +1165,9 @@ impl App {
             let (ea, eb) = (lib.get(a).unwrap(), lib.get(b).unwrap());
             let ord = match col {
                 SortCol::Pdf => has_cached_pdf(ea.key()).cmp(&has_cached_pdf(eb.key())),
+                SortCol::InLib => lib
+                    .in_manuscript(ea.key())
+                    .cmp(&lib.in_manuscript(eb.key())),
                 SortCol::Year => ea.year().cmp(&eb.year()),
                 SortCol::Author => ea
                     .first_author_last()
@@ -1169,10 +1194,64 @@ impl App {
             (col, !self.sort.1)
         } else {
             // bool-ish and recency columns start with the interesting side
-            // up: cached/starred/newest first; text columns start A→Z
-            (col, !matches!(col, SortCol::Year | SortCol::Pdf))
+            // up: cached/in-library/newest first; text columns start A→Z
+            (col, !matches!(col, SortCol::Year | SortCol::Pdf | SortCol::InLib))
         };
-        self.rebuild_order();
+        if matches!(self.scopes.get(self.active_scope), Some(Scope::Ads { .. })) {
+            self.sort_ads_articles();
+        } else {
+            self.rebuild_order();
+        }
+    }
+
+    /// Re-sort the active ADS scope's articles in place (decorate-sort:
+    /// cache/library lookups happen before the mutable put-back).
+    fn sort_ads_articles(&mut self) {
+        let (col, asc) = self.sort;
+        let Some(Scope::Ads { articles, .. }) = self.scopes.get_mut(self.active_scope) else {
+            return;
+        };
+        let arts = std::mem::take(articles);
+        let mut decorated: Vec<(String, crate::ads::Article)> = arts
+            .into_iter()
+            .map(|a| {
+                let key = match col {
+                    SortCol::Key => String::new(), // filled below with lib access
+                    SortCol::Year => a.year.clone(),
+                    SortCol::Author => a
+                        .author
+                        .first()
+                        .map(|s| s.split(',').next().unwrap_or("").trim().to_lowercase())
+                        .unwrap_or_default(),
+                    SortCol::Title => a.title.to_lowercase(),
+                    _ => String::new(), // Pdf/InLib filled below with lib access
+                };
+                (key, a)
+            })
+            .collect();
+        if matches!(col, SortCol::Pdf | SortCol::InLib | SortCol::Key) {
+            for (k, a) in decorated.iter_mut() {
+                let entry = self.lib.get_by_bibcode(&a.bibcode);
+                *k = match col {
+                    SortCol::Pdf => {
+                        let ck = entry
+                            .map(|e| e.key().to_string())
+                            .unwrap_or_else(|| a.bibcode.clone());
+                        u8::from(pdf::is_cached(&ck)).to_string()
+                    }
+                    SortCol::Key => self.hypothetical_key(a),
+                    _ => u8::from(entry.is_some()).to_string(),
+                };
+            }
+        }
+        decorated.sort_by(|x, y| {
+            let ord = x.0.cmp(&y.0).then(x.1.bibcode.cmp(&y.1.bibcode));
+            if asc { ord } else { ord.reverse() }
+        });
+        let sorted: Vec<crate::ads::Article> = decorated.into_iter().map(|(_, a)| a).collect();
+        if let Some(Scope::Ads { articles, .. }) = self.scopes.get_mut(self.active_scope) {
+            *articles = sorted;
+        }
     }
 
     /// m — port of action_toggle_manuscript's library-view rule: if any
@@ -1494,8 +1573,20 @@ impl App {
             }
             return;
         }
-        // copy-regions: the card text copies its own entry's datum
+        // copy-regions: the card text copies its own entry's datum; in
+        // ADS scopes values come from the shown article itself
         if let Some(&(_, item)) = self.card_yanks.iter().find(|(r, _)| hit(*r, x, y)) {
+            if let Some(Scope::Ads { articles, .. }) = self.scopes.get(self.active_scope) {
+                if let Some(a) = self.card_article_pos().and_then(|p| articles.get(p)) {
+                    let text = match item {
+                        CopyItem::Title => a.title.clone(),
+                        CopyItem::Abstract => crate::ads::clean_abstract(&a.abstract_),
+                        _ => self.hypothetical_key(a),
+                    };
+                    self.finish_copy(&text);
+                }
+                return;
+            }
             if let Some(key) = self.selected_key().map(str::to_string) {
                 self.do_copy_single(key, item);
             }
@@ -1522,6 +1613,15 @@ impl App {
         }
         // pub card buttons (act on the card's entry)
         if let Some(&(_, btn)) = self.card_buttons.iter().find(|(r, _)| hit(*r, x, y)) {
+            if btn == CardBtn::Import {
+                if let Some(Scope::Ads { articles, .. }) = self.scopes.get(self.active_scope) {
+                    if let Some(a) = self.card_article_pos().and_then(|p| articles.get(p)) {
+                        let bc = a.bibcode.clone();
+                        self.import_bibcode(bc);
+                    }
+                }
+                return;
+            }
             if let Some(key) = self.selected_key().map(str::to_string) {
                 match btn {
                     CardBtn::Arxiv => self.download_single(key, pdf::Source::Arxiv),
@@ -1533,6 +1633,7 @@ impl App {
                         self.note(MsgCat::Ok, format!("Opened {key}"));
                     }
                     CardBtn::Clear | CardBtn::Cancel => self.clear_card_pdf(&key),
+                    CardBtn::Import => {} // handled above for ADS scopes
                     CardBtn::MsToggle => {
                         let res = if self.lib.in_manuscript(&key) {
                             let rescued = !self.lib.in_personal(&key);
@@ -2443,6 +2544,10 @@ impl App {
                             au_style,
                         )),
                         Cell::from(Span::styled(a.title.clone(), ti_style)),
+                        Cell::from(Span::styled(
+                            self.hypothetical_key(a),
+                            Style::default().fg(Color::Cyan).add_modifier(Modifier::DIM),
+                        )),
                     ]);
                     if cursor == Some(pos) {
                         row.style(Style::default().bg(Color::Rgb(34, 40, 52)))
@@ -2451,17 +2556,45 @@ impl App {
                     }
                 })
                 .collect();
-            let header: Vec<Span> = ["", "↓", "●", "Year", "Author", "Title"]
-                .iter()
-                .zip([2u16, 2, 2, 6, author_w, 0])
-                .flat_map(|(l, w)| {
-                    let pad = (w as usize).saturating_sub(l.chars().count());
-                    [
-                        Span::styled(*l, Style::default().add_modifier(Modifier::BOLD)),
-                        Span::raw(" ".repeat(pad + 1)),
-                    ]
-                })
-                .collect();
+            let (sort_col, asc) = self.sort;
+            let mut hx = area.x;
+            let mut header: Vec<Span> = vec![];
+            for (ci, base) in ["", "↓", "●", "Year", "Author", "Title", "Key"].iter().enumerate() {
+                let w = [2u16, 2, 2, 6, author_w, 0, 20][ci];
+                let cw = if ci == 5 {
+                    area.width
+                        .saturating_sub(hx - area.x)
+                        .saturating_sub(21)
+                } else {
+                    w
+                };
+                let col = match ci {
+                    1 => Some(SortCol::Pdf),
+                    2 => Some(SortCol::InLib),
+                    3 => Some(SortCol::Year),
+                    4 => Some(SortCol::Author),
+                    5 => Some(SortCol::Title),
+                    6 => Some(SortCol::Key),
+                    _ => None,
+                };
+                let mut label = base.to_string();
+                let mut style = Style::default().add_modifier(Modifier::BOLD);
+                if let Some(col) = col {
+                    let r = Rect { x: hx, y: area.y, width: cw.max(1), height: 1 };
+                    self.sort_headers.push((r, col));
+                    if sort_col == col {
+                        let arrow = if asc { "▲" } else { "▼" };
+                        label = if cw <= 2 { format!("{base}{arrow}") } else { format!("{base} {arrow}") };
+                    }
+                    if hit(r, self.hover.0, self.hover.1) {
+                        style = style.fg(Color::Cyan).add_modifier(Modifier::UNDERLINED);
+                    }
+                }
+                let pad = (cw as usize).saturating_sub(label.chars().count());
+                header.push(Span::styled(label, style));
+                header.push(Span::raw(" ".repeat(pad.min(200) + 1)));
+                hx += cw + 1;
+            }
             f.render_widget(
                 Paragraph::new(Line::from(header)),
                 Rect { x: area.x, y: area.y, width: area.width, height: 1 },
@@ -2488,6 +2621,7 @@ impl App {
                     Constraint::Length(6),
                     Constraint::Length(author_w),
                     Constraint::Min(20),
+                    Constraint::Length(20),
                 ],
             )
             .block(Block::default().borders(Borders::NONE));
@@ -2614,6 +2748,7 @@ impl App {
             let cw = if ci == 5 { title_w } else { widths[ci] };
             let col = match ci {
                 1 => Some(SortCol::Pdf),
+                2 if show_membership => Some(SortCol::InLib),
                 3 => Some(SortCol::Year),
                 4 => Some(SortCol::Author),
                 5 => Some(SortCol::Title),
@@ -2682,15 +2817,17 @@ impl App {
         }
     }
 
-    /// The pub card for an ADS result: body and links, plus import state.
+    /// The pub card for an ADS result: body, links, citation count, an
+    /// import button, and click-to-copy regions like the library card.
     fn draw_article_card(&mut self, f: &mut Frame, area: Rect) {
-        self.card_yanks.clear();
         self.card_buttons.clear();
         self.card_links.clear();
         let Some(Scope::Ads { articles, .. }) = self.scopes.get(self.active_scope) else {
+            self.card_yanks.clear();
             return;
         };
         let Some(a) = self.card_article_pos().and_then(|p| articles.get(p)) else {
+            self.card_yanks.clear();
             return;
         };
         let title = a.title.clone();
@@ -2701,7 +2838,28 @@ impl App {
         let doi = a.doi.first().cloned().unwrap_or_default();
         let eprint = crate::ads::arxiv_id(a).map(str::to_string).unwrap_or_default();
         let cites = a.citation_count;
-        let in_lib = self.lib.get_by_bibcode(&bibcode).map(|e| e.key().to_string());
+        let hyp_key = self.hypothetical_key(a);
+        let in_lib = self.lib.get_by_bibcode(&bibcode).is_some();
+
+        let hv = self.hover;
+        let hov_region: Option<CopyItem> = self
+            .card_yanks
+            .iter()
+            .find(|(r, _)| hit(*r, hv.0, hv.1))
+            .map(|&(_, item)| item);
+        if let Some(item) = hov_region {
+            let what = match item {
+                CopyItem::Title => "title",
+                CopyItem::Abstract => "abstract",
+                _ => "cite key",
+            };
+            self.hover_hint = Some(format!("⧉ click to copy {what}"));
+        }
+        let mut yanks: Vec<(Rect, CopyItem)> = vec![];
+        let tint = Style::default().bg(Color::Rgb(44, 48, 56));
+        let region_style = |base: Style, item: CopyItem| {
+            if hov_region == Some(item) { base.patch(tint) } else { base }
+        };
 
         let x0 = area.x + 3;
         let w = area.width.saturating_sub(5) as usize;
@@ -2716,23 +2874,31 @@ impl App {
             }
         };
         for l in wrap_text(&title, w) {
+            let lw = l.chars().count() as u16;
+            yanks.push((Rect { x: x0, y, width: lw.max(1), height: 1 }, CopyItem::Title));
             line_at(
                 f,
                 y,
                 Line::from(Span::styled(
                     l,
-                    Style::default().add_modifier(Modifier::BOLD | Modifier::ITALIC),
+                    region_style(
+                        Style::default().add_modifier(Modifier::BOLD | Modifier::ITALIC),
+                        CopyItem::Title,
+                    ),
                 )),
             );
             y += 1;
         }
         y += 1;
-        let byline = format!("{}   ·   {year}", format_authors(&authors));
+        let mut byline = format!("{}   ·   {year}", format_authors(&authors));
+        if let Some(n) = cites {
+            byline.push_str(&format!("   ·   cited by {n}"));
+        }
         for l in wrap_text(&byline, w) {
             line_at(f, y, Line::from(Span::styled(l, Style::default().fg(Color::DarkGray))));
             y += 1;
         }
-        let rest = 3 + 3; // links block + gap + footer line
+        let rest = 3 + 1 + 2; // links block + buttons + footer
         if !abstract_.is_empty() && y + rest < bottom {
             y += 1;
             let avail = (bottom - y).saturating_sub(rest) as usize;
@@ -2744,7 +2910,16 @@ impl App {
                 }
             }
             for l in abs_lines {
-                line_at(f, y, Line::from(l));
+                let lw = l.chars().count() as u16;
+                yanks.push((
+                    Rect { x: x0, y, width: lw.max(1), height: 1 },
+                    CopyItem::Abstract,
+                ));
+                line_at(
+                    f,
+                    y,
+                    Line::from(Span::styled(l, region_style(Style::default(), CopyItem::Abstract))),
+                );
                 y += 1;
             }
         }
@@ -2753,10 +2928,9 @@ impl App {
         line_at(f, y, Line::from(Span::styled(sep.clone(), dimsep)));
         y += 1;
         let cyan = Style::default().fg(Color::Cyan);
-        let hv = self.hover;
         let mut spans: Vec<Span> = vec![];
         let mut lx = x0;
-        let link = |label: String, url: String, spans: &mut Vec<Span>, lx: &mut u16, links: &mut Vec<(Rect, String)>| {
+        let link = |label: String, url: String, y: u16, spans: &mut Vec<Span>, lx: &mut u16, links: &mut Vec<(Rect, String)>| {
             let wl = label.chars().count() as u16;
             let r = Rect { x: *lx, y, width: wl, height: 1 };
             let style = if hit(r, hv.0, hv.1) {
@@ -2772,6 +2946,7 @@ impl App {
         link(
             "ADS".into(),
             format!("https://ui.adsabs.harvard.edu/abs/{bibcode}/abstract"),
+            y,
             &mut spans,
             &mut lx,
             &mut self.card_links,
@@ -2780,36 +2955,53 @@ impl App {
             link(
                 format!("arXiv:{eprint}"),
                 format!("https://arxiv.org/abs/{eprint}"),
+                y,
                 &mut spans,
                 &mut lx,
                 &mut self.card_links,
             );
         }
         if !doi.is_empty() {
-            link("DOI".into(), format!("https://doi.org/{doi}"), &mut spans, &mut lx, &mut self.card_links);
+            link("DOI".into(), format!("https://doi.org/{doi}"), y, &mut spans, &mut lx, &mut self.card_links);
         }
         line_at(f, y, Line::from(spans));
         y += 1;
         line_at(f, y, Line::from(Span::styled(sep, dimsep)));
         y += 2;
-        let mut foot: Vec<Span> = vec![];
-        match &in_lib {
-            Some(key) => {
-                foot.push(Span::styled("● in library  ", Style::default().fg(Color::Magenta)));
-                foot.push(Span::styled(key.clone(), cyan));
-            }
-            None => {
-                foot.push(Span::styled(bibcode.clone(), Style::default().fg(Color::DarkGray)));
-                foot.push(Span::styled("   i imports", Style::default().fg(Color::Cyan)));
-            }
+        // import button (not yet in the library) — the i shortcut lives in ?
+        if !in_lib {
+            let label = "import";
+            let wl = pill_width(label);
+            let r = Rect { x: x0, y, width: wl, height: 1 };
+            self.card_buttons.push((r, CardBtn::Import));
+            let bg = if hit(r, hv.0, hv.1) {
+                Color::Rgb(58, 63, 72)
+            } else {
+                Color::Rgb(40, 44, 52)
+            };
+            let mut bspans: Vec<Span> = vec![];
+            push_pill(&mut bspans, label, bg, Color::Green);
+            line_at(f, y, Line::from(bspans));
+            y += 2;
         }
-        if let Some(n) = cites {
+        let mut foot: Vec<Span> = vec![Span::styled(
+            hyp_key.clone(),
+            region_style(cyan, CopyItem::Key),
+        )];
+        yanks.push((
+            Rect { x: x0, y, width: hyp_key.chars().count() as u16, height: 1 },
+            CopyItem::Key,
+        ));
+        if in_lib {
+            foot.push(Span::styled("  ● in library", Style::default().fg(Color::Magenta)));
+        } else {
             foot.push(Span::styled(
-                format!("   · cited by {n}"),
+                "  (key on import)",
                 Style::default().fg(Color::DarkGray),
             ));
         }
         line_at(f, y, Line::from(foot));
+        self.card_yanks = yanks;
     }
 
     /// The pub card, emulating the Python DetailPanel's flow: body (title,
