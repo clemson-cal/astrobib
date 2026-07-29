@@ -4141,7 +4141,10 @@ impl App {
         let cyan = Style::default().fg(Color::Cyan);
         let mut spans = vec![
             Span::styled(short.to_string(), cyan),
-            Span::styled(suffix, Style::default().fg(Color::DarkGray).add_modifier(Modifier::DIM)),
+            // dim cyan, not DarkGray+DIM: stays legible in themes where
+            // doubly-dimmed gray vanishes, and sits closer to the
+            // leading portion's color
+            Span::styled(suffix, Style::default().fg(Color::Cyan).add_modifier(Modifier::DIM)),
         ];
         let preprint = e
             .adsurl()
