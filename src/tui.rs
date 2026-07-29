@@ -174,7 +174,6 @@ struct Task {
     id: u64,
     label: String,
     kind: TaskKind,
-    started: std::time::Instant,
     cancelled: bool,
     /// cache keys the task may write; discarding a cancelled download
     /// removes them again, restoring the failed-download end state
@@ -199,6 +198,24 @@ enum LinkTarget {
     Query(CardBtn),
 }
 
+/// Footer hint for a card affordance: what happens, and the key.
+fn card_hint(btn: CardBtn) -> &'static str {
+    match btn {
+        CardBtn::Arxiv => "↓ fetch the PDF from arXiv  ·  p",
+        CardBtn::Oa => "↓ fetch the open-access PDF via ADS  ·  p",
+        CardBtn::Browser => "↓ download via the browser, watching ~/Downloads  ·  B",
+        CardBtn::Pick => "⤷ import a PDF from the filesystem",
+        CardBtn::Open => "↗ open the cached PDF  ·  o",
+        CardBtn::Clear => "✕ remove the cached PDF  ·  X",
+        CardBtn::Cancel => "✕ stop watching for the download",
+        CardBtn::MsToggle => "◆ add to / remove from the manuscript db  ·  m",
+        CardBtn::Import => "→ import into the library  ·  i",
+        CardBtn::BibView => "@ show the .bib entry verbatim  ·  v",
+        CardBtn::Citations => "⌕ new query: papers citing this one",
+        CardBtn::Refs => "⌕ new query: papers this one cites",
+    }
+}
+
 /// Render the card's vertical link stack: one row per destination, the
 /// leftmost badge naming its kind — ↗ opens the browser, ⌕ acts inside
 /// astrobib (spawns a query scope). Registers whole-row click rects
@@ -214,6 +231,7 @@ fn draw_link_stack(
     items: Vec<(String, LinkTarget)>,
     card_links: &mut Vec<(Rect, String)>,
     card_buttons: &mut Vec<(Rect, CardBtn)>,
+    hint: &mut Option<String>,
 ) -> u16 {
     let cyan = Style::default().fg(Color::Cyan);
     let dim = Style::default().fg(Color::DarkGray);
@@ -225,15 +243,18 @@ fn draw_link_stack(
         let wl = (badge.chars().count() + 1 + label.chars().count()) as u16;
         let r = Rect { x: x0, y, width: wl, height: 1 };
         if y < bottom {
+            let hov = hit(r, hover.0, hover.1);
+            if hov {
+                *hint = Some(match &target {
+                    LinkTarget::Url(_) => format!("↗ open {label} in the browser"),
+                    LinkTarget::Query(btn) => card_hint(*btn).to_string(),
+                });
+            }
             match target {
                 LinkTarget::Url(url) => card_links.push((r, url)),
                 LinkTarget::Query(btn) => card_buttons.push((r, btn)),
             }
-            let style = if hit(r, hover.0, hover.1) {
-                cyan.add_modifier(Modifier::UNDERLINED)
-            } else {
-                cyan
-            };
+            let style = if hov { cyan.add_modifier(Modifier::UNDERLINED) } else { cyan };
             f.render_widget(
                 Paragraph::new(Line::from(vec![
                     Span::styled(badge, dim),
@@ -260,6 +281,8 @@ enum CardBtn {
     Cancel,
     MsToggle,
     Import,
+    // show the .bib file verbatim in the card
+    BibView,
     // citation-graph navigation: spawn citations(...)/references(...)
     // query scopes for the card's bibcode (resolved at dispatch time)
     Citations,
@@ -284,6 +307,8 @@ struct App {
     dl_rx: Option<std::sync::mpsc::Receiver<DlMsg>>,
     // ? keyboard cheat-sheet overlay; any key or click dismisses
     show_help: bool,
+    // pub card shows the raw .bib file instead of the formatted view
+    show_bib_source: bool,
     // copy-chord modal region and its clickable rows
     panel_area: Rect,
     panel_copy_rows: Vec<(Rect, CopyItem)>,
@@ -322,9 +347,6 @@ struct App {
     // remove each row when its result arrives
     tasks: Vec<Task>,
     next_task_id: u64,
-    show_tasks: bool,
-    task_cancel_rects: Vec<(Rect, u64)>, // per-row ✕ affordances
-    tasks_badge: Rect, // the clickable ⧗N footer indicator
     pick_area: Rect,
     confirm_btns: Vec<(Rect, bool)>, // (rect, is_confirm)
     // plain clicks on the same row within 400ms form a double-click
@@ -463,6 +485,7 @@ impl App {
             table_area: Rect::default(),
             dl_rx: None,
             show_help: false,
+            show_bib_source: false,
             panel_area: Rect::default(),
             panel_copy_rows: vec![],
             hover: (u16::MAX, u16::MAX),
@@ -485,9 +508,6 @@ impl App {
             poll_cancel: None,
             tasks: vec![],
             next_task_id: 0,
-            show_tasks: false,
-            task_cancel_rects: vec![],
-            tasks_badge: Rect::default(),
             pick_area: Rect::default(),
             confirm_btns: vec![],
             last_click: None,
@@ -542,8 +562,9 @@ impl App {
             return; // library and manuscript scopes are permanent
         }
         self.scopes.remove(self.active_scope);
-        let idx = self.active_scope.saturating_sub(1);
-        self.set_scope(idx);
+        // stay in place: the capsule that was to the right now holds
+        // this index (set_scope clamps when we closed the last one)
+        self.set_scope(self.active_scope);
         self.save_tabs();
     }
 
@@ -1063,7 +1084,6 @@ impl App {
             id,
             label,
             kind,
-            started: std::time::Instant::now(),
             cancelled: false,
             keys,
         });
@@ -1973,15 +1993,6 @@ impl App {
             self.show_help = false; // any click dismisses the cheat-sheet
             return;
         }
-        // tasks overlay: a row's ✕ cancels; any other click dismisses
-        if self.show_tasks {
-            if let Some(&(_, id)) = self.task_cancel_rects.iter().find(|(r, _)| hit(*r, x, y)) {
-                self.cancel_task(id);
-            } else {
-                self.show_tasks = false;
-            }
-            return;
-        }
         // clicking away from the query prompt dismisses it, and the click
         // then performs its normal action (e.g. switching scope); the
         // filter likewise leaves entry mode, but stays applied (as ⏎) —
@@ -2000,11 +2011,6 @@ impl App {
                     self.note(MsgCat::Warn, "removal cancelled".to_string());
                 }
             }
-            return;
-        }
-        // the ⧗N footer indicator opens the pending-tasks overlay
-        if hit(self.tasks_badge, x, y) {
-            self.show_tasks = true;
             return;
         }
         // copy-regions: the card text copies its own entry's datum; in
@@ -2047,6 +2053,10 @@ impl App {
         }
         // pub card buttons (act on the card's entry)
         if let Some(&(_, btn)) = self.card_buttons.iter().find(|(r, _)| hit(*r, x, y)) {
+            if btn == CardBtn::BibView {
+                self.show_bib_source = !self.show_bib_source;
+                return;
+            }
             if btn == CardBtn::Import {
                 if let Some(Scope::Ads { articles, .. }) = self.scopes.get(self.active_scope) {
                     if let Some(a) = self.card_article_pos().and_then(|p| articles.get(p)) {
@@ -2083,7 +2093,7 @@ impl App {
                     CardBtn::Clear | CardBtn::Cancel => self.clear_card_pdf(&key),
                     // handled above (Import for ADS scopes; the
                     // citation-graph pair for every scope)
-                    CardBtn::Import | CardBtn::Citations | CardBtn::Refs => {}
+                    CardBtn::Import | CardBtn::Citations | CardBtn::Refs | CardBtn::BibView => {}
                     CardBtn::MsToggle => {
                         let res = if self.lib.in_manuscript(&key) {
                             let rescued = !self.lib.in_personal(&key);
@@ -2297,19 +2307,6 @@ impl App {
             self.show_help = false; // any key dismisses the cheat-sheet
             return;
         }
-        if self.show_tasks {
-            match code {
-                KeyCode::Esc | KeyCode::Char('T') => self.show_tasks = false,
-                KeyCode::Char(c @ '1'..='9') => {
-                    let idx = c as usize - '1' as usize;
-                    if let Some(id) = self.tasks.get(idx).map(|t| t.id) {
-                        self.cancel_task(id);
-                    }
-                }
-                _ => {}
-            }
-            return;
-        }
         match &mut self.mode {
             Mode::Filter => match code {
                 KeyCode::Esc => {
@@ -2429,6 +2426,7 @@ impl App {
                 KeyCode::Char('D') | KeyCode::Char('z') => self.run_action(Action::Card),
                 KeyCode::Char('?') => self.run_action(Action::Help),
                 KeyCode::Char('t') => self.run_action(Action::GlobalTier),
+                KeyCode::Char('v') => self.show_bib_source = !self.show_bib_source,
                 KeyCode::Char('a') => self.select_all(true),
                 KeyCode::Char('A') => self.select_all(false),
                 KeyCode::Char('S') => self.open_ads_prompt(),
@@ -2442,7 +2440,6 @@ impl App {
                 }
                 KeyCode::Char('i') => self.import_highlighted(),
                 KeyCode::Char('L') => self.run_action(Action::Log),
-                KeyCode::Char('T') => self.show_tasks = true,
                 KeyCode::Char('y') => self.run_action(Action::Copy),
                 KeyCode::Char('Y') => self.do_copy(CopyItem::FullKey),
                 KeyCode::Char(' ') => self.run_action(Action::Select),
@@ -2547,11 +2544,6 @@ impl App {
         }
         if self.show_help {
             self.draw_help(f);
-        }
-        if self.show_tasks {
-            self.draw_tasks(f);
-        } else {
-            self.task_cancel_rects.clear();
         }
         if self.show_log {
             self.draw_log(f, log_area);
@@ -2736,8 +2728,8 @@ impl App {
             ("/", "filter", Some(Action::Filter)),
             ("D", "pub card", Some(Action::Card)),
             ("L", "event log", Some(Action::Log)),
-            ("T", "pending tasks", None),
             ("t", "global tier", Some(Action::GlobalTier)),
+            ("v", "bib source", None),
             ("?", "this cheat-sheet", Some(Action::Help)),
             ("q", "quit", Some(Action::Quit)),
         ];
@@ -2784,89 +2776,6 @@ impl App {
     /// in-flight background task with elapsed time and a ✕ cancel
     /// affordance; digits 1-9 cancel by row. A task that finishes while
     /// the overlay is open simply disappears on the next frame.
-    fn draw_tasks(&mut self, f: &mut Frame) {
-        self.task_cancel_rects.clear();
-        let frame = f.area();
-        let n = self.tasks.len();
-        let h = (n.max(1) as u16 + 4).min(frame.height);
-        let w = 56.min(frame.width.saturating_sub(4));
-        let area = Rect {
-            x: frame.width.saturating_sub(w) / 2,
-            y: frame.height.saturating_sub(h) / 2,
-            width: w,
-            height: h,
-        };
-        f.render_widget(ratatui::widgets::Clear, area);
-        let inner = w.saturating_sub(2) as usize;
-        let mut lines: Vec<Line> = vec![];
-        let mut rects: Vec<(Rect, u64)> = vec![];
-        if self.tasks.is_empty() {
-            lines.push(Line::from(Span::styled(
-                " no pending tasks",
-                Style::default().fg(Color::DarkGray),
-            )));
-        }
-        for (i, t) in self.tasks.iter().enumerate() {
-            let y = area.y + 1 + i as u16;
-            let secs = t.started.elapsed().as_secs();
-            let elapsed = if secs >= 60 {
-                format!("{}m{:02}s", secs / 60, secs % 60)
-            } else {
-                format!("{secs}s")
-            };
-            // fixed columns — " N  label……  elapsed  ✕" — so the ✕
-            // click rect is exact
-            let label_w = inner.saturating_sub(14);
-            let mut label: String = t.label.chars().take(label_w).collect();
-            let pad = label_w.saturating_sub(label.chars().count());
-            label.push_str(&" ".repeat(pad));
-            let num = if i < 9 && !t.cancelled {
-                format!(" {}  ", i + 1)
-            } else {
-                "    ".to_string()
-            };
-            let dim = Style::default().fg(Color::DarkGray);
-            let (num_s, label_s) = if t.cancelled {
-                (dim, dim)
-            } else {
-                (Style::default().fg(Color::Cyan), Style::default())
-            };
-            let mut spans = vec![
-                Span::styled(num, num_s),
-                Span::styled(label, label_s),
-                Span::styled(format!("{elapsed:>7} "), dim),
-            ];
-            if t.cancelled {
-                spans.push(Span::styled(" …", dim)); // awaiting discard
-            } else {
-                let r = Rect { x: area.x + w.saturating_sub(3), y, width: 2, height: 1 };
-                let hov = hit(r, self.hover.0, self.hover.1);
-                rects.push((r, t.id));
-                spans.push(Span::styled(
-                    " ✕",
-                    if hov {
-                        Style::default().fg(Color::LightRed).add_modifier(Modifier::BOLD)
-                    } else {
-                        Style::default().fg(Color::Red)
-                    },
-                ));
-            }
-            lines.push(Line::from(spans));
-        }
-        lines.push(Line::default());
-        lines.push(Line::from(Span::styled(
-            " 1-9 / ✕ cancel · Esc close",
-            Style::default().fg(Color::DarkGray),
-        )));
-        self.task_cancel_rects = rects;
-        let p = Paragraph::new(Text::from(lines)).block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(" pending tasks "),
-        );
-        f.render_widget(p, area);
-    }
-
     /// Centered modal list of ~/Downloads PDFs for the pick action.
     fn draw_picker(&mut self, f: &mut Frame) {
         let Mode::Pick { files, sel, key } = &self.mode else {
@@ -3410,6 +3319,57 @@ impl App {
 
     /// The pub card for an ADS result: body, links, citation count, an
     /// import button, and click-to-copy regions like the library card.
+    /// The verbatim .bib file in place of the formatted card (v / @ bib).
+    fn draw_bib_source(&mut self, f: &mut Frame, area: Rect, path: &std::path::Path) {
+        self.card_yanks.clear();
+        let x0 = area.x + 3;
+        let w = area.width.saturating_sub(5);
+        let bottom = area.y + area.height;
+        let mut y = area.y + 1;
+        let dim = Style::default().fg(Color::DarkGray);
+        let name = path
+            .file_name()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_default();
+        f.render_widget(
+            Paragraph::new(Line::from(Span::styled(format!("bib/{name}"), dim))),
+            Rect { x: x0, y, width: w, height: 1 },
+        );
+        y += 2;
+        let text = std::fs::read_to_string(path)
+            .unwrap_or_else(|_| "could not read file".to_string());
+        for line in text.lines() {
+            if y + 1 >= bottom {
+                f.render_widget(
+                    Paragraph::new(Line::from(Span::styled("…", dim))),
+                    Rect { x: x0, y, width: w, height: 1 },
+                );
+                break;
+            }
+            let clipped: String = line.chars().take(w as usize).collect();
+            f.render_widget(
+                Paragraph::new(Line::from(Span::raw(clipped))),
+                Rect { x: x0, y, width: w, height: 1 },
+            );
+            y += 1;
+        }
+        // bottom-right: back to the formatted card
+        let label = "◂ card";
+        let lw = label.chars().count() as u16;
+        let r = Rect { x: x0 + w.saturating_sub(lw), y: bottom - 1, width: lw, height: 1 };
+        self.card_buttons.push((r, CardBtn::BibView));
+        let hovb = hit(r, self.hover.0, self.hover.1);
+        if hovb {
+            self.hover_hint = Some("◂ back to the formatted card  ·  v".to_string());
+        }
+        let style = if hovb {
+            Style::default().fg(Color::Green).add_modifier(Modifier::UNDERLINED)
+        } else {
+            dim
+        };
+        f.render_widget(Paragraph::new(Line::from(Span::styled(label, style))), r);
+    }
+
     fn draw_article_card(&mut self, f: &mut Frame, area: Rect) {
         self.card_buttons.clear();
         self.card_links.clear();
@@ -3539,7 +3499,7 @@ impl App {
         let dimsep = Style::default().fg(Color::DarkGray);
         line_at(f, y, Line::from(Span::styled(sep.clone(), dimsep)));
         y += 1;
-        y = draw_link_stack(f, x0, y, w as u16, bottom, self.hover, stack, &mut self.card_links, &mut self.card_buttons);
+        y = draw_link_stack(f, x0, y, w as u16, bottom, self.hover, stack, &mut self.card_links, &mut self.card_buttons, &mut self.hover_hint);
         line_at(f, y, Line::from(Span::styled(sep, dimsep)));
         y += 2;
         // once imported, the library card's PDF buttons appear here too,
@@ -3566,11 +3526,11 @@ impl App {
                 if y < bottom {
                     self.card_buttons.push((r, btn));
                 }
-                let bg = if hit(r, hv.0, hv.1) {
-                    Color::Rgb(58, 63, 72)
-                } else {
-                    Color::Rgb(40, 44, 52)
-                };
+                let hovb = hit(r, hv.0, hv.1);
+                if hovb {
+                    self.hover_hint = Some(card_hint(btn).to_string());
+                }
+                let bg = if hovb { Color::Rgb(58, 63, 72) } else { Color::Rgb(40, 44, 52) };
                 push_pill(&mut bspans, label, bg, fg);
                 bspans.push(Span::raw(" "));
                 bx += wl + 1;
@@ -3620,7 +3580,11 @@ impl App {
                 height: 1,
             };
             self.card_buttons.push((r, CardBtn::Import));
-            let style = if hit(r, hv.0, hv.1) {
+            let hovb = hit(r, hv.0, hv.1);
+            if hovb {
+                self.hover_hint = Some(card_hint(CardBtn::Import).to_string());
+            }
+            let style = if hovb {
                 Style::default().fg(Color::Green).add_modifier(Modifier::UNDERLINED)
             } else {
                 Style::default().fg(Color::DarkGray)
@@ -3649,6 +3613,11 @@ impl App {
             return; // unresolved manuscript rows have nothing to show
         };
         let Some(e) = self.lib.get(&key) else { return };
+        if self.show_bib_source {
+            let path = e.path.clone();
+            self.draw_bib_source(f, area, &path);
+            return;
+        }
         let x0 = area.x + 3; // border + 2 padding
         let w = area.width.saturating_sub(5) as usize;
         let bottom = area.y + area.height;
@@ -3792,7 +3761,7 @@ impl App {
         let dimsep = Style::default().fg(Color::DarkGray);
         line_at(f, y, Line::from(Span::styled(sep.clone(), dimsep)));
         y += 1;
-        y = draw_link_stack(f, x0, y, w as u16, bottom, self.hover, links_row, &mut self.card_links, &mut self.card_buttons);
+        y = draw_link_stack(f, x0, y, w as u16, bottom, self.hover, links_row, &mut self.card_links, &mut self.card_buttons, &mut self.hover_hint);
         line_at(f, y, Line::from(Span::styled(sep, dimsep)));
         y += 2; // a little air below the link stack
 
@@ -3824,11 +3793,11 @@ impl App {
             if y < bottom {
                 self.card_buttons.push((r, btn));
             }
-            let bg = if hit(r, hv.0, hv.1) {
-                Color::Rgb(58, 63, 72)
-            } else {
-                Color::Rgb(40, 44, 52)
-            };
+            let hovb = hit(r, hv.0, hv.1);
+            if hovb {
+                self.hover_hint = Some(card_hint(btn).to_string());
+            }
+            let bg = if hovb { Color::Rgb(58, 63, 72) } else { Color::Rgb(40, 44, 52) };
             push_pill(&mut spans, label, bg, fg);
             spans.push(Span::raw(" "));
             bx += wl + 1;
@@ -3843,11 +3812,11 @@ impl App {
             let wl = pill_width(label);
             let r = Rect { x: x0, y, width: wl, height: 1 };
             self.card_buttons.push((r, CardBtn::MsToggle));
-            let bg = if hit(r, hv.0, hv.1) {
-                Color::Rgb(58, 63, 72)
-            } else {
-                Color::Rgb(40, 44, 52)
-            };
+            let hovb = hit(r, hv.0, hv.1);
+            if hovb {
+                self.hover_hint = Some(card_hint(CardBtn::MsToggle).to_string());
+            }
+            let bg = if hovb { Color::Rgb(58, 63, 72) } else { Color::Rgb(40, 44, 52) };
             let mut spans: Vec<Span> = vec![];
             push_pill(
                 &mut spans,
@@ -3910,6 +3879,24 @@ impl App {
             for s in &mut spans {
                 s.style = s.style.patch(tint);
             }
+        }
+        // bottom-right: flip to the verbatim .bib view
+        let label = "@ bib";
+        let lw = label.chars().count() as u16;
+        if used + lw + 2 <= w as u16 {
+            let r = Rect { x: x0 + w as u16 - lw, y, width: lw, height: 1 };
+            self.card_buttons.push((r, CardBtn::BibView));
+            let hovb = hit(r, hv.0, hv.1);
+            if hovb {
+                self.hover_hint = Some(card_hint(CardBtn::BibView).to_string());
+            }
+            let style = if hovb {
+                Style::default().fg(Color::Green).add_modifier(Modifier::UNDERLINED)
+            } else {
+                Style::default().fg(Color::DarkGray)
+            };
+            spans.push(Span::raw(" ".repeat((w as u16 - used - lw) as usize)));
+            spans.push(Span::styled(label, style));
         }
         line_at(f, y, Line::from(spans));
         self.card_yanks = yanks;
@@ -3990,7 +3977,6 @@ impl App {
     }
 
     fn draw_status(&mut self, f: &mut Frame, area: Rect) {
-        self.tasks_badge = Rect::default();
         let line = match self.mode {
             Mode::Filter => {
                 let avail = area.width.saturating_sub(2) as usize;
@@ -4073,18 +4059,7 @@ impl App {
                 let mut spans = vec![];
                 if pending > 0 {
                     let label = format!("⧗{pending} ");
-                    self.tasks_badge = Rect {
-                        x: area.x,
-                        y: area.y,
-                        width: label.chars().count() as u16,
-                        height: 1,
-                    };
-                    let style = if hit(self.tasks_badge, self.hover.0, self.hover.1) {
-                        Style::default().fg(Color::Yellow).add_modifier(Modifier::UNDERLINED)
-                    } else {
-                        Style::default().fg(Color::Yellow)
-                    };
-                    spans.push(Span::styled(label, style));
+                    spans.push(Span::styled(label, Style::default().fg(Color::Yellow)));
                 }
                 spans.extend([
                     Span::styled(

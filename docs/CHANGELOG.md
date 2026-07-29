@@ -14,7 +14,15 @@
 - A pending-tasks overlay on `T` (or click the `⧗N` footer indicator): every in-flight download, query, import, and browser watch listed with elapsed time and per-task cancel (digits 1-9 or ✕). Thread-backed work can't be killed mid-flight, so cancel marks the task and its result is discarded on arrival — including deleting a cancelled download's late-cached PDFs; the browser watch cancels for real.
 - Option/alt+arrow (and emacs alt+b/f) word motions in the filter and query inputs.
 
+### Added
+- View the .bib entry verbatim: `v`, or the `@ bib` affordance at the card's bottom right, flips the pub card to the raw file (`◂ card` flips back).
+- Hovering any card link or button explains itself in the footer — what a click does, plus the shortcut key when one exists.
+
+### Removed
+- The pending-tasks overlay (T): tasks are seconds-long, completions land in the log, and the `⧗N` indicator covers "something's running". The internal registry stays — it keys each in-flight result to its task, and cancel-on-arrival still backs the browser-watch ✕.
+
 ### Changed
+- Closing a query scope (ctrl+w) keeps the selection in place, activating the capsule that was to the right (previously it stepped left).
 - The scope capsules wrap onto further rows when saved queries outgrow the width, instead of clipping.
 - The pub card's links are a vertical stack, each row badged by what it does: ↗ opens the browser (ADS, arXiv, DOI), ⌕ acts inside astrobib (citations/references query scopes). "cited by N" returns to the byline as plain text.
 - The stale "ctrl+p actions" footer hint (the actions panel is long gone) now says "? keys"; ctrl+p opens the cheat-sheet as an alias.
