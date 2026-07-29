@@ -236,8 +236,8 @@ fn card_hint(btn: CardBtn) -> &'static str {
         CardBtn::MsToggle => "◆ add to / remove from the manuscript db  ·  m",
         CardBtn::Import => "→ import into the library  ·  i",
         CardBtn::BibView => "@ show the .bib entry verbatim  ·  v",
-        CardBtn::Citations => "⌕ new query: papers citing this one  ·  c",
-        CardBtn::Refs => "⌕ new query: papers this one cites  ·  C",
+        CardBtn::Citations => "⌕ new query: papers citing this one  ·  C",
+        CardBtn::Refs => "⌕ new query: papers this one cites  ·  R",
     }
 }
 
@@ -1485,7 +1485,7 @@ impl App {
     /// entry. Distinct from selected_key because the card can preview a
     /// hovered row.
     /// Open a citations(...) (or references(...)) query scope for the
-    /// card's paper — the c / C keys and the ⌕ card rows.
+    /// card's paper — the C / R keys and the ⌕ card rows.
     fn spawn_citation_query(&mut self, refs: bool) {
         if let Some(bc) = self.card_bibcode() {
             let q = if refs {
@@ -2529,8 +2529,8 @@ impl App {
                 KeyCode::Char('t') => self.run_action(Action::GlobalTier),
                 KeyCode::Char('v') => self.show_bib_source = !self.show_bib_source,
                 KeyCode::Char('@') => self.show_about = true,
-                KeyCode::Char('c') => self.spawn_citation_query(false),
-                KeyCode::Char('C') => self.spawn_citation_query(true),
+                KeyCode::Char('C') => self.spawn_citation_query(false),
+                KeyCode::Char('R') => self.spawn_citation_query(true),
                 KeyCode::Char('a') => self.select_all(true),
                 KeyCode::Char('A') => self.select_all(false),
                 KeyCode::Char('S') => self.open_ads_prompt(),
@@ -2760,8 +2760,8 @@ impl App {
             ("t", "global tier", Some(Action::GlobalTier)),
             ("v", "bib source", None),
             ("@", "about", None),
-            ("c", "citations", None),
-            ("C", "references", None),
+            ("C", "citations", None),
+            ("R", "references", None),
             ("?", "this cheat-sheet", Some(Action::Help)),
             ("q", "quit", Some(Action::Quit)),
         ];
@@ -3974,8 +3974,11 @@ impl App {
         let kw_lines = if kws.is_empty() { 0 } else { wrap_text(&kws, w).len() as u16 + 1 };
         let has_ms = self.lib.manuscript.is_some() && self.lib.global_on;
         // link stack (sep + rows + sep + air) + buttons + ms chip +
-        // status (line + blank) + keywords + key line
-        let rest = 3 + link_lines + 1 + u16::from(has_ms) + 2 + kw_lines + 1;
+        // status (collapses to a single spacer row when idle) +
+        // keywords + key line
+        let status_rows: u16 =
+            if self.poll_cancel.is_some() || !self.pdf_status.is_empty() { 2 } else { 1 };
+        let rest = 3 + link_lines + 1 + u16::from(has_ms) + status_rows + kw_lines + 1;
         let abs = e.abstract_();
         if !abs.is_empty() && y + rest < bottom {
             y += 1;
@@ -4103,7 +4106,13 @@ impl App {
                 )),
             );
         }
-        y += 2;
+        // the status row collapses when empty, keeping the keywords
+        // close to the buttons
+        if self.poll_cancel.is_some() || !self.pdf_status.is_empty() {
+            y += 2;
+        } else {
+            y += 1;
+        }
 
         // ── footer ───────────────────────────────────────────────────
         if !kws.is_empty() {
