@@ -1499,21 +1499,24 @@ impl App {
             match m {
                 DlMsg::Progress(s) => self.status = s,
                 DlMsg::Done { done, failed } => {
-                    let cat = if failed.is_empty() { MsgCat::Ok } else { MsgCat::Err };
+                    // an unavailable PDF is an expected outcome (many
+                    // publishers require the browser), not an app failure
+                    let cat = if failed.is_empty() { MsgCat::Ok } else { MsgCat::Warn };
                     let msg = if failed.is_empty() {
                         format!("Downloaded {done} PDF(s)")
                     } else {
                         format!(
-                            "Downloaded {done} PDF(s) — failed: {}{}",
+                            "Downloaded {done} PDF(s) — no auto PDF for {}{} (try browser ↓)",
                             failed[..failed.len().min(3)].join(", "),
                             if failed.len() > 3 { "…" } else { "" }
                         )
                     };
                     self.note(cat, msg);
                     // success needs no card note — the buttons flipping to
-                    // Open/Clear already signal it; only failures explain
+                    // Open/Clear already signal it; an unavailable PDF gets
+                    // an expected-outcome note, not an error
                     self.pdf_status = if done == 0 && !failed.is_empty() {
-                        "✗ no PDF found — try browser ↓".to_string()
+                        "⚠ no open-access PDF — try browser ↓".to_string()
                     } else {
                         String::new()
                     };
@@ -3255,7 +3258,14 @@ impl App {
             }
             line_at(f, y, Line::from(Span::styled(label, Style::default().fg(Color::Yellow))));
         } else if !self.pdf_status.is_empty() {
-            line_at(f, y, Line::from(Span::styled(self.pdf_status.clone(), muted)));
+            line_at(
+                f,
+                y,
+                Line::from(Span::styled(
+                    self.pdf_status.clone(),
+                    Style::default().fg(Color::Yellow),
+                )),
+            );
         }
         y += 2;
 
