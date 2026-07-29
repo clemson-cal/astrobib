@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.6.0 — 2026-07-29
 
 ### Added
 - Markdown manuscripts, same policy as LaTeX: `.md` sources beside `bib/` are scanned for citations (`main.md` sole root when present, Obsidian `![[embeds]]` expand like `\input`), with pandoc-style `@key` / `[@a; @b]` cites and Obsidian wikilinks — `[[key]]` counts as a citation when it resolves in the library and stays a note link when it doesn't. Code blocks, inline code, and HTML comments never scan.
