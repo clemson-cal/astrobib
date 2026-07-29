@@ -45,10 +45,32 @@ pub const FIELD_ORDER: &[&str] = &[
 /// Parse the first entry in a .bib file into the flat data map the rest of
 /// the code operates on. Returns None on files with no parseable entry.
 pub fn parse_entry(text: &str) -> Option<Data> {
+    parse_one(text, 0).map(|(d, _)| d)
+}
+
+/// Parse every entry in a (possibly multi-entry) .bib text, in order.
+pub fn parse_entries(text: &str) -> Vec<Data> {
+    let mut out = vec![];
+    let mut pos = 0;
+    while let Some((d, end)) = parse_one(text, pos) {
+        out.push(d);
+        pos = end;
+    }
+    out
+}
+
+/// Parse one entry starting at or after `from`; returns the data map and
+/// the index just past the entry's closing brace.
+fn parse_one(text: &str, from: usize) -> Option<(Data, usize)> {
     let bytes = text.as_bytes();
-    let at = text.find('@')?;
+    let at = text[from..].find('@')? + from;
     let brace = text[at..].find('{')? + at;
     let etype = text[at + 1..brace].trim().to_lowercase();
+    // @comment/@string/@preamble blocks are skipped, not entries
+    if matches!(etype.as_str(), "comment" | "string" | "preamble") {
+        let (_, end) = scan_braced(text, brace);
+        return parse_one(text, end);
+    }
     let mut i = brace + 1;
 
     let key_end = text[i..].find(',')? + i;
@@ -104,6 +126,7 @@ pub fn parse_entry(text: &str) -> Option<Data> {
             fields.push((name, latex_to_unicode(&raw)));
         }
     }
+    let end = (i + 1).min(bytes.len());
     // bibtexparser v1 stores fields in reverse file order with
     // ENTRYTYPE/ID appended last; serialization writes unknown fields in
     // dict order, so reproduce the layout exactly or rewritten files
@@ -114,7 +137,7 @@ pub fn parse_entry(text: &str) -> Option<Data> {
     }
     data.insert("ENTRYTYPE".to_string(), etype);
     data.insert("ID".to_string(), key);
-    Some(data)
+    Some((data, end))
 }
 
 /// Scan a balanced-brace value starting at the opening brace; returns the
@@ -381,6 +404,25 @@ mod tests {
         assert_eq!(latex_to_unicode(r"M{\'u}noz"), "Múnoz");
         assert_eq!(latex_to_unicode("{Title Case}"), "Title Case");
         assert_eq!(latex_to_unicode(r"{{Double} braced}"), "Double braced");
+    }
+
+    #[test]
+    fn parses_multiple_entries() {
+        let text = r#"@string{apj = "The Astrophysical Journal"}
+@ARTICLE{A2020aaaaa,
+  author = {A, X.},
+  year = {2020},
+}
+% comment line
+@ARTICLE{B2021bbbbb,
+  author = {B, Y.},
+  year = {2021},
+}
+"#;
+        let all = parse_entries(text);
+        assert_eq!(all.len(), 2);
+        assert_eq!(all[0]["ID"], "A2020aaaaa");
+        assert_eq!(all[1]["ID"], "B2021bbbbb");
     }
 
     #[test]

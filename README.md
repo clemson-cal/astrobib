@@ -1,310 +1,74 @@
 # astrobib
-
-An ADS-native BibTeX library manager for astrophysics manuscripts, written in Rust (ratatui). This is the official implementation; the earlier Python/Textual version is preserved at tag [`v0.4.0`](https://github.com/clemson-cal/astrobib/tree/v0.4.0) and as the latest [PyPI release](https://pypi.org/project/astrobib/).
-
-See [docs/STATUS.md](docs/STATUS.md) for current features and status, and [docs/DESIGN.md](docs/DESIGN.md) for the data-format contract. A fuller user guide will replace this stub once the CLI/TUI surface settles.
-
-<details><summary>Python 0.4.0 documentation (historical)</summary>
-
-# astrobib
 *A terminal-based literature manager for astrophysics research*
 
-astrobib is a personal astrophysics literature manager. It connects to the [NASA/Harvard ADS](https://ui.adsabs.harvard.edu) to search and fetch papers, stores BibTeX in `~/.local/share/astrobib/library/`, and generates `refs.bib` files for LaTeX manuscripts by scanning for cite keys.
+astrobib connects to the [NASA/Harvard ADS](https://ui.adsabs.harvard.edu) to search, fetch, and organize papers as plain BibTeX files, with a fast terminal UI. It is written in Rust and ships as a single binary — installs via pip-style tools involve no Python runtime.
 
-Keywords follow the [Unified Astronomy Thesaurus (UAT)](https://astrothesaurus.org), the controlled vocabulary used by AAS journals.
+The earlier Python implementation is preserved at tag [`v0.4.0`](https://github.com/clemson-cal/astrobib/tree/v0.4.0). Libraries and cite keys are fully compatible between the two: keys derive from each paper's stable identity (arXiv ID or bibcode), so any two copies of a paper agree on its key forever.
 
 ---
 ## Installation
-Requires Python 3.11 or later. Any of the following provides the `astrobib` command:
 ```bash
-# uv (recommended): isolated per-user tool install; fetches a suitable Python if needed
-uv tool install astrobib
-
-# pipx: the same isolated-tool model
-pipx install astrobib
-
-# standard venv + pip
-python3 -m venv ~/.venvs/astrobib
-~/.venvs/astrobib/bin/pip install astrobib
-# then invoke ~/.venvs/astrobib/bin/astrobib, or add it to your PATH
+uv tool install astrobib     # or: pipx install astrobib
 ```
-Upgrade later with `uv tool upgrade astrobib`, `pipx upgrade astrobib`, or `pip install -U astrobib` respectively.
+Binary wheels cover macOS (arm64, x86_64) and Linux (x86_64, aarch64). Building from source needs a Rust toolchain: `cargo install --git https://github.com/clemson-cal/astrobib`.
 
 ---
 ## Quick start
 ```bash
-# Download the UAT concept hierarchy (one-time, ~2 MB)
-astrobib uat update
+# set your ADS token (https://ui.adsabs.harvard.edu/user/settings/token)
+export ADS_API_TOKEN=...
 
-# Launch the TUI
-astrobib
-
-# Set your ADS API token (https://ui.adsabs.harvard.edu/user/settings/token)
-astrobib token
+astrobib                     # launch the TUI
+astrobib list                # CLI: newest papers
+astrobib search '^zrake OR kw:"compact objects"'
+astrobib add 2020ApJ...123..456Z
+astrobib import refs.bib     # resolve a foreign .bib against ADS
 ```
+
 ---
-## TUI key bindings
-### Core actions (shown in footer)
-- `i` — Import highlighted/selected papers to library (ADS tabs)
-- `d` — Remove highlighted/selected papers from library
-- `p` — Download PDFs for highlighted/selected papers
-- `o` — Open cached PDF (all selected, or highlighted)
-- `/` — Library: filter with query syntax (see [Filtering the library](#filtering-the-library)). ADS tab: view/edit the tab's query
-- `S` — Open new ADS search tab
-- `r` — Refresh current ADS tab
-- `?` — Show this help
-- `q` — Quit
+## The two-tier library model
+astrobib always works on up to two libraries: a **local** bib directory (tier 2) and your **global** personal library (tier 1, at `~/.local/share/astrobib/library/`).
+`astrobib [LIBRARY_DIR]` points tier 2 at any directory holding `bib/`; with no argument, the nearest ancestor of the current directory with a `bib/` is used. A `.tex` manuscript alongside activates citation tracking, but any bib directory works.
+With the global tier enabled (the default), reads merge both tiers and imports write to both — the paper repo stands alone for coauthors while your collection accrues. Press `t` (or click the `global` badge) to hide the global tier: reads and writes become purely local. Removing a local paper never destroys a sole copy — it is rescued into the global library.
+Both stores are plain `bib/*.bib` files, one paper per file, indistinguishable from hand-written BibTeX. Nothing else is ever written into your repos.
 
-Footer actions keep fixed positions; a greyed-out action is unavailable in the current context (wrong tab, no PDF cached, already imported, …). When rows are check-selected with `Space`, actions apply to the selection rather than the cursor row; single-paper actions (`R`, `c`, `B`) are dimmed while more than one row is selected.
+---
+## TUI overview
+Scope capsules at the top switch between your library, saved ADS query tabs, and the manuscript view. The pub card on the right shows the highlighted paper (hover the citekey column to preview others); an event log and clickable view badges sit at the bottom. Most things are clickable; every action has a key (`?` shows the cheat-sheet).
 
-### More keys
-- `Space` — Toggle selection of highlighted row
-- `y` — Copy highlighted/selected cite key(s), shortest unambiguous form
-- `Y` — Copy highlighted/selected cite key(s), full form with hash
-- `s` — Star / unstar highlighted/selected papers
-- `m` — Add/remove highlighted or selected papers in the manuscript db
-- `M` — Toggle manuscript-only view (hide personal-library-only papers)
-- `R` — Browse references of the highlighted or single-selected paper (opens ADS tab)
-- `c` — Browse citations of the highlighted or single-selected paper (opens ADS tab)
-- `e` — Export selected papers to `astrobib-export.bib`
-- `B` — Download PDF via system browser (watches `~/Downloads`)
-- `X` — Clear cached PDFs for highlighted/selected papers (or cancel a browser download)
-- `u` — Open UAT concept browser
-- `C` — Configuration (ADS API token)
-- `[` / `]` — Switch to previous / next tab
-- `Ctrl+W` — Close current ADS tab
-- `+` / `-` — Increase / decrease ADS result count (then `r` to reload)
-- `Escape` — Clear filter
-- `z` — Cycle pub card width (shows it if hidden)
-- `D` — Show/hide the pub card
+### Keys
+- `/` — live filter (query language below); `S` — new ADS query (↑/↓ sets result count; pasting a DOI or ADS URL imports directly)
+- `j k g G` — move; `[` `]` — switch scope; `ctrl+w` — close query scope; `r` — refresh; `+` `-` — result count
+- `Space` — select row (iOS-style selection mode); `a` — select visible; `A` — select all; Esc — done
+- `i` — import ADS result(s); `m` — toggle manuscript/local membership; `⌫` — remove (with confirmation)
+- `p` — download PDFs (ADS open-access, then arXiv); `B` — browser download (watches ~/Downloads); `o` — open PDF; `X` — clear PDF; double-click a row — open its PDF
+- `y` — copy chord: `yy` cite key, `yY` full key, `yb` bibcode, `ya`/`yx`/`yd` ADS/arXiv/DOI URL, `yp` PDF path, `yt` title, `yA` abstract; card title/abstract/key are click-to-copy
+- `t` — show/hide the global tier; `D` — pub card; `L` — event log; `?` — keys; `q` — quit
 
-### Copying text from the TUI
-Terminal applications such as astrobib enable *mouse reporting*, so drag-selection is captured by the application rather than the terminal, which is why ⌘C often copies nothing. There are two workarounds:
-
-- Press `y` to copy the highlighted (or Space-selected) cite keys directly to the system clipboard. This is the intended workflow for placing keys in a `.tex` file.
-- For arbitrary text, hold **⌥ Option** (macOS Terminal/iTerm2; **Shift** on most Linux terminals) while dragging: this bypasses mouse reporting and restores native selection, after which ⌘C works normally.
 ---
 ## Filtering the library
-Press `/` on the Library tab to filter the list as you type. The filter is a local query language modeled on ADS syntax, evaluated live against your library. Whitespace-separated terms all AND together, and each term is a case-insensitive partial match. Bare terms match across author, title, abstract, cite key, keywords, and year; prefix a field name to narrow the match. Examples:
+Press `/` to filter as you type. Whitespace-separated terms AND together; each term is a case-insensitive partial match. Bare terms match author, title, abstract, key, keywords, and year; field prefixes narrow:
 ```
-sironi shock                        bare terms — match author, title, abstract, key, keywords, year
-author:sironi                       author anywhere in the author list
-author:^zrake                       first-author papers only (ADS ^ convention)
-^zrake                              same — a bare ^ term implies author:
-title:magnetar                      word in title
-abs:"fast radio burst"              phrase in abstract
-key:Zrake2020                       cite key
-kw:"compact objects"                keyword
-year:2020                           single year
-year:2015-2020                      year range
-year:2020-                          2020 or later (year:-2015 for 2015 or earlier)
-"quoted phrase"                     exact phrase, any field
--abs:neutrino  -is:ms               a leading - negates any term (NOT works too)
-is:starred                          starred papers
-is:ms                               manuscript-db members
-is:pdf                              papers with a cached PDF
-
-author:^zrake year:2019- is:pdf     terms combine with implicit AND
-^zrake OR ^metzger                  uppercase OR separates alternatives
-^zrake year:2019- OR ^metzger       AND binds tighter than OR, as in ADS
+author:sironi          author anywhere in the list
+^zrake                 first-author papers (= author:^zrake)
+title:magnetar         word in title
+abs:"fast radio burst" phrase in abstract
+kw:"compact objects"   keyword
+year:2015-2020         ranges; year:2020- open-ended
+is:ms                  local/manuscript members;  is:pdf  cached PDFs
+-abs:neutrino          leading - negates (NOT works too)
+^zrake OR ^metzger     uppercase OR separates alternatives; AND binds tighter
 ```
-Operators are uppercase-only — a lowercase `or` is just a search word, matching ADS's own convention. There is no parenthesized grouping; a query that needs it belongs on ADS (press `S`).
-
-A partially typed query never produces an error: unknown fields are treated as bare text and a dangling `OR`/`NOT` is ignored, so the list refines smoothly as you type.
-
-With a filter active, pressing `S` opens an ADS search tab pre-filled with the equivalent ADS query; `OR` groups translate directly (parenthesized where needed), while local-only terms (`is:`, `key:`, and negations) are dropped. This allows you to filter locally and escalate the same query to ADS in one keystroke.
+A half-typed query never errors. With a filter active, `S` pre-fills the equivalent ADS query — filter locally, escalate in one keystroke.
 
 ---
-## ADS query syntax
-
-The search box (`S`) passes your query straight to the [ADS search API](https://ui.adsabs.harvard.edu/help/search/search-syntax), so the full ADS/Solr query language is available. Pasting an ADS abstract URL imports that paper directly instead of searching. Examples:
-```
-relativistic jets                              plain text — searches everything
-author:"zrake"                                 papers by an author
-author:"^zrake"                                first-author papers only
-author:"spitkovsky" author:"sironi"            both authors on the same paper
-abs:"fast radio burst"                         phrase in abstract, title, or keywords
-title:"magnetar"                               word in title only
-year:2024                                      single year
-year:2015-2020                                 year range
-bibstem:ApJL                                   one journal (ApJ, MNRAS, PRL, arXiv, …)
-arxiv_class:astro-ph.HE                        arXiv category
-object:"SN 2023ixf"                            papers about a named object (via SIMBAD)
-citation_count:[100 TO *]                      highly cited papers
-property:refereed                              refereed only
-
-author:"^zrake" year:2019-2024 bibstem:ApJ     terms combine with implicit AND
-abs:"kilonova" NOT abs:"neutrino"              exclude a term
-(abs:"jet" OR abs:"outflow") year:2023         boolean grouping
-
-references(bibcode:"2020ApJ...900...12S")      papers this one cites (or press R)
-citations(bibcode:"2020ApJ...900...12S")       papers citing this one (or press c)
-citations(author:"^zrake")                     everything citing your first-author papers
-similar(bibcode:"2020ApJ...900...12S")         textually similar papers
-trending(abs:"gravitational waves")            what readers of this topic read now
-useful(abs:"pulsar timing")                    methods/tools papers cited by this field
-```
----
-## Cite keys
-astrobib's key policy separates what the **databases** store from what a **manuscript** types, so keys can be collision-proof in one place and clean in the other.
-
-**Database keys are content-derived.** Every stored entry is keyed `AuthorYYYYhhhhh`: the first author's surname, a year, and five hash characters computed from the paper's arXiv ID (or, failing that, its ADS bibcode), e.g. `Zrake2020axbxt`. The year is likewise derived from the identifier itself: the arXiv submission year, or the bibcode's year, never the record's publication year. The key therefore depends only on the paper's identity, so:
-
-- the same paper receives the same key regardless of who imports it, or when, and regardless of whether they hold the preprint or the published record, so personal libraries and manuscript databases merge without coordination
-- two different Smith 2020 papers can never collide
-- re-importing a paper is detected as a duplicate rather than creating a second entry
-- the key remains stable across the arXiv-to-journal transition, and `astrobib update` refreshes metadata beneath it without ever changing it
-
-To cite a specific arXiv revision (v1, v2) rather than the paper, write a manual `@misc` entry with a versioned eprint field; keys always denote the paper, not a revision.
-
-Database `.bib` files are always stored under their full key, one file per paper.
-
-**Manuscripts cite by any unambiguous string.** In your `.tex` you may write the full key, any prefix that matches exactly one database key (in practice, `\citep{Zrake2020}`), or a raw ADS bibcode (`\citep{2020ApJ...900...12Z}`), which is globally unique by construction. The generated `refs.bib` keys each entry by the string actually cited, so BibTeX sees exactly what the manuscript says and the hash suffix never appears in your prose. (Classic BibTeX has no key-alias mechanism, so this aliasing happens at the `refs.bib` boundary, which astrobib owns.)
-
-**Ambiguity is detected, not guessed.** If a prefix matches several keys (for example, after a second Zrake 2020 paper is imported), no candidate is chosen silently: the Manuscript tab shows the cite as magenta `≈ ambiguous` with the candidates listed, and `astrobib refs` prints them and exits nonzero. Lengthening the key by a character or two resolves the ambiguity.
-
-**Displayed keys are the shortest unambiguous form.** The TUI and CLI show short keys wherever possible, and `astrobib import` emits its cite-key replacement commands using short keys, so hash characters appear only when they are needed to disambiguate.
+## ADS queries
+`S` passes your query to the [ADS API](https://ui.adsabs.harvard.edu/help/search/search-syntax) unmodified, so the full Solr language works (`bibstem:ApJL`, `citations(...)`, boolean grouping, …). Each query becomes a scope capsule, persisted per manuscript context and shared with the Python implementation via `tabs.json`.
 
 ---
-## Manuscript databases
-
-A manuscript can carry its own bib database: a `bib/` directory inside the manuscript's git repository, holding one `.bib` file per cited paper. There is no registration step: launching astrobib from inside the repository (any directory with `bib/` alongside `.git`) activates it, indicated by `ms: <name>` in the header. Coauthors who clone the repository get the same database automatically; coauthors without astrobib use the committed `refs.bib`.
-
-While a manuscript db is active:
-- The library view merges your personal library with the manuscript db; the `◆` column marks manuscript members (`M` hides everything else)
-- Importing from ADS (`i`) writes to **both** the personal library and the manuscript db
-- `m` toggles manuscript membership for existing library entries
-
-astrobib never runs git on the manuscript repository; bib files are committed as part of your normal work on the paper.
-
-Removal from the manuscript db is never destructive: if it holds the only copy of an entry (imported `--ms-only`, or added by a coauthor), removing it via `m` or `refs --prune` first copies it into your personal library.
-
-### The Manuscript tab
-A **Manuscript** tab appears next to Library, showing the union of cite keys found in the `.tex` sources and entries in `bib/`, color-coded:
-
-- `◆` normal — cited and in `bib/`: healthy
-- `○` yellow — cited, in your personal library but not `bib/`: press `m` to add
-- `✗` red — cited but found nowhere: fix the key, or `S` to search ADS (pre-filled)
-- `≈` magenta — cite key is an ambiguous prefix of several entries: lengthen it
-- `·` cyan — in `bib/` but cited by nothing: press `m` to remove
-
-Cite keys in the `.tex` may be any unambiguous prefix of a database key (`\citep{Zrake2020}`), and `refs.bib` is keyed by the cited string; see [Cite keys](#cite-keys).
-
-If `main.tex` exists, it is the sole root document and other top-level `.tex` files (old drafts, notes) are ignored; otherwise every top-level `.tex` file is a root. Roots are expanded recursively through `\input`/`\include`, so multi-file papers are fully scanned.
-
-The tab watches the `.tex` sources and `bib/` (2 s poll) and refreshes itself as you write. `refs.bib` is regenerated automatically from the cited entries in `bib/` whenever its content would change. Nothing is copied or removed automatically; membership changes always go through `m` (or `astrobib refs` / `--prune` on the command line). The status bar summarizes health: `42 cited · 2 missing · 5 uncited`.
-
-Keep the database in sync with what the paper actually cites:
-```bash
-cd ~/Work/Papers/my-paper
-astrobib refs             # scan .tex, pull cited entries in from personal
-                          # library, report unknowns, write refs.bib
-astrobib refs --prune     # also drop entries nothing cites anymore
-```
----
-## CLI reference
-### Adding papers
-```bash
-# Search ADS
-astrobib search --ads "magnetohydrodynamical simulations"
-
-# Add by ADS bibcode
-astrobib add 2020ApJ...900...12S
-
-# Add with extra keywords
-astrobib add 2020ApJ...900...12S --keywords "Magnetohydrodynamical simulations"
-```
-
-### Sharing papers
-Export selected papers from the TUI (`Space` to select, `e` to export) and share the resulting `astrobib-export.bib` file. The recipient can import it:
-```bash
-astrobib import shared-papers.bib
-```
-Because keys are content-derived (see [Cite keys](#cite-keys)), the same paper always gets the same key regardless of who added it, so shared files merge cleanly and duplicates are detected on import.
-
-### Importing a foreign .bib file
-`astrobib import` accepts any `.bib` file, for example the bibliography of another paper with arbitrary cite keys. Every entry is resolved against ADS (by arXiv ID, DOI, or exact title + first author + year) and imported with canonical ADS BibTeX and a regenerated astrobib cite key. Entries whose key already matches their content-derived astrobib key (i.e. bibdata from an astrobib export) are recognized automatically and imported directly, with no ADS round-trip. Entries that cannot be resolved to exactly one ADS record are skipped with a warning. Entries already present are kept as-is (pass `--verify` to be prompted to replace them). After importing, astrobib prints copy-pasteable `perl -pi -e` commands that rewrite the old cite keys to the new ones in your `.tex` files.
-
-Inside a manuscript repo, `add` and `import` write to both the personal library and the manuscript database (matching the TUI); use a flag to restrict:
-```bash
-astrobib import other-paper.bib                  # personal + manuscript db
-astrobib import --personal-only other-paper.bib  # personal library only
-astrobib import --ms-only other-paper.bib        # manuscript db only
-```
-CLI read commands (`list`, `show`, `search`, `export`, `pdf`) see the same merged personal + manuscript view as the TUI, with the same indicators: `↓` PDF cached, `◆` in manuscript db, `★` starred.
-
-### Updating preprints
-Entries imported before journal publication keep their preprint BibTeX ("arXiv e-prints"). Refresh them in place once the paper is published:
-```bash
-astrobib update          # check preprint-form entries against ADS, rewrite the published ones
-astrobib update --all    # re-fetch canonical BibTeX for every entry with an ADS record
-```
-Cite keys never change on update, so manuscripts citing the paper are unaffected; `refs.bib` regenerates with the published metadata the next time the Manuscript tab looks. Stars and user-curated keywords are preserved, and copies in the active manuscript database are updated in the same pass. The pub card shows a dim `(preprint)` marker on entries that have not yet been updated.
-
-### Converting cite key formats
-`astrobib convert` rewrites the cite keys inside `\cite` commands across the manuscript's TeX sources to one uniform format:
-```bash
-astrobib convert short      # shortest unambiguous keys: \citep{Zrake2020}
-astrobib convert full       # canonical keys with hash: \citep{Zrake2020axbxt}
-astrobib convert bibcode    # raw ADS bibcodes: \citep{2020ApJ...900...12Z}
-astrobib convert short --dry-run   # report without writing
-```
-All three formats resolve interchangeably, so conversion is lossless in any direction. Keys that cannot be resolved against the library are left untouched and reported. After converting, `refs.bib` is regenerated to match the new keys, which also merges citations of the same paper written in different forms.
-
-### Generating refs.bib for a manuscript
-Run this from inside the manuscript directory:
-```bash
-astrobib export                  # scans all .tex files in cwd
-astrobib export paper.tex        # explicit file
-astrobib export -o refs.bib      # explicit output path
-```
-
-The tool scans for `\cite`, `\citep`, `\citet`, and related commands, looks each key up in the library, and writes a `refs.bib` containing only the entries that are actually cited.
-
-### ADS token
-```bash
-astrobib token                   # show current token or prompt to enter one
-astrobib token <your-token>      # set token directly
-astrobib quota                   # check ADS API rate limit usage
-```
-The token can also be set via the `ADS_API_TOKEN` environment variable.
-
-### UAT commands
-```bash
-astrobib uat update              # download / refresh UAT cache
-astrobib uat search hydrodynamics
-astrobib uat show "Hydrodynamics"
-astrobib uat browse              # standalone TUI browser
-```
-
-### Other commands
-```bash
-astrobib show <key>              # print BibTeX entry
-astrobib open <key>              # open PDF (fetched from arXiv if needed)
-astrobib list                    # list all papers
-astrobib list --keyword "Compact objects"
-astrobib keywords                # list all keywords in the library
-```
----
-## Library layout
-Papers are stored in `~/.local/share/astrobib/library/bib/`, one `.bib` file per paper. The directory is created automatically on first use.
-
-To use a different library location (for example a synced or git-managed directory), pass `astrobib --library ~/my-lib` or set `ASTROBIB_LIBRARY=~/my-lib`; the flag wins when both are given. The PDF cache and other app state stay in their usual locations regardless, and `astrobib config` shows which library is active and why.
-
-Cite keys have the form `AuthorYYYYhhhhh` where `hhhhh` is the first 5 hex characters of the SHA-256 of the arXiv ID (or ADS bibcode for non-arXiv papers). This makes keys collision-resistant and stable across the arXiv→journal publishing transition.
+## CLI
+`list`, `search [--ads]`, `add <bibcode|ADS URL>`, `show <key>`, `import <file.bib> [--global-only|--local-only]`, plus `--library PATH` (relocate the global tier) and `--no-global`.
+`import` resolves each entry against ADS (arXiv ID → DOI → exact title+author+year) unless its cite key is already reproducible from its own data — canonical astrobib entries import byte-identically — and prints copy-pasteable key replacements for your `.tex` files.
 
 ---
-## PDF handling
-PDFs are ephemeral and are never stored in the library. When you open a paper (`o` in the TUI or `astrobib open <key>`), astrobib:
-
-1. Checks `~/.cache/astrobib/pdfs/<key>.pdf`
-2. If absent, fetches from `https://arxiv.org/pdf/<eprint>`
-3. Caches and opens in the system PDF viewer
-
-The cache can be deleted freely; everything is re-fetchable.
-
-The pub card offers per-paper sources: `arXiv ↓` and `ADS OA ↓` download directly, `browser ↓` opens the publisher page and watches `~/Downloads` for the arriving file, and `pick …` browses the filesystem (starting in `~/Downloads`) to import a PDF you already have.
-
-If macOS blocks your terminal from reading `~/Downloads`, the browser watcher says so instead of waiting silently; grant access in System Settings → Privacy & Security → Files and Folders, or use `pick …`.
-
-</details>
+See [docs/DESIGN.md](docs/DESIGN.md) for the data-format contract and [docs/STATUS.md](docs/STATUS.md) for implementation status.

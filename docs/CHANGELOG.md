@@ -13,6 +13,7 @@ Complete rewrite in Rust (ratatui). This is the first release of the Rust implem
 - Copy without a mouse: `y` which-key chord (key, full key, bibcode, ADS/arXiv/DOI URLs, PDF path, title, abstract); card text regions click-to-copy.
 - Event log (`L`) with categories and scrollback; readline-style editing (tui-input, real terminal cursor) in the filter and query prompts; result-count control in the prompt (↑/↓) and `+`/`-` on live scopes.
 - Dynamic layout: candidate-fitted author column, responsive column priorities, height-driven abstract display.
+- `astrobib import <file.bib>`: canonical astrobib entries (reproducible cite key) import directly; foreign entries resolve against ADS by arXiv ID, DOI, or exact title+author+year, with bibcode-level dedup and copy-pasteable cite-key replacement commands.
 
 ### Changed
 - Cite keys, short keys, and on-disk `.bib` serialization are byte-identical to 0.4.0 (golden-tested against it); libraries and manuscript dbs need no migration.

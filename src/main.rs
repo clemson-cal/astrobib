@@ -44,6 +44,16 @@ enum Command {
     },
     /// Print the BibTeX entry for a cite key (full or shortened)
     Show { key: String },
+    /// Import papers from a .bib file, resolving each against ADS
+    Import {
+        file: std::path::PathBuf,
+        /// Write only to the global (tier-1) library
+        #[arg(long)]
+        global_only: bool,
+        /// Write only to the local (tier-2) library
+        #[arg(long)]
+        local_only: bool,
+    },
 }
 
 fn main() -> anyhow::Result<()> {
@@ -115,6 +125,9 @@ fn main() -> anyhow::Result<()> {
             println!("Added {display}  ({key})");
             Ok(())
         }
+        Some(Command::Import { file, global_only, local_only }) => {
+            import_bib(&mut lib, &file, global_only, local_only)
+        }
         Some(Command::Show { key }) => match lib.resolve(&key) {
             Some(e) => {
                 print!("{}", std::fs::read_to_string(&e.path)?);
@@ -134,6 +147,108 @@ fn main() -> anyhow::Result<()> {
             }
         },
     }
+}
+
+/// Import a .bib file — port of the v0.4.0 import command. Entries whose
+/// cite key is reproducible from their own data are canonical astrobib
+/// bibdata and import directly; everything else resolves against ADS
+/// (arXiv ID → DOI → exact title+author+year, which must be unique).
+/// Already-present entries are kept; renames print as perl one-liners.
+fn import_bib(
+    lib: &mut MergedLibrary,
+    file: &std::path::Path,
+    global_only: bool,
+    local_only: bool,
+) -> anyhow::Result<()> {
+    let text = std::fs::read_to_string(file)?;
+    let entries = astrobib::bib::parse_entries(&text);
+    if entries.is_empty() {
+        println!("No entries found in file.");
+        return Ok(());
+    }
+    let dest = match (global_only, local_only, lib.manuscript.is_some()) {
+        (true, _, _) | (_, _, false) => "global library".to_string(),
+        (_, true, _) => "local library".to_string(),
+        _ => "global + local libraries".to_string(),
+    };
+    println!("Importing into {dest}\n");
+    let (mut added, mut skipped) = (0usize, 0usize);
+    let mut renames: Vec<(String, String)> = vec![];
+    for mut data in entries {
+        let orig_key = data.get("ID").cloned().unwrap_or_else(|| "?".to_string());
+        if orig_key != astrobib::keys::generate_key(&data) {
+            match astrobib::ads::lookup_entry(&data) {
+                Ok(resolved) => data = resolved,
+                Err(reason) => {
+                    println!("  ⚠ {orig_key} skipped — {reason}");
+                    skipped += 1;
+                    continue;
+                }
+            }
+        }
+        let key = astrobib::keys::generate_key(&data);
+        // dedupe by bibcode: catches the same paper under a different key
+        let bc = data
+            .get("adsurl")
+            .and_then(|u| astrobib::pdf::bibcode_from_adsurl(u))
+            .map(str::to_string);
+        if let Some(existing) = bc.as_deref().and_then(|b| lib.get_by_bibcode(b)) {
+            if existing.key() != key {
+                let short = if existing.short_key.is_empty() {
+                    existing.key().to_string()
+                } else {
+                    existing.short_key.clone()
+                };
+                println!("  {orig_key} → {short}  (already present under a different key — kept existing)");
+                if orig_key != short {
+                    renames.push((orig_key, short));
+                }
+                skipped += 1;
+                continue;
+            }
+        }
+        if lib.get(&key).is_some() {
+            let short = lib
+                .get(&key)
+                .map(|e| if e.short_key.is_empty() { key.clone() } else { e.short_key.clone() })
+                .unwrap_or_else(|| key.clone());
+            println!("  {orig_key} → {short}  (already present — kept existing)");
+            if orig_key != short {
+                renames.push((orig_key, short));
+            }
+            skipped += 1;
+            continue;
+        }
+        let new_key = if global_only {
+            lib.personal.save_entry(&data)?
+        } else if local_only {
+            match &mut lib.manuscript {
+                Some(ms) => ms.save_entry(&data)?,
+                None => anyhow::bail!("--local-only requires a local (tier-2) library"),
+            }
+        } else {
+            lib.save_entry(&data)?
+        };
+        let short = lib
+            .get(&new_key)
+            .map(|e| if e.short_key.is_empty() { new_key.clone() } else { e.short_key.clone() })
+            .unwrap_or_else(|| new_key.clone());
+        if orig_key != short {
+            renames.push((orig_key.clone(), short.clone()));
+            println!("  {orig_key} → {short}");
+        } else {
+            println!("  {short}");
+        }
+        added += 1;
+    }
+    println!("\n{added} imported → {dest}, {skipped} skipped.");
+    if !renames.is_empty() {
+        println!("\nCite key replacements (copy/paste to update your TeX source):");
+        for (old, new) in renames {
+            println!("  perl -pi -e 's/\\b\\Q{old}\\E\\b/{new}/g' main.tex");
+        }
+    }
+    Ok(())
 }
 
 fn print_entries(

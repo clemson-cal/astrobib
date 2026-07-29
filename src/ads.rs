@@ -161,6 +161,60 @@ pub fn resolve_pdf_url(bibcode: &str, link_type: &str) -> Option<String> {
     v["link"].as_str().filter(|s| !s.is_empty()).map(str::to_string)
 }
 
+/// Resolve a foreign bib entry to a unique ADS record — port of
+/// _ads_lookup. Query preference: arXiv ID, then DOI (both unique),
+/// then exact title + first author + year, which must match exactly
+/// one record. Returns the canonical BibTeX data or a reason.
+pub fn lookup_entry(data: &Data) -> Result<Data, String> {
+    let get = |k: &str| data.get(k).map(String::as_str).unwrap_or("").trim();
+    let eprint = get("eprint");
+    let doi = get("doi");
+    let (query, needs_unique) = if !eprint.is_empty() {
+        let ident = if eprint.to_lowercase().starts_with("arxiv:") {
+            eprint.to_string()
+        } else {
+            format!("arXiv:{eprint}")
+        };
+        (format!("identifier:\"{ident}\""), false)
+    } else if !doi.is_empty() {
+        (format!("doi:\"{doi}\""), false)
+    } else {
+        let title: String = get("title").chars().filter(|c| !"{}\"".contains(*c)).collect();
+        let title = title.trim().to_string();
+        let last: String = get("author")
+            .split(" and ")
+            .next()
+            .unwrap_or("")
+            .split(',')
+            .next()
+            .unwrap_or("")
+            .trim()
+            .chars()
+            .filter(|c| !"{}\\".contains(*c))
+            .collect();
+        let year = get("year").to_string();
+        if title.is_empty() || last.is_empty() || year.is_empty() {
+            return Err(
+                "not enough information for an unambiguous ADS query (need arXiv ID, DOI, or title+author+year)"
+                    .to_string(),
+            );
+        }
+        (format!("title:\"{title}\" author:\"^{last}\" year:{year}"), true)
+    };
+    let results = search(&query, 2).map_err(|e| format!("ADS lookup failed: {e}"))?;
+    if results.is_empty() {
+        return Err(format!("no ADS match for {query}"));
+    }
+    if needs_unique && results.len() > 1 {
+        return Err(format!("ambiguous — multiple ADS matches for {query}"));
+    }
+    match fetch_bibtex(&results[0].bibcode) {
+        Ok(Some(d)) => Ok(d),
+        Ok(None) => Err(format!("could not fetch BibTeX for {}", results[0].bibcode)),
+        Err(e) => Err(format!("could not fetch BibTeX for {}: {e}", results[0].bibcode)),
+    }
+}
+
 /// The arXiv ID among an article's identifiers, if any (entries look
 /// like "arXiv:2405.12345").
 pub fn arxiv_id(article: &Article) -> Option<&str> {
