@@ -15,6 +15,9 @@
 - Option/alt+arrow (and emacs alt+b/f) word motions in the filter and query inputs.
 
 ### Changed
+- The scope capsules wrap onto further rows when saved queries outgrow the width, instead of clipping.
+- The pub card's links are a vertical stack, each row badged by what it does: ↗ opens the browser (ADS, arXiv, DOI), ⌕ acts inside astrobib (citations/references query scopes). "cited by N" returns to the byline as plain text.
+- The stale "ctrl+p actions" footer hint (the actions panel is long gone) now says "? keys"; ctrl+p opens the cheat-sheet as an alias.
 - Clicking away from the filter prompt leaves entry mode with the filter still applied (Esc still clears), matching the query prompt's click-away policy.
 
 ## 0.5.1 — 2026-07-28

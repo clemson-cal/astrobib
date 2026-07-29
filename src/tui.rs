@@ -192,6 +192,62 @@ enum SortCol {
     Key,
 }
 
+/// One row of the card's link stack: ↗ rows open the browser, ⌕ rows
+/// act inside astrobib (query scopes).
+enum LinkTarget {
+    Url(String),
+    Query(CardBtn),
+}
+
+/// Render the card's vertical link stack: one row per destination, the
+/// leftmost badge naming its kind — ↗ opens the browser, ⌕ acts inside
+/// astrobib (spawns a query scope). Registers whole-row click rects
+/// into the passed vecs and returns the y below the stack.
+#[allow(clippy::too_many_arguments)]
+fn draw_link_stack(
+    f: &mut Frame,
+    x0: u16,
+    mut y: u16,
+    w: u16,
+    bottom: u16,
+    hover: (u16, u16),
+    items: Vec<(String, LinkTarget)>,
+    card_links: &mut Vec<(Rect, String)>,
+    card_buttons: &mut Vec<(Rect, CardBtn)>,
+) -> u16 {
+    let cyan = Style::default().fg(Color::Cyan);
+    let dim = Style::default().fg(Color::DarkGray);
+    for (label, target) in items {
+        let badge = match &target {
+            LinkTarget::Url(_) => "↗",
+            LinkTarget::Query(_) => "⌕",
+        };
+        let wl = (badge.chars().count() + 1 + label.chars().count()) as u16;
+        let r = Rect { x: x0, y, width: wl, height: 1 };
+        if y < bottom {
+            match target {
+                LinkTarget::Url(url) => card_links.push((r, url)),
+                LinkTarget::Query(btn) => card_buttons.push((r, btn)),
+            }
+            let style = if hit(r, hover.0, hover.1) {
+                cyan.add_modifier(Modifier::UNDERLINED)
+            } else {
+                cyan
+            };
+            f.render_widget(
+                Paragraph::new(Line::from(vec![
+                    Span::styled(badge, dim),
+                    Span::raw(" "),
+                    Span::styled(label, style),
+                ])),
+                Rect { x: x0, y, width: w, height: 1 },
+            );
+        }
+        y += 1;
+    }
+    y
+}
+
 /// Pub card buttons; they act on the card's (highlighted) entry.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum CardBtn {
@@ -226,7 +282,7 @@ struct App {
     selected: HashSet<String>,
     table_area: Rect, // last drawn table region, for mouse hit-testing
     dl_rx: Option<std::sync::mpsc::Receiver<DlMsg>>,
-    // ctrl+p keyboard cheat-sheet overlay; any key or click dismisses
+    // ? keyboard cheat-sheet overlay; any key or click dismisses
     show_help: bool,
     // copy-chord modal region and its clickable rows
     panel_area: Rect,
@@ -2351,6 +2407,11 @@ impl App {
                 // plain-letter bindings must not fire on ctrl/alt chords
                 // (ctrl+a once triggered select-all); ctrl+w is the one
                 // deliberate chord below
+                // ctrl+p was the old control-panel chord; keep it as a
+                // cheat-sheet alias for muscle memory
+                KeyCode::Char('p') if mods.contains(KeyModifiers::CONTROL) => {
+                    self.run_action(Action::Help)
+                }
                 KeyCode::Char(c)
                     if mods.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
                         && !(c == 'w' && mods.contains(KeyModifiers::CONTROL)) =>
@@ -2467,7 +2528,8 @@ impl App {
         let detail_area = self.show_detail.then(|| *it.next().unwrap());
 
         let (strip_area, table_area) = {
-            let [s, t] = Layout::vertical([Constraint::Length(3), Constraint::Min(1)])
+            let h = self.scope_strip_height(table_area.width);
+            let [s, t] = Layout::vertical([Constraint::Length(h), Constraint::Min(1)])
                 .areas(table_area);
             (s, t)
         };
@@ -2579,7 +2641,7 @@ impl App {
         f.render_widget(p, area);
     }
 
-    /// The ctrl+p control panel, tabbed: Actions lists every action with
+    /// The control panel, tabbed: Actions lists every action with
     /// key, label, and click target, unavailable ones dimmed (the Python
     /// key panel's behavior); Copy lists the clipboard targets of the
     /// y-chord the same way. Tab headers are clickable.
@@ -2654,7 +2716,7 @@ impl App {
         f.render_widget(p, area);
     }
 
-    /// Centered keyboard cheat-sheet (ctrl+p); any key or click dismisses.
+    /// Centered keyboard cheat-sheet (?); any key or click dismisses.
     /// Entries whose action is currently unavailable render dimmed, the
     /// old actions panel's behavior (available() is the single policy).
     fn draw_help(&mut self, f: &mut Frame) {
@@ -2843,26 +2905,69 @@ impl App {
         f.render_widget(p, area);
     }
 
-    /// One-line scope strip: Library │ query │ query …, clickable, the
-    /// active scope bold cyan; [ and ] cycle, ctrl+w closes, r refreshes.
+    /// The scope capsules plus the trailing "+ new" chip, in draw order.
+    fn scope_strip_items(&self) -> Vec<(String, usize, bool)> {
+        let mut v: Vec<(String, usize, bool)> = self
+            .scopes
+            .iter()
+            .enumerate()
+            .map(|(i, s)| (s.label().to_string(), i, true))
+            .collect();
+        v.push(("+ new".to_string(), usize::MAX, false));
+        v
+    }
+
+    /// Rows the capsules need at this width (they wrap), plus the blank
+    /// row above and below.
+    fn scope_strip_height(&self, width: u16) -> u16 {
+        let mut rows = 1u16;
+        let mut x = 0u16;
+        for (label, _, _) in self.scope_strip_items() {
+            let wl = pill_width(&label);
+            if x > 0 && x + wl > width {
+                rows += 1;
+                x = 0;
+            }
+            x += wl + 1;
+        }
+        rows + 2
+    }
+
+    /// Scope strip: Library │ query │ query …, clickable, the active
+    /// scope bold cyan; wraps onto further rows when the capsules
+    /// outgrow the width. [ and ] cycle, ctrl+w closes, r refreshes.
     fn draw_scope_strip(&mut self, f: &mut Frame, area: Rect) {
         // font-height capsules, separated from the table by a blank row
         // above and below (glyph-built "taller" capsules read as
         // corruption across fonts)
         self.scope_rects.clear();
-        let text_y = area.y + 1;
+        let mut y = area.y + 1;
         let mut spans: Vec<Span> = vec![];
         let mut x = area.x;
-        let scope_labels: Vec<String> =
-            self.scopes.iter().map(|s| s.label().to_string()).collect();
-        let push_one = |label: &str, bg: Color, fg: Color, idx: usize, rounded: bool,
-                        x: &mut u16,
-                        spans: &mut Vec<Span>,
-                        rects: &mut Vec<(Rect, usize)>| {
-            let wl = pill_width(label);
-            rects.push((Rect { x: *x, y: text_y, width: wl, height: 1 }, idx));
+        for (label, idx, rounded) in self.scope_strip_items() {
+            let wl = pill_width(&label);
+            if x > area.x && x + wl > area.x + area.width {
+                f.render_widget(
+                    Paragraph::new(Line::from(std::mem::take(&mut spans))),
+                    Rect { x: area.x, y, width: area.width, height: 1 },
+                );
+                x = area.x;
+                y += 1;
+            }
+            let r = Rect { x, y, width: wl, height: 1 };
+            self.scope_rects.push((r, idx));
+            let hov = hit(r, self.hover.0, self.hover.1);
+            let (bg, fg) = if idx == self.active_scope {
+                (Color::Cyan, Color::Black)
+            } else if hov {
+                (Color::Rgb(58, 63, 72), Color::White)
+            } else if idx == usize::MAX {
+                (Color::Rgb(40, 44, 52), Color::DarkGray)
+            } else {
+                (Color::Rgb(40, 44, 52), Color::Gray)
+            };
             if rounded {
-                push_pill(spans, label, bg, fg);
+                push_pill(&mut spans, &label, bg, fg);
             } else {
                 spans.push(Span::styled(
                     format!(" {label} "),
@@ -2870,33 +2975,11 @@ impl App {
                 ));
             }
             spans.push(Span::raw(" "));
-            *x += wl + 1;
-        };
-        for (i, label) in scope_labels.iter().enumerate() {
-            let active = i == self.active_scope;
-            let probe = Rect { x, y: text_y, width: pill_width(label), height: 1 };
-            let hov = hit(probe, self.hover.0, self.hover.1);
-            let (bg, fg) = if active {
-                (Color::Cyan, Color::Black)
-            } else if hov {
-                (Color::Rgb(58, 63, 72), Color::White)
-            } else {
-                (Color::Rgb(40, 44, 52), Color::Gray)
-            };
-            push_one(label, bg, fg, i, true, &mut x, &mut spans, &mut self.scope_rects);
+            x += wl + 1;
         }
-        let label = "+ new";
-        let probe = Rect { x, y: text_y, width: pill_width(label), height: 1 };
-        let hov = hit(probe, self.hover.0, self.hover.1);
-        let (bg, fg) = if hov {
-            (Color::Rgb(58, 63, 72), Color::White)
-        } else {
-            (Color::Rgb(40, 44, 52), Color::DarkGray)
-        };
-        push_one(label, bg, fg, usize::MAX, false, &mut x, &mut spans, &mut self.scope_rects);
         f.render_widget(
             Paragraph::new(Line::from(spans)),
-            Rect { x: area.x, y: text_y, width: area.width, height: 1 },
+            Rect { x: area.x, y, width: area.width, height: 1 },
         );
     }
 
@@ -3399,53 +3482,35 @@ impl App {
             y += 1;
         }
         y += 1;
-        let byline = format!("{}   ·   {year}", format_authors(&authors));
+        let mut byline = format!("{}   ·   {year}", format_authors(&authors));
+        if let Some(n) = cites {
+            byline.push_str(&format!("   ·   cited by {n}"));
+        }
         let dim = Style::default().fg(Color::DarkGray);
-        let mut by_lines = wrap_text(&byline, w);
-        let mut last = by_lines.pop().unwrap_or_default();
-        for l in by_lines {
+        for l in wrap_text(&byline, w) {
             line_at(f, y, Line::from(Span::styled(l, dim)));
             y += 1;
         }
-        // the byline's trailing "cited by N" and "references →" are
-        // citation-graph affordances: hovering underlines, a click
-        // spawns citations(...)/references(...) as a new query scope
-        // (CardBtn dispatch resolves the bibcode); they share the last
-        // byline line when it fits, else drop to their own line
-        let tags: Vec<(String, CardBtn)> = cites
-            .map(|n| (format!("cited by {n}"), CardBtn::Citations))
-            .into_iter()
-            .chain([("references →".to_string(), CardBtn::Refs)])
-            .collect();
-        let tags_w: usize = tags.iter().map(|(l, _)| l.chars().count() + 7).sum();
-        if last.chars().count() + tags_w > w {
-            line_at(f, y, Line::from(Span::styled(std::mem::take(&mut last), dim)));
-            y += 1;
+        // the vertical link stack: browser links plus the citation-graph
+        // queries (the ⌕ rows act inside astrobib)
+        let mut stack: Vec<(String, LinkTarget)> = vec![(
+            "ADS".into(),
+            LinkTarget::Url(format!("https://ui.adsabs.harvard.edu/abs/{bibcode}/abstract")),
+        )];
+        if !eprint.is_empty() {
+            stack.push((
+                format!("arXiv:{eprint}"),
+                LinkTarget::Url(format!("https://arxiv.org/abs/{eprint}")),
+            ));
         }
-        let mut lx = x0 + last.chars().count() as u16;
-        let mut spans: Vec<Span> = vec![];
-        if !last.is_empty() {
-            spans.push(Span::styled(last, dim));
+        if !doi.is_empty() {
+            stack.push(("DOI".into(), LinkTarget::Url(format!("https://doi.org/{doi}"))));
         }
-        for (label, btn) in tags {
-            if !spans.is_empty() {
-                spans.push(Span::styled("   ·   ", dim));
-                lx += 7;
-            }
-            let wl = label.chars().count() as u16;
-            let r = Rect { x: lx, y, width: wl, height: 1 };
-            if y < bottom {
-                self.card_buttons.push((r, btn));
-            }
-            let style =
-                if hit(r, hv.0, hv.1) { dim.add_modifier(Modifier::UNDERLINED) } else { dim };
-            spans.push(Span::styled(label, style));
-            lx += wl;
-        }
-        line_at(f, y, Line::from(spans));
-        y += 1;
-        // links block + footer, plus PDF buttons + status once imported
-        let rest = 3 + 2 + if in_lib { 2 } else { 0 };
+        stack.push(("citations".into(), LinkTarget::Query(CardBtn::Citations)));
+        stack.push(("references".into(), LinkTarget::Query(CardBtn::Refs)));
+        // link stack block + footer, plus PDF buttons + status once
+        // imported
+        let rest = 2 + stack.len() as u16 + 2 + if in_lib { 2 } else { 0 };
         if !abstract_.is_empty() && y + rest < bottom {
             y += 1;
             let avail = (bottom - y).saturating_sub(rest) as usize;
@@ -3474,45 +3539,7 @@ impl App {
         let dimsep = Style::default().fg(Color::DarkGray);
         line_at(f, y, Line::from(Span::styled(sep.clone(), dimsep)));
         y += 1;
-        let cyan = Style::default().fg(Color::Cyan);
-        let mut spans: Vec<Span> = vec![];
-        let mut lx = x0;
-        let link = |label: String, url: String, y: u16, spans: &mut Vec<Span>, lx: &mut u16, links: &mut Vec<(Rect, String)>| {
-            let wl = label.chars().count() as u16;
-            let r = Rect { x: *lx, y, width: wl, height: 1 };
-            let style = if hit(r, hv.0, hv.1) {
-                cyan.add_modifier(Modifier::UNDERLINED)
-            } else {
-                cyan
-            };
-            links.push((r, url));
-            spans.push(Span::styled(label, style));
-            spans.push(Span::raw("  "));
-            *lx += wl + 2;
-        };
-        link(
-            "ADS".into(),
-            format!("https://ui.adsabs.harvard.edu/abs/{bibcode}/abstract"),
-            y,
-            &mut spans,
-            &mut lx,
-            &mut self.card_links,
-        );
-        if !eprint.is_empty() {
-            link(
-                format!("arXiv:{eprint}"),
-                format!("https://arxiv.org/abs/{eprint}"),
-                y,
-                &mut spans,
-                &mut lx,
-                &mut self.card_links,
-            );
-        }
-        if !doi.is_empty() {
-            link("DOI".into(), format!("https://doi.org/{doi}"), y, &mut spans, &mut lx, &mut self.card_links);
-        }
-        line_at(f, y, Line::from(spans));
-        y += 1;
+        y = draw_link_stack(f, x0, y, w as u16, bottom, self.hover, stack, &mut self.card_links, &mut self.card_buttons);
         line_at(f, y, Line::from(Span::styled(sep, dimsep)));
         y += 2;
         // once imported, the library card's PDF buttons appear here too,
@@ -3571,6 +3598,7 @@ impl App {
             }
             y += 1;
         }
+        let cyan = Style::default().fg(Color::Cyan);
         let mut foot: Vec<Span> = vec![Span::styled(
             hyp_key.clone(),
             region_style(cyan, CopyItem::Key),
@@ -3695,15 +3723,10 @@ impl App {
             e.adsurl().to_string(),
             e.doi().to_string(),
         );
-        // the links row holds URL links plus the citation-graph pair —
-        // "citations" / "references" spawn ADS query scopes rather than
-        // opening the browser, so they register as card buttons; built
-        // here (rendered below) because the row can flow onto extra
-        // lines on narrow cards and the layout budget must know
-        enum LinkTarget {
-            Url(String),
-            Query(CardBtn),
-        }
+        // the vertical link stack: browser links plus the citation-graph
+        // pair — "citations" / "references" spawn ADS query scopes
+        // rather than opening the browser, so they register as card
+        // buttons; built here because the layout budget needs its height
         let mut links_row: Vec<(String, LinkTarget)> = vec![];
         if !adsurl.is_empty() {
             links_row.push(("ADS".into(), LinkTarget::Url(adsurl.clone())));
@@ -3721,22 +3744,12 @@ impl App {
             links_row.push(("citations".into(), LinkTarget::Query(CardBtn::Citations)));
             links_row.push(("references".into(), LinkTarget::Query(CardBtn::Refs)));
         }
-        // greedy flow: how many lines the links row will occupy
-        let mut link_lines: u16 = 1;
-        let mut used = 0usize;
-        for (label, _) in &links_row {
-            let wl = label.chars().count();
-            if used > 0 && used + wl > w {
-                link_lines += 1;
-                used = 0;
-            }
-            used += wl + 2;
-        }
+        let link_lines = links_row.len() as u16;
         // footer + links/buttons need this much room below the abstract
         let kws = e.keywords().join(" · ");
         let kw_lines = if kws.is_empty() { 0 } else { wrap_text(&kws, w).len() as u16 + 1 };
         let has_ms = self.lib.manuscript.is_some() && self.lib.global_on;
-        // links block (sep + links + sep + air) + buttons + ms chip +
+        // link stack (sep + rows + sep + air) + buttons + ms chip +
         // status (line + blank) + keywords + key line
         let rest = 3 + link_lines + 1 + u16::from(has_ms) + 2 + kw_lines + 1;
         let abs = e.abstract_();
@@ -3774,42 +3787,14 @@ impl App {
             }
         }
 
-        // ── links row (bordered top and bottom, like #detail-links) ──
+        // ── link stack (bordered top and bottom, like #detail-links) ──
         let sep = "─".repeat(w);
         let dimsep = Style::default().fg(Color::DarkGray);
         line_at(f, y, Line::from(Span::styled(sep.clone(), dimsep)));
         y += 1;
-        let mut spans: Vec<Span> = vec![];
-        let mut lx = x0;
-        let cyan = Style::default().fg(Color::Cyan);
-        for (label, target) in links_row {
-            let wl = label.chars().count() as u16;
-            if lx > x0 && (lx - x0 + wl) as usize > w {
-                // flow onto the next line rather than clipping
-                line_at(f, y, Line::from(std::mem::take(&mut spans)));
-                y += 1;
-                lx = x0;
-            }
-            let r = Rect { x: lx, y, width: wl, height: 1 };
-            if y < bottom {
-                match target {
-                    LinkTarget::Url(url) => self.card_links.push((r, url)),
-                    LinkTarget::Query(btn) => self.card_buttons.push((r, btn)),
-                }
-            }
-            let style = if hit(r, hv.0, hv.1) {
-                cyan.add_modifier(Modifier::UNDERLINED)
-            } else {
-                cyan
-            };
-            spans.push(Span::styled(label, style));
-            spans.push(Span::raw("  "));
-            lx += wl + 2;
-        }
-        line_at(f, y, Line::from(spans));
-        y += 1;
+        y = draw_link_stack(f, x0, y, w as u16, bottom, self.hover, links_row, &mut self.card_links, &mut self.card_buttons);
         line_at(f, y, Line::from(Span::styled(sep, dimsep)));
-        y += 2; // a little air below the links row
+        y += 2; // a little air below the link stack
 
         // ── PDF buttons (Python labels, colors, and visibility rules),
         //    drawn as rounded pills ─────────────────────────────────────
@@ -3906,6 +3891,7 @@ impl App {
         }
         let short = if e.short_key.is_empty() { e.key() } else { &e.short_key };
         let suffix: String = e.key().chars().skip(short.chars().count()).collect();
+        let cyan = Style::default().fg(Color::Cyan);
         let mut spans = vec![
             Span::styled(short.to_string(), cyan),
             Span::styled(suffix, Style::default().fg(Color::DarkGray).add_modifier(Modifier::DIM)),
@@ -4054,7 +4040,7 @@ impl App {
                     Style::default().fg(Color::Cyan),
                 ),
                 Span::styled(
-                    "  ·  Space/click ◯ toggle · Esc done · ctrl+p actions".to_string(),
+                    "  ·  Space/click ◯ toggle · Esc done · ? keys".to_string(),
                     Style::default().fg(Color::DarkGray),
                 ),
             ]),
