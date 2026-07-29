@@ -109,6 +109,8 @@ def main():
         try:
             sess = driver.Session(
                 BINARY,
+                cols=getattr(mod, "COLS", 140),
+                rows=getattr(mod, "ROWS", 40),
                 allow_network=getattr(mod, "ALLOW_NETWORK", False),
                 manuscript=getattr(mod, "MANUSCRIPT", None),
             )
