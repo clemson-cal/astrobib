@@ -71,7 +71,9 @@ pub fn fetch_source(key: &str, eprint: &str, adsurl: &str, source: Source) -> Op
     }
     let try_oa = || -> Option<PathBuf> {
         let bc = bibcode_from_adsurl(adsurl)?;
-        let url = crate::ads::resolve_pdf_url(bc, "OA_PDF")?;
+        // OA copy first; older papers live on ADS's scan service
+        let url = crate::ads::resolve_pdf_url(bc, "OA_PDF")
+            .or_else(|| crate::ads::resolve_pdf_url(bc, "ADS_PDF"))?;
         download_url(&path, &url)
     };
     let try_arxiv = || -> Option<PathBuf> {
@@ -94,6 +96,10 @@ pub fn browser_resolve_url(doi: &str, adsurl: &str, eprint: &str) -> Option<Stri
         if let Some(url) = crate::ads::resolve_pdf_url(bc, "PUB_PDF") {
             return Some(url);
         }
+        // older papers: ADS's own scanned article service
+        if let Some(url) = crate::ads::resolve_pdf_url(bc, "ADS_PDF") {
+            return Some(url);
+        }
     }
     if !doi.is_empty() {
         return Some(format!("https://doi.org/{doi}"));
@@ -106,10 +112,22 @@ pub fn browser_resolve_url(doi: &str, adsurl: &str, eprint: &str) -> Option<Stri
 
 /// Open a URL in the system browser.
 pub fn browser_open(url: &str) {
+    // never hand a non-URL to open(1) — it would resolve it as a file
+    // path — and silence the child: anything it prints while the TUI
+    // owns the terminal in raw mode corrupts the display
+    if !url.starts_with("http://") && !url.starts_with("https://") {
+        return;
+    }
+    use std::process::Stdio;
     #[cfg(target_os = "macos")]
-    let _ = std::process::Command::new("open").arg(url).spawn();
+    let cmd = "open";
     #[cfg(not(target_os = "macos"))]
-    let _ = std::process::Command::new("xdg-open").arg(url).spawn();
+    let cmd = "xdg-open";
+    let _ = std::process::Command::new(cmd)
+        .arg(url)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn();
 }
 
 fn downloads_dir() -> PathBuf {
@@ -211,14 +229,19 @@ pub fn open_paths(paths: &[PathBuf]) {
     if paths.is_empty() {
         return;
     }
+    use std::process::Stdio;
     #[cfg(target_os = "macos")]
     {
         let mut cmd = std::process::Command::new("open");
-        cmd.args(paths);
+        cmd.args(paths).stdout(Stdio::null()).stderr(Stdio::null());
         let _ = cmd.spawn();
     }
     #[cfg(not(target_os = "macos"))]
     for p in paths {
-        let _ = std::process::Command::new("xdg-open").arg(p).spawn();
+        let _ = std::process::Command::new("xdg-open")
+            .arg(p)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn();
     }
 }

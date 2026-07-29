@@ -19,7 +19,13 @@
 - An `@` about modal: version, copyright and MIT license, affiliation and NSF award 2408034, clickable links (homepage, PyPI, issue tracker — shown as full URLs so terminals linkify them too), a ratatui / Claude Fable 5 acknowledgment, and a ⟳ check-for-updates button that asks PyPI and suggests `pipx upgrade astrobib` when a newer release exists.
 - Every divider — the card's horizontal and vertical rules, the table header rule, the log and footer rules — shares one quite-dim color.
 
+### Fixed
+- A stalled browser download's ✕ ignored clicks: the waiting line began with a double-width ⏳, shifting every rendered cell one column right of its click rect. Single-width glyph; rect and glyphs agree again.
+- Older scanned papers corrupted the TUI: the ADS resolver answers PUB_PDF with a bare DOI (e.g. `10.1086/158924`), which was handed to `open`(1) as a file path — its error text landed in the raw-mode terminal. Resolver links must now be absolute URLs, `open`/`xdg-open` children are silenced and URL-guarded, and both the browser and auto-download ladders fall back to ADS's scan service (`ADS_PDF`) — so `p` now fetches old scanned articles directly.
+- The card's "no open-access PDF" status no longer repeats "browser ↓" directly beneath the browser pill it points at.
+
 ### Changed
+- The keys and log panels share one border style (full border, global divider color, dim title).
 - Card operations are visible even when unavailable: links, query actions, and copy rows without a value (no DOI, no cached PDF, …) render dimmed and unclickable, their rollover hint saying so, instead of disappearing.
 - The card ⇄ bib toggler is a segmented "▤ card │ @ bib" control at the card's bottom-right — active side underlined, inactive side dimmed and clickable.
 - The card shows the publication line — journal (AAS macros expanded), volume(issue), pages — under the byline, on both the library and query cards.

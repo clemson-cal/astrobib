@@ -204,7 +204,12 @@ pub fn resolve_pdf_url(bibcode: &str, link_type: &str) -> Option<String> {
         return None;
     }
     let v: serde_json::Value = resp.into_json().ok()?;
-    v["link"].as_str().filter(|s| !s.is_empty()).map(str::to_string)
+    // the resolver sometimes returns a bare identifier (e.g. a DOI like
+    // "10.1086/158924") instead of a URL — only absolute URLs are usable
+    v["link"]
+        .as_str()
+        .filter(|s| s.starts_with("http://") || s.starts_with("https://"))
+        .map(str::to_string)
 }
 
 /// Resolve a foreign bib entry to a unique ADS record — port of

@@ -2089,7 +2089,7 @@ impl App {
                     // Open/Clear already signal it; an unavailable PDF gets
                     // an expected-outcome note, not an error
                     self.pdf_status = if done == 0 && !failed.is_empty() {
-                        "⚠ no open-access PDF — try browser ↓".to_string()
+                        "⚠ no open-access PDF found".to_string()
                     } else {
                         String::new()
                     };
@@ -2847,7 +2847,7 @@ impl App {
             Block::default()
                 .borders(Borders::ALL)
                 .border_style(divider())
-                .title(" keys "),
+                .title(Span::styled(" keys ", Style::default().fg(Color::DarkGray))),
         );
         f.render_widget(p, area);
     }
@@ -3922,7 +3922,7 @@ impl App {
             line_at(f, y, Line::from(bspans));
             y += 1;
             if self.poll_cancel.is_some() {
-                let label = "⏳ waiting for download…  cancel ✕";
+                let label = "◌ waiting for download…  cancel ✕";
                 if y < bottom {
                     self.card_buttons.push((
                         Rect { x: x0, y, width: label.chars().count() as u16, height: 1 },
@@ -4255,7 +4255,7 @@ impl App {
 
         // ── PDF status (⏳ waiting…, ✓/✗ results) ────────────────────
         if self.poll_cancel.is_some() {
-            let label = "⏳ waiting for download…  cancel ✕";
+            let label = "◌ waiting for download…  cancel ✕";
             if y < bottom {
                 self.card_buttons.push((
                     Rect { x: x0, y, width: label.chars().count() as u16, height: 1 },
@@ -4388,7 +4388,8 @@ impl App {
             " Log ".to_string()
         };
         let block = Block::default()
-            .borders(Borders::TOP | Borders::BOTTOM)
+            .borders(Borders::ALL)
+            .border_style(divider())
             .title(Span::styled(title, Style::default().fg(Color::DarkGray)));
         f.render_widget(Paragraph::new(Text::from(lines)).block(block), area);
     }
