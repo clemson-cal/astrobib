@@ -3183,7 +3183,6 @@ impl App {
         // ── PDF buttons (Python labels, colors, and visibility rules),
         //    drawn as rounded pills ─────────────────────────────────────
         let cached = pdf::is_cached(&key);
-        let muted = Style::default().fg(Color::Gray);
         let mut buttons: Vec<(&str, CardBtn, Color)> = vec![];
         if !cached && !eprint.is_empty() {
             buttons.push(("arXiv ↓", CardBtn::Arxiv, Color::Cyan));
