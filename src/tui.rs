@@ -287,8 +287,8 @@ fn draw_link_stack(
     w: u16,
     bottom: u16,
     hover: (u16, u16),
-    left: Vec<(String, LinkTarget)>,
-    right: Vec<(String, LinkTarget)>,
+    left: Vec<(String, LinkTarget, bool)>,
+    right: Vec<(String, LinkTarget, bool)>,
     card_links: &mut Vec<(Rect, String)>,
     card_buttons: &mut Vec<(Rect, CardBtn)>,
     hint: &mut Option<String>,
@@ -300,7 +300,7 @@ fn draw_link_stack(
     // left column width: its longest row (badge + space + label), capped
     let left_w = if two_col {
         left.iter()
-            .map(|(l, _)| l.chars().count() as u16 + 2)
+            .map(|(l, _, _)| l.chars().count() as u16 + 2)
             .max()
             .unwrap_or(0)
             .min(w / 2)
@@ -309,8 +309,8 @@ fn draw_link_stack(
     };
     let rows = left.len().max(right.len());
     let mut render =
-        |f: &mut Frame, item: Option<(String, LinkTarget)>, x: u16, colw: u16, ry: u16| {
-            let Some((label, target)) = item else { return };
+        |f: &mut Frame, item: Option<(String, LinkTarget, bool)>, x: u16, colw: u16, ry: u16| {
+            let Some((label, target, enabled)) = item else { return };
             let badge = match &target {
                 LinkTarget::Url(_) => "↗",
                 LinkTarget::Query(_) => "⌕",
@@ -321,21 +321,35 @@ fn draw_link_stack(
             let r = Rect { x, y: ry, width: wl, height: 1 };
             let hov = hit(r, hover.0, hover.1);
             if hov {
-                *hint = Some(match &target {
+                let base = match &target {
                     LinkTarget::Url(_) => format!("↗ open {label} in the browser"),
                     LinkTarget::Query(btn) => card_hint(*btn).to_string(),
                     LinkTarget::Copy(item) => copy_hint(*item).to_string(),
+                };
+                *hint = Some(if enabled {
+                    base
+                } else {
+                    format!("{}  —  not available here", base.split("  ·  ").next().unwrap_or(&base))
                 });
             }
-            match target {
-                LinkTarget::Url(url) => card_links.push((r, url)),
-                LinkTarget::Query(btn) => card_buttons.push((r, btn)),
-                LinkTarget::Copy(item) => yanks.push((r, item)),
+            if enabled {
+                match target {
+                    LinkTarget::Url(url) => card_links.push((r, url)),
+                    LinkTarget::Query(btn) => card_buttons.push((r, btn)),
+                    LinkTarget::Copy(item) => yanks.push((r, item)),
+                }
             }
-            let style = if hov { cyan.add_modifier(Modifier::UNDERLINED) } else { cyan };
+            let (badge_style, style) = if !enabled {
+                let d = dim.add_modifier(Modifier::DIM);
+                (d, d)
+            } else if hov {
+                (dim, cyan.add_modifier(Modifier::UNDERLINED))
+            } else {
+                (dim, cyan)
+            };
             f.render_widget(
                 Paragraph::new(Line::from(vec![
-                    Span::styled(badge, dim),
+                    Span::styled(badge, badge_style),
                     Span::raw(" "),
                     Span::styled(shown, style),
                 ])),
@@ -2144,31 +2158,10 @@ impl App {
         // copy-regions: the card text copies its own entry's datum; in
         // ADS scopes values come from the shown article itself
         if let Some(&(_, item)) = self.card_yanks.iter().find(|(r, _)| hit(*r, x, y)) {
-            if let Some(Scope::Ads { articles, .. }) = self.scopes.get(self.active_scope) {
-                if let Some(a) = self.card_article_pos().and_then(|p| articles.get(p)) {
-                    let text = match item {
-                        CopyItem::Title => Some(a.title.clone()),
-                        CopyItem::Abstract => Some(crate::ads::clean_abstract(&a.abstract_)),
-                        CopyItem::Bibcode => Some(a.bibcode.clone()),
-                        CopyItem::AdsUrl => Some(format!(
-                            "https://ui.adsabs.harvard.edu/abs/{}/abstract",
-                            a.bibcode
-                        )),
-                        CopyItem::ArxivUrl => crate::ads::arxiv_id(a)
-                            .map(|id| format!("https://arxiv.org/abs/{id}")),
-                        CopyItem::DoiUrl => {
-                            a.doi.first().map(|d| format!("https://doi.org/{d}"))
-                        }
-                        CopyItem::PdfPath => self
-                            .card_entry_key()
-                            .filter(|k| pdf::is_cached(k))
-                            .map(|k| pdf::cache_path(&k).to_string_lossy().into_owned()),
-                        _ => Some(self.hypothetical_key(a)),
-                    };
-                    match text {
-                        Some(text) => self.finish_copy(&text),
-                        None => self.note(MsgCat::Warn, "nothing to copy".to_string()),
-                    }
+            if matches!(self.scopes.get(self.active_scope), Some(Scope::Ads { .. })) {
+                match self.article_copy_value(item) {
+                    Some(text) => self.finish_copy(&text),
+                    None => self.note(MsgCat::Warn, "nothing to copy".to_string()),
                 }
                 return;
             }
@@ -2335,11 +2328,41 @@ impl App {
     /// y — await a target key; the panel force-shows the Copy tab as a
     /// which-key menu (restored by exit_copy_mode).
     fn enter_copy_mode(&mut self) {
-        if self.action_keys().is_empty() {
+        let on_article = matches!(self.scopes.get(self.active_scope), Some(Scope::Ads { .. }));
+        if !on_article && self.action_keys().is_empty() {
             self.note(MsgCat::Warn, "nothing to copy".to_string());
             return;
         }
         self.mode = Mode::Copy;
+    }
+
+    /// The chord/click copy value for the shown ADS article — the same
+    /// items the card's ⧉ rows offer, from the article itself.
+    fn article_copy_value(&self, item: CopyItem) -> Option<String> {
+        let Some(Scope::Ads { articles, .. }) = self.scopes.get(self.active_scope) else {
+            return None;
+        };
+        let a = self.card_article_pos().and_then(|p| articles.get(p))?;
+        match item {
+            CopyItem::Title => Some(a.title.clone()),
+            CopyItem::Abstract => {
+                (!a.abstract_.is_empty()).then(|| crate::ads::clean_abstract(&a.abstract_))
+            }
+            CopyItem::Bibcode => Some(a.bibcode.clone()),
+            CopyItem::AdsUrl => Some(format!(
+                "https://ui.adsabs.harvard.edu/abs/{}/abstract",
+                a.bibcode
+            )),
+            CopyItem::ArxivUrl => {
+                crate::ads::arxiv_id(a).map(|id| format!("https://arxiv.org/abs/{id}"))
+            }
+            CopyItem::DoiUrl => a.doi.first().map(|d| format!("https://doi.org/{d}")),
+            CopyItem::PdfPath => self
+                .card_entry_key()
+                .filter(|k| pdf::is_cached(k))
+                .map(|k| pdf::cache_path(&k).to_string_lossy().into_owned()),
+            CopyItem::Key | CopyItem::FullKey => Some(self.hypothetical_key(a)),
+        }
     }
 
     fn exit_copy_mode(&mut self) {
@@ -2406,7 +2429,12 @@ impl App {
 
     fn do_copy(&mut self, item: CopyItem) {
         self.exit_copy_mode();
-        let Some(text) = self.copy_value(item) else {
+        let text = if matches!(self.scopes.get(self.active_scope), Some(Scope::Ads { .. })) {
+            self.article_copy_value(item)
+        } else {
+            self.copy_value(item)
+        };
+        let Some(text) = text else {
             self.note(MsgCat::Warn, "nothing to copy".to_string());
             return;
         };
@@ -3527,26 +3555,43 @@ impl App {
     /// The pub card for an ADS result: body, links, citation count, an
     /// import button, and click-to-copy regions like the library card.
     /// The card ⇄ bib-source toggler, pinned to the card's bottom-right
-    /// corner so it never moves between modes or with card content.
+    /// corner: a segmented "▤ card │ @ bib" control — the active side
+    /// underlined, the inactive side dimmed and clickable (v toggles).
     fn draw_card_toggle(&mut self, f: &mut Frame, x0: u16, w: u16, bottom: u16, source: bool) {
-        let label = if source { "◂ card" } else { "@ bib" };
-        let lw = label.chars().count() as u16;
-        let r = Rect { x: x0 + w.saturating_sub(lw), y: bottom.saturating_sub(1), width: lw, height: 1 };
-        self.card_buttons.push((r, CardBtn::BibView));
-        let hovb = hit(r, self.hover.0, self.hover.1);
-        if hovb {
-            self.hover_hint = Some(if source {
-                "◂ back to the formatted card  ·  v".to_string()
+        let segs: [(&str, bool); 2] = [("▤ card", false), ("@ bib", true)];
+        let total: u16 = segs.iter().map(|(l, _)| l.chars().count() as u16).sum::<u16>() + 3;
+        let y = bottom.saturating_sub(1);
+        let mut x = x0 + w.saturating_sub(total);
+        for (i, (label, is_bib)) in segs.iter().enumerate() {
+            if i > 0 {
+                f.render_widget(
+                    Paragraph::new(Line::from(Span::styled(" │ ", divider()))),
+                    Rect { x, y, width: 3, height: 1 },
+                );
+                x += 3;
+            }
+            let lw = label.chars().count() as u16;
+            let r = Rect { x, y, width: lw, height: 1 };
+            let active = *is_bib == source;
+            let style = if active {
+                Style::default().add_modifier(Modifier::UNDERLINED)
             } else {
-                card_hint(CardBtn::BibView).to_string()
-            });
+                let hov = hit(r, self.hover.0, self.hover.1);
+                self.card_buttons.push((r, CardBtn::BibView));
+                if hov {
+                    self.hover_hint = Some(if *is_bib {
+                        card_hint(CardBtn::BibView).to_string()
+                    } else {
+                        "▤ back to the formatted card  ·  v".to_string()
+                    });
+                    Style::default().fg(Color::Green).add_modifier(Modifier::UNDERLINED)
+                } else {
+                    Style::default().fg(Color::DarkGray)
+                }
+            };
+            f.render_widget(Paragraph::new(Line::from(Span::styled(*label, style))), r);
+            x += lw;
         }
-        let style = if hovb {
-            Style::default().fg(Color::Green).add_modifier(Modifier::UNDERLINED)
-        } else {
-            Style::default().fg(Color::DarkGray)
-        };
-        f.render_widget(Paragraph::new(Line::from(Span::styled(label, style))), r);
     }
 
     /// The verbatim .bib file in place of the formatted card (v / @ bib),
@@ -3554,25 +3599,15 @@ impl App {
     fn draw_bib_source(&mut self, f: &mut Frame, area: Rect, key: &str) {
         let Some(e) = self.lib.get(key) else { return };
         let path = e.path.clone();
-        let mut copies: Vec<(String, LinkTarget)> = vec![
-            ("cite key".into(), LinkTarget::Copy(CopyItem::Key)),
-            ("full key".into(), LinkTarget::Copy(CopyItem::FullKey)),
+        let copies: Vec<(String, LinkTarget, bool)> = vec![
+            ("cite key".into(), LinkTarget::Copy(CopyItem::Key), true),
+            ("full key".into(), LinkTarget::Copy(CopyItem::FullKey), true),
+            ("bibcode".into(), LinkTarget::Copy(CopyItem::Bibcode), e.bibcode().is_some()),
+            ("ADS URL".into(), LinkTarget::Copy(CopyItem::AdsUrl), !e.adsurl().is_empty()),
+            ("arXiv URL".into(), LinkTarget::Copy(CopyItem::ArxivUrl), !e.eprint().is_empty()),
+            ("DOI URL".into(), LinkTarget::Copy(CopyItem::DoiUrl), !e.doi().is_empty()),
+            ("PDF path".into(), LinkTarget::Copy(CopyItem::PdfPath), pdf::is_cached(key)),
         ];
-        if e.bibcode().is_some() {
-            copies.push(("bibcode".into(), LinkTarget::Copy(CopyItem::Bibcode)));
-        }
-        if !e.adsurl().is_empty() {
-            copies.push(("ADS URL".into(), LinkTarget::Copy(CopyItem::AdsUrl)));
-        }
-        if !e.eprint().is_empty() {
-            copies.push(("arXiv URL".into(), LinkTarget::Copy(CopyItem::ArxivUrl)));
-        }
-        if !e.doi().is_empty() {
-            copies.push(("DOI URL".into(), LinkTarget::Copy(CopyItem::DoiUrl)));
-        }
-        if pdf::is_cached(key) {
-            copies.push(("PDF path".into(), LinkTarget::Copy(CopyItem::PdfPath)));
-        }
         let name = path
             .file_name()
             .map(|s| s.to_string_lossy().to_string())
@@ -3590,7 +3625,7 @@ impl App {
         area: Rect,
         header: &str,
         text: &str,
-        copies: Vec<(String, LinkTarget)>,
+        copies: Vec<(String, LinkTarget, bool)>,
     ) {
         let x0 = area.x + 3;
         let w = area.width.saturating_sub(5);
@@ -3682,17 +3717,13 @@ impl App {
                 self.draw_bib_source(f, area, &k);
                 return;
             }
-            let mut copies: Vec<(String, LinkTarget)> = vec![
-                ("cite key".into(), LinkTarget::Copy(CopyItem::Key)),
-                ("bibcode".into(), LinkTarget::Copy(CopyItem::Bibcode)),
-                ("ADS URL".into(), LinkTarget::Copy(CopyItem::AdsUrl)),
+            let copies: Vec<(String, LinkTarget, bool)> = vec![
+                ("cite key".into(), LinkTarget::Copy(CopyItem::Key), true),
+                ("bibcode".into(), LinkTarget::Copy(CopyItem::Bibcode), true),
+                ("ADS URL".into(), LinkTarget::Copy(CopyItem::AdsUrl), true),
+                ("arXiv URL".into(), LinkTarget::Copy(CopyItem::ArxivUrl), !eprint.is_empty()),
+                ("DOI URL".into(), LinkTarget::Copy(CopyItem::DoiUrl), !doi.is_empty()),
             ];
-            if !eprint.is_empty() {
-                copies.push(("arXiv URL".into(), LinkTarget::Copy(CopyItem::ArxivUrl)));
-            }
-            if !doi.is_empty() {
-                copies.push(("DOI URL".into(), LinkTarget::Copy(CopyItem::DoiUrl)));
-            }
             match self.bib_preview.get(&bibcode).cloned() {
                 Some(text) => self.draw_bib_panel(
                     f,
@@ -3767,38 +3798,57 @@ impl App {
             line_at(f, y, Line::from(Span::styled(l, dim)));
             y += 1;
         }
+        if !a.journal.is_empty() {
+            let mut publine = a.journal.clone();
+            if !a.volume.is_empty() {
+                publine.push_str(&format!(" {}", a.volume));
+            }
+            if !a.issue.is_empty() {
+                publine.push_str(&format!("({})", a.issue));
+            }
+            if !a.page.is_empty() {
+                publine.push_str(&format!(", {}", a.page));
+            }
+            for l in wrap_text(&publine, w) {
+                line_at(f, y, Line::from(Span::styled(l, dim)));
+                y += 1;
+            }
+        }
         // the vertical link stack: browser links plus the citation-graph
         // queries (the ⌕ rows act inside astrobib)
-        let mut stack: Vec<(String, LinkTarget)> = vec![(
-            "ADS".into(),
-            LinkTarget::Url(format!("https://ui.adsabs.harvard.edu/abs/{bibcode}/abstract")),
-        )];
-        if !eprint.is_empty() {
-            stack.push((
-                format!("arXiv:{eprint}"),
+        let stack: Vec<(String, LinkTarget, bool)> = vec![
+            (
+                "ADS".into(),
+                LinkTarget::Url(format!("https://ui.adsabs.harvard.edu/abs/{bibcode}/abstract")),
+                true,
+            ),
+            (
+                if eprint.is_empty() { "arXiv".to_string() } else { format!("arXiv:{eprint}") },
                 LinkTarget::Url(format!("https://arxiv.org/abs/{eprint}")),
-            ));
-        }
-        if !doi.is_empty() {
-            stack.push(("DOI".into(), LinkTarget::Url(format!("https://doi.org/{doi}"))));
-        }
-        stack.push(("citations".into(), LinkTarget::Query(CardBtn::Citations)));
-        stack.push(("references".into(), LinkTarget::Query(CardBtn::Refs)));
-        let mut copies: Vec<(String, LinkTarget)> = vec![
-            ("cite key".into(), LinkTarget::Copy(CopyItem::Key)),
-            ("bibcode".into(), LinkTarget::Copy(CopyItem::Bibcode)),
-            ("ADS URL".into(), LinkTarget::Copy(CopyItem::AdsUrl)),
+                !eprint.is_empty(),
+            ),
+            (
+                "DOI".into(),
+                LinkTarget::Url(format!("https://doi.org/{doi}")),
+                !doi.is_empty(),
+            ),
+            ("citations".into(), LinkTarget::Query(CardBtn::Citations), true),
+            ("references".into(), LinkTarget::Query(CardBtn::Refs), true),
         ];
-        if !eprint.is_empty() {
-            copies.push(("arXiv URL".into(), LinkTarget::Copy(CopyItem::ArxivUrl)));
-        }
-        if !doi.is_empty() {
-            copies.push(("DOI URL".into(), LinkTarget::Copy(CopyItem::DoiUrl)));
-        }
-        copies.push(("title".into(), LinkTarget::Copy(CopyItem::Title)));
-        if !abstract_.is_empty() {
-            copies.push(("abstract".into(), LinkTarget::Copy(CopyItem::Abstract)));
-        }
+        let copies: Vec<(String, LinkTarget, bool)> = vec![
+            ("cite key".into(), LinkTarget::Copy(CopyItem::Key), true),
+            ("bibcode".into(), LinkTarget::Copy(CopyItem::Bibcode), true),
+            ("ADS URL".into(), LinkTarget::Copy(CopyItem::AdsUrl), true),
+            ("arXiv URL".into(), LinkTarget::Copy(CopyItem::ArxivUrl), !eprint.is_empty()),
+            ("DOI URL".into(), LinkTarget::Copy(CopyItem::DoiUrl), !doi.is_empty()),
+            (
+                "PDF path".into(),
+                LinkTarget::Copy(CopyItem::PdfPath),
+                lib_key.as_deref().is_some_and(pdf::is_cached),
+            ),
+            ("title".into(), LinkTarget::Copy(CopyItem::Title), true),
+            ("abstract".into(), LinkTarget::Copy(CopyItem::Abstract), !abstract_.is_empty()),
+        ];
         // action block + footer, plus PDF buttons + status once imported
         let rest = 2 + stack.len().max(copies.len()) as u16 + 2 + if in_lib { 2 } else { 0 };
         if !abstract_.is_empty() && y + rest < bottom {
@@ -3825,6 +3875,8 @@ impl App {
                 y += 1;
             }
         }
+        // anchored to the card bottom so targets never move
+        y = y.max(bottom.saturating_sub(rest));
         let sep = "─".repeat(w);
         let dimsep = divider();
         line_at(f, y, Line::from(Span::styled(sep.clone(), dimsep)));
@@ -4021,6 +4073,24 @@ impl App {
             line_at(f, y, line);
             y += 1;
         }
+        // journal · volume(issue), pages — under the byline
+        let journal = crate::export::journal_name(e.journal());
+        if !journal.is_empty() {
+            let mut publine = journal.clone();
+            if !e.volume().is_empty() {
+                publine.push_str(&format!(" {}", e.volume()));
+            }
+            if !e.number().is_empty() {
+                publine.push_str(&format!("({})", e.number()));
+            }
+            if !e.pages().is_empty() {
+                publine.push_str(&format!(", {}", e.pages()));
+            }
+            for l in wrap_text(&publine, w) {
+                line_at(f, y, Line::from(Span::styled(l, Style::default().fg(Color::DarkGray))));
+                y += 1;
+            }
+        }
         let (eprint, adsurl, doi) = (
             e.eprint().to_string(),
             e.adsurl().to_string(),
@@ -4030,47 +4100,38 @@ impl App {
         // pair — "citations" / "references" spawn ADS query scopes
         // rather than opening the browser, so they register as card
         // buttons; built here because the layout budget needs its height
-        let mut links_row: Vec<(String, LinkTarget)> = vec![];
-        if !adsurl.is_empty() {
-            links_row.push(("ADS".into(), LinkTarget::Url(adsurl.clone())));
-        }
-        if !eprint.is_empty() {
-            links_row.push((
-                format!("arXiv:{eprint}"),
+        // every operation stays visible; unavailable ones render dimmed
+        let links_row: Vec<(String, LinkTarget, bool)> = vec![
+            ("ADS".into(), LinkTarget::Url(adsurl.clone()), !adsurl.is_empty()),
+            (
+                if eprint.is_empty() { "arXiv".to_string() } else { format!("arXiv:{eprint}") },
                 LinkTarget::Url(format!("https://arxiv.org/abs/{eprint}")),
-            ));
-        }
-        if !doi.is_empty() {
-            links_row.push(("DOI".into(), LinkTarget::Url(format!("https://doi.org/{doi}"))));
-        }
-        if !adsurl.is_empty() {
-            links_row.push(("citations".into(), LinkTarget::Query(CardBtn::Citations)));
-            links_row.push(("references".into(), LinkTarget::Query(CardBtn::Refs)));
-        }
-        // the permanent copy menu (the y-chord's targets), right column
-        let mut copies: Vec<(String, LinkTarget)> = vec![
-            ("cite key".into(), LinkTarget::Copy(CopyItem::Key)),
-            ("full key".into(), LinkTarget::Copy(CopyItem::FullKey)),
+                !eprint.is_empty(),
+            ),
+            (
+                "DOI".into(),
+                LinkTarget::Url(format!("https://doi.org/{doi}")),
+                !doi.is_empty(),
+            ),
+            ("citations".into(), LinkTarget::Query(CardBtn::Citations), !adsurl.is_empty()),
+            ("references".into(), LinkTarget::Query(CardBtn::Refs), !adsurl.is_empty()),
         ];
-        if e.bibcode().is_some() {
-            copies.push(("bibcode".into(), LinkTarget::Copy(CopyItem::Bibcode)));
-        }
-        if !adsurl.is_empty() {
-            copies.push(("ADS URL".into(), LinkTarget::Copy(CopyItem::AdsUrl)));
-        }
-        if !eprint.is_empty() {
-            copies.push(("arXiv URL".into(), LinkTarget::Copy(CopyItem::ArxivUrl)));
-        }
-        if !doi.is_empty() {
-            copies.push(("DOI URL".into(), LinkTarget::Copy(CopyItem::DoiUrl)));
-        }
-        if pdf::is_cached(&key) {
-            copies.push(("PDF path".into(), LinkTarget::Copy(CopyItem::PdfPath)));
-        }
-        copies.push(("title".into(), LinkTarget::Copy(CopyItem::Title)));
-        if !e.abstract_().is_empty() {
-            copies.push(("abstract".into(), LinkTarget::Copy(CopyItem::Abstract)));
-        }
+        // the permanent copy menu (the y-chord's targets), right column
+        let copies: Vec<(String, LinkTarget, bool)> = vec![
+            ("cite key".into(), LinkTarget::Copy(CopyItem::Key), true),
+            ("full key".into(), LinkTarget::Copy(CopyItem::FullKey), true),
+            ("bibcode".into(), LinkTarget::Copy(CopyItem::Bibcode), e.bibcode().is_some()),
+            ("ADS URL".into(), LinkTarget::Copy(CopyItem::AdsUrl), !adsurl.is_empty()),
+            ("arXiv URL".into(), LinkTarget::Copy(CopyItem::ArxivUrl), !eprint.is_empty()),
+            ("DOI URL".into(), LinkTarget::Copy(CopyItem::DoiUrl), !doi.is_empty()),
+            ("PDF path".into(), LinkTarget::Copy(CopyItem::PdfPath), pdf::is_cached(&key)),
+            ("title".into(), LinkTarget::Copy(CopyItem::Title), !e.title().is_empty()),
+            (
+                "abstract".into(),
+                LinkTarget::Copy(CopyItem::Abstract),
+                !e.abstract_().is_empty(),
+            ),
+        ];
         let link_lines = links_row.len().max(copies.len()) as u16;
         // footer + links/buttons need this much room below the abstract
         let kws = e.keywords().join(" · ");
@@ -4117,7 +4178,9 @@ impl App {
             }
         }
 
-        // ── link stack (bordered top and bottom, like #detail-links) ──
+        // ── link stack (bordered top and bottom, like #detail-links),
+        //    anchored to the card bottom so targets never move ──
+        y = y.max(bottom.saturating_sub(rest));
         let sep = "─".repeat(w);
         let dimsep = divider();
         line_at(f, y, Line::from(Span::styled(sep.clone(), dimsep)));

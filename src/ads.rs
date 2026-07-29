@@ -11,7 +11,7 @@ use std::time::Duration;
 pub const ADS_API: &str = "https://api.adsabs.harvard.edu/v1";
 
 const SEARCH_FIELDS: &str =
-    "bibcode,title,author,year,abstract,identifier,doi,esources,arxiv_class,citation_count";
+    "bibcode,title,author,year,abstract,identifier,doi,esources,arxiv_class,citation_count,pub,volume,issue,page";
 
 #[derive(Debug, Default)]
 pub struct Article {
@@ -23,6 +23,10 @@ pub struct Article {
     pub doi: Vec<String>,
     pub identifier: Vec<String>,
     pub citation_count: Option<i64>,
+    pub journal: String,
+    pub volume: String,
+    pub issue: String,
+    pub page: String,
 }
 
 fn state_file() -> PathBuf {
@@ -146,6 +150,10 @@ fn article_from_doc(d: &serde_json::Value) -> Article {
         doi: strs("doi"),
         identifier: strs("identifier"),
         citation_count: d["citation_count"].as_i64(),
+        journal: d["pub"].as_str().unwrap_or_default().to_string(),
+        volume: d["volume"].as_str().unwrap_or_default().to_string(),
+        issue: d["issue"].as_str().unwrap_or_default().to_string(),
+        page: strs("page").into_iter().next().unwrap_or_default(),
     }
 }
 

@@ -12,7 +12,7 @@ def run(t):
     t.wait_for(lambda: "bib/Cabrera2024txuze.bib" in t.text(), what="bib source header")
     txt = t.text()
     require("@article{Cabrera2024txuze," in txt, "verbatim entry body missing", t)
-    require("◂ card" in txt, "back-to-card affordance missing", t)
+    require("▤ card" in txt, "back-to-card segment missing", t)
     t.send("v")
     t.wait_gone("bib/Cabrera2024txuze.bib")
     require("@ bib" in t.text(), "formatted card did not return", t)

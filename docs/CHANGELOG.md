@@ -20,6 +20,11 @@
 - Every divider — the card's horizontal and vertical rules, the table header rule, the log and footer rules — shares one quite-dim color.
 
 ### Changed
+- Card operations are visible even when unavailable: links, query actions, and copy rows without a value (no DOI, no cached PDF, …) render dimmed and unclickable, their rollover hint saying so, instead of disappearing.
+- The card ⇄ bib toggler is a segmented "▤ card │ @ bib" control at the card's bottom-right — active side underlined, inactive side dimmed and clickable.
+- The card shows the publication line — journal (AAS macros expanded), volume(issue), pages — under the byline, on both the library and query cards.
+- The action block and footer are anchored to the card bottom in both views, so links, copies, and buttons never move with abstract length (the abstract absorbs the slack).
+- The y copy chord works on query results, copying from the shown article (hypothetical key, bibcode, URLs, title, abstract).
 - Closing a query scope (ctrl+w) keeps the selection in place, activating the capsule that was to the right (previously it stepped left).
 - The scope capsules wrap onto further rows when saved queries outgrow the width, instead of clipping.
 - The pub card's links are a vertical stack, each row badged by what it does: ↗ opens the browser (ADS, arXiv, DOI), ⌕ acts inside astrobib (citations/references query scopes). "cited by N" returns to the byline as plain text.

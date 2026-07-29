@@ -72,6 +72,9 @@ impl Entry {
     pub fn pages(&self) -> &str {
         self.get("pages")
     }
+    pub fn number(&self) -> &str {
+        self.get("number")
+    }
 
     pub fn keywords(&self) -> Vec<&str> {
         self.get("keywords")

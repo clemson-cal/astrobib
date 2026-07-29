@@ -293,7 +293,7 @@ pub const MD_BIB_BEGIN: &str = "<!-- astrobib:references -->";
 pub const MD_BIB_END: &str = "<!-- /astrobib:references -->";
 
 /// AAS journal macros as they appear in ADS BibTeX journal fields.
-fn journal_name(raw: &str) -> String {
+pub fn journal_name(raw: &str) -> String {
     let name = match raw.trim().trim_start_matches('\\') {
         "apj" => "ApJ",
         "apjl" => "ApJL",
