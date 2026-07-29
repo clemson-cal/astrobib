@@ -108,7 +108,9 @@ def main():
         sess = None
         try:
             sess = driver.Session(
-                BINARY, allow_network=getattr(mod, "ALLOW_NETWORK", False)
+                BINARY,
+                allow_network=getattr(mod, "ALLOW_NETWORK", False),
+                manuscript=getattr(mod, "MANUSCRIPT", None),
             )
             sess.wait_ready()
             mod.run(sess)

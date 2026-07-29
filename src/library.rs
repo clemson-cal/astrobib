@@ -63,6 +63,15 @@ impl Entry {
     pub fn abstract_(&self) -> &str {
         self.get("abstract")
     }
+    pub fn journal(&self) -> &str {
+        self.get("journal")
+    }
+    pub fn volume(&self) -> &str {
+        self.get("volume")
+    }
+    pub fn pages(&self) -> &str {
+        self.get("pages")
+    }
 
     pub fn keywords(&self) -> Vec<&str> {
         self.get("keywords")

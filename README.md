@@ -28,7 +28,7 @@ astrobib import refs.bib     # resolve a foreign .bib against ADS
 ---
 ## The two-tier library model
 astrobib always works on up to two libraries: a **local** bib directory (tier 2) and your **global** personal library (tier 1, at `~/.local/share/astrobib/library/`).
-`astrobib [LIBRARY_DIR]` points tier 2 at any directory holding `bib/`; with no argument, the nearest ancestor of the current directory with a `bib/` is used. A `.tex` manuscript alongside activates citation tracking, but any bib directory works.
+`astrobib [LIBRARY_DIR]` points tier 2 at any directory holding `bib/`; with no argument, the nearest ancestor of the current directory with a `bib/` is used. A `.tex` or `.md` manuscript alongside activates citation tracking, but any bib directory works.
 With the global tier enabled (the default), reads merge both tiers and imports write to both — the paper repo stands alone for coauthors while your collection accrues. Press `t` (or click the `global` badge) to hide the global tier: reads and writes become purely local. Removing a local paper never destroys a sole copy — it is rescued into the global library.
 Both stores are plain `bib/*.bib` files, one paper per file, indistinguishable from hand-written BibTeX. Nothing else is ever written into your repos.
 
@@ -66,8 +66,14 @@ A half-typed query never errors. With a filter active, `S` pre-fills the equival
 `S` passes your query to the [ADS API](https://ui.adsabs.harvard.edu/help/search/search-syntax) unmodified, so the full Solr language works (`bibstem:ApJL`, `citations(...)`, boolean grouping, …). Each query becomes a scope capsule, persisted per library context in `tabs.json`.
 
 ---
+## Markdown manuscripts
+Literature reviews and notes work as manuscripts too: any `.md` files beside `bib/` are scanned for citations (`main.md` is the sole root when present; Obsidian `![[embeds]]` pull in more files, like `\input`).
+Cite pandoc-style — bare `@Zrake2019` or bracketed `[@Zrake2019; @Metzger2017]` — or with Obsidian wikilinks: `[[Zrake2019]]` counts as a citation when it resolves in the library, and stays an ordinary note link when it doesn't. An unresolved `@cite` shows as missing in the Manuscript view, same as LaTeX.
+`astrobib refs` renders the bibliography of everything cited into the manuscript — a sorted, linked reference list (authors, year, italic title, journal, ADS/arXiv/DOI links) kept between `<!-- astrobib:references -->` markers, appended as a `## References` section the first time. Regenerate any time; your prose is never touched.
+
+---
 ## CLI
-`list`, `search [--ads]`, `add <bibcode|ADS URL>`, `show <key>`, `import <file.bib> [--global-only|--local-only]`, plus `--library PATH` (relocate the global tier) and `--no-global`.
+`list`, `search [--ads]`, `add <bibcode|ADS URL>`, `show <key>`, `import <file.bib> [--global-only|--local-only]`, `refs [FILE] [--dry-run]`, plus `--library PATH` (relocate the global tier) and `--no-global`.
 `import` resolves each entry against ADS (arXiv ID → DOI → exact title+author+year) unless its cite key is already reproducible from its own data — canonical astrobib entries import byte-identically — and prints copy-pasteable key replacements for your `.tex` files.
 
 ---

@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+### Added
+- Markdown manuscripts, same policy as LaTeX: `.md` sources beside `bib/` are scanned for citations (`main.md` sole root when present, Obsidian `![[embeds]]` expand like `\input`), with pandoc-style `@key` / `[@a; @b]` cites and Obsidian wikilinks — `[[key]]` counts as a citation when it resolves in the library and stays a note link when it doesn't. Code blocks, inline code, and HTML comments never scan.
+- `astrobib refs [FILE] [--dry-run]`: renders the cited-works bibliography into the manuscript's markdown — sorted by author, with year, italic title, journal (AAS macros expanded), and ADS/arXiv/DOI links — between `<!-- astrobib:references -->` markers (a `## References` section is appended on first run); unresolved cites are reported.
+- Option/alt+arrow (and emacs alt+b/f) word motions in the filter and query inputs.
+
+### Changed
+- Clicking away from the filter prompt leaves entry mode with the filter still applied (Esc still clears), matching the query prompt's click-away policy.
+
 ## 0.5.1 — 2026-07-28
 
 ### Fixed

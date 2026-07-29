@@ -54,7 +54,7 @@ class Timeout(AssertionError):
 class Session:
     """One TUI process in one pty against one scratch library."""
 
-    def __init__(self, binary, cols=140, rows=40, allow_network=False):
+    def __init__(self, binary, cols=140, rows=40, allow_network=False, manuscript=None):
         self.binary = os.path.abspath(binary)
         self.cols = cols
         self.rows = rows
@@ -69,6 +69,16 @@ class Session:
         for name in sorted(os.listdir(FIXTURES)):
             if name.endswith(".bib"):
                 shutil.copy(os.path.join(FIXTURES, name), self.bib_dir)
+        # a manuscript (tier-2) root under $HOME: {filename: content},
+        # with an empty bib/ so the walk-up finds it; the TUI starts there
+        cwd = self.home
+        if manuscript:
+            cwd = os.path.join(self.home, "ms")
+            os.makedirs(os.path.join(cwd, "bib"))
+            for name, content in manuscript.items():
+                with open(os.path.join(cwd, name), "w") as f:
+                    f.write(content)
+        self.cwd = cwd
 
         env = {
             "TERM": "xterm-256color",
@@ -96,7 +106,7 @@ class Session:
             stdout=slave,
             stderr=slave,
             env=env,
-            cwd=self.home,
+            cwd=self.cwd,
             start_new_session=True,
         )
         os.close(slave)

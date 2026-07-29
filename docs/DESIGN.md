@@ -34,12 +34,16 @@ Features like "mark as read", "add a note", "reading list" are personal and soci
 
 A manuscript database is a `bib/` directory inside a manuscript's git repo. It uses exactly the standard database format — flat `.bib` files, nothing else — and is therefore indistinguishable from any other bib database. Rules:
 
-- Discovery is by directory walk-up (cwd ancestor containing `bib/` and `.git`), never by registration in config. At most one manuscript database is active per session.
+- Discovery is by directory walk-up (nearest cwd ancestor containing `bib/`, stopping at `$HOME`), never by registration in config. At most one manuscript database is active per session.
 - astrobib never runs git on a manuscript repo. Versioning rides along in the user's own paper commits.
 - Copies, not links: an entry added to a manuscript database is a self-contained copy of the `.bib` file, so the repo stands alone for coauthors. Identical content yields identical keys, so copies agree across databases.
 - Personal fields (`astrobib_starred`) are stripped from manuscript copies. The manuscript database is shared; stars are personal.
 - The sync flow (`astrobib refs`) may add cited entries and, only with an explicit flag, remove uncited ones. It never removes anything from the personal library.
 - Removal from a manuscript database is never destructive: if the manuscript holds the only copy of an entry (e.g. imported `--ms-only`, or added by a coauthor), removing it first copies it into the personal library.
+
+Manuscript sources are `.tex` files (cites via `\cite*{…}`, expanded through `\input`/`\include`) and `.md` files, with the same root policy for each (`main.tex`/`main.md` when present, else every top-level file of that extension). Markdown citations are pandoc-style — bare `@Key` or bracketed `[@A; @B]` — plus Obsidian wikilinks `[[Key]]` (alias `|` and heading `#` suffixes tolerated), which count as citations only when they resolve in the library: an unresolved wikilink is an ordinary note link, while an unresolved `@cite` surfaces as missing. Obsidian embeds `![[file]]` expand as sources, the `\input` analogue. Code blocks, inline code, and HTML comments never scan.
+
+The rendered markdown bibliography (`astrobib refs`) lives between `<!-- astrobib:references -->` and `<!-- /astrobib:references -->` markers, regenerated wholesale on each run (appended as a `## References` section when absent); everything outside the markers belongs to the user.
 
 ## Keys denote papers, not revisions
 

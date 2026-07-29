@@ -496,13 +496,25 @@ impl App {
         });
     }
 
-    /// Scan .tex sources and classify every cited key; append uncited
-    /// manuscript-db members — the Python ManuscriptView's row set.
+    /// Scan .tex and .md sources and classify every cited key; append
+    /// uncited manuscript-db members — the Python ManuscriptView's row
+    /// set. Markdown wikilinks count only when they resolve (an
+    /// unresolved [[link]] is an ordinary note link, not a citation);
+    /// pandoc @cites always count and surface as missing.
     fn ms_rows(&self) -> Vec<MsRow> {
         use crate::library::CiteState;
         let Some(root) = self.ms_root() else { return vec![] };
         let files = crate::export::manuscript_tex_files(&root);
-        let cited = crate::export::scan_tex_files(&files);
+        let mut cited = crate::export::scan_tex_files(&files);
+        let md_files = crate::export::manuscript_md_files(&root);
+        let mut seen: std::collections::HashSet<String> = cited.iter().cloned().collect();
+        for c in crate::export::scan_md_files(&md_files) {
+            if (!c.wikilink || self.lib.resolve_citation(&c.raw).1.is_some())
+                && seen.insert(c.raw.clone())
+            {
+                cited.push(c.raw);
+            }
+        }
         let mut covered: std::collections::HashSet<String> = std::collections::HashSet::new();
         let mut rows: Vec<MsRow> = vec![];
         for c in cited {

@@ -54,6 +54,14 @@ enum Command {
         #[arg(long)]
         local_only: bool,
     },
+    /// Render the cited-works bibliography into a markdown manuscript
+    Refs {
+        /// Markdown file to update (default: main.md, or the sole .md)
+        file: Option<std::path::PathBuf>,
+        /// Print the bibliography instead of writing the file
+        #[arg(long)]
+        dry_run: bool,
+    },
 }
 
 fn main() -> anyhow::Result<()> {
@@ -128,6 +136,13 @@ fn main() -> anyhow::Result<()> {
         Some(Command::Import { file, global_only, local_only }) => {
             import_bib(&mut lib, &file, global_only, local_only)
         }
+        Some(Command::Refs { file, dry_run }) => {
+            let Some(root) = &ms_root else {
+                eprintln!("No local bib root here — refs needs a manuscript directory.");
+                std::process::exit(1);
+            };
+            md_refs(&lib, root, file.as_deref(), dry_run)
+        }
         Some(Command::Show { key }) => match lib.resolve(&key) {
             Some(e) => {
                 print!("{}", std::fs::read_to_string(&e.path)?);
@@ -147,6 +162,67 @@ fn main() -> anyhow::Result<()> {
             }
         },
     }
+}
+
+/// astrobib refs — regenerate the marker-delimited markdown bibliography
+/// from every citation in the manuscript's .tex and .md sources.
+fn md_refs(
+    lib: &MergedLibrary,
+    root: &std::path::Path,
+    file: Option<&std::path::Path>,
+    dry_run: bool,
+) -> anyhow::Result<()> {
+    use astrobib::export;
+    let md_files = export::manuscript_md_files(root);
+    let target = match file {
+        Some(f) => f.to_path_buf(),
+        None => match md_files.first() {
+            Some(f) if md_files.len() == 1 || f.ends_with("main.md") => f.clone(),
+            _ => {
+                eprintln!(
+                    "Several .md files and no main.md — name the target: astrobib refs FILE"
+                );
+                std::process::exit(1);
+            }
+        },
+    };
+    let mut cited: Vec<String> = export::scan_tex_files(&export::manuscript_tex_files(root));
+    let mut seen: std::collections::HashSet<String> = cited.iter().cloned().collect();
+    for c in export::scan_md_files(&md_files) {
+        if (!c.wikilink || lib.resolve_citation(&c.raw).1.is_some()) && seen.insert(c.raw.clone())
+        {
+            cited.push(c.raw);
+        }
+    }
+    let mut keys_seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut entries = vec![];
+    let mut unresolved = vec![];
+    for c in &cited {
+        match lib.resolve_citation(c).1 {
+            Some(e) => {
+                if keys_seen.insert(e.key().to_string()) {
+                    entries.push(e);
+                }
+            }
+            None => unresolved.push(c.clone()),
+        }
+    }
+    let block = export::render_md_bibliography(&entries);
+    if dry_run {
+        println!("{block}");
+    } else {
+        let changed = export::update_md_bibliography(&target, &block)?;
+        println!(
+            "{} reference(s) in {}{}",
+            entries.len(),
+            target.display(),
+            if changed { "" } else { "  (unchanged)" }
+        );
+    }
+    for c in &unresolved {
+        eprintln!("unresolved: {c}");
+    }
+    Ok(())
 }
 
 /// Import a .bib file — port of the v0.4.0 import command. Entries whose
