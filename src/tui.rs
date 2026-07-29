@@ -232,6 +232,20 @@ struct App {
     last_click: Option<(std::time::Instant, usize, usize)>, // (t, scope, pos)
 }
 
+/// option/alt+arrow (and emacs alt+b/f) word motions for text inputs.
+/// tui-input's crossterm backend only maps ctrl+arrow and meta+b/f, and
+/// macOS terminals report option as ALT — so these arrive unmapped.
+fn word_motion(code: KeyCode, mods: KeyModifiers) -> Option<tui_input::InputRequest> {
+    if !mods.contains(KeyModifiers::ALT) {
+        return None;
+    }
+    match code {
+        KeyCode::Left | KeyCode::Char('b') => Some(tui_input::InputRequest::GoToPrevWord),
+        KeyCode::Right | KeyCode::Char('f') => Some(tui_input::InputRequest::GoToNextWord),
+        _ => None,
+    }
+}
+
 fn hit(r: Rect, x: u16, y: u16) -> bool {
     x >= r.x && x < r.x + r.width && y >= r.y && y < r.y + r.height
 }
@@ -1559,8 +1573,10 @@ impl App {
             return;
         }
         // clicking away from the query prompt dismisses it, and the click
-        // then performs its normal action (e.g. switching scope)
-        if matches!(self.mode, Mode::AdsPrompt { .. }) {
+        // then performs its normal action (e.g. switching scope); the
+        // filter likewise leaves entry mode, but stays applied (as ⏎) —
+        // clicking a row of the filtered results must not wipe them
+        if matches!(self.mode, Mode::AdsPrompt { .. } | Mode::Filter) {
             self.mode = Mode::Normal;
         }
         // confirm modal: only its two buttons act; other clicks are inert
@@ -1861,6 +1877,10 @@ impl App {
                 KeyCode::Enter => self.mode = Mode::Normal,
                 _ => {
                     use tui_input::backend::crossterm::EventHandler;
+                    if let Some(req) = word_motion(code, mods) {
+                        self.filter.handle(req);
+                        return;
+                    }
                     let ev = Event::Key(ratatui::crossterm::event::KeyEvent::new(code, mods));
                     if self.filter.handle_event(&ev).is_some() {
                         self.refilter();
@@ -1920,6 +1940,10 @@ impl App {
                 }
                 _ => {
                     use tui_input::backend::crossterm::EventHandler;
+                    if let Some(req) = word_motion(code, mods) {
+                        input.handle(req);
+                        return;
+                    }
                     let ev = Event::Key(ratatui::crossterm::event::KeyEvent::new(code, mods));
                     input.handle_event(&ev);
                 }
