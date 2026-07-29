@@ -179,6 +179,10 @@ enum CardBtn {
     Cancel,
     MsToggle,
     Import,
+    // citation-graph navigation: spawn citations(...)/references(...)
+    // query scopes for the card's bibcode (resolved at dispatch time)
+    Citations,
+    Refs,
 }
 
 struct App {
@@ -1195,6 +1199,20 @@ impl App {
         self.selected_key().map(str::to_string)
     }
 
+    /// The bibcode the card's citation-graph affordances act on: the
+    /// shown ADS article's, else the shown library entry's (derived
+    /// from its adsurl).
+    fn card_bibcode(&self) -> Option<String> {
+        if let Some(Scope::Ads { articles, .. }) = self.scopes.get(self.active_scope) {
+            return self
+                .card_article_pos()
+                .and_then(|p| articles.get(p))
+                .map(|a| a.bibcode.clone());
+        }
+        let key = self.card_key()?;
+        self.lib.get(key).and_then(|e| e.bibcode()).map(str::to_string)
+    }
+
     fn selected_key(&self) -> Option<&str> {
         // the manuscript scope resolves to library entries, so entry
         // actions apply there; ADS rows don't resolve until imported
@@ -1773,6 +1791,20 @@ impl App {
                 }
                 return;
             }
+            // citation-graph affordances spawn a new ADS query scope for
+            // the card's bibcode — same path as the S prompt (the scope
+            // becomes active and its tab persists via save_tabs)
+            if matches!(btn, CardBtn::Citations | CardBtn::Refs) {
+                if let Some(bc) = self.card_bibcode() {
+                    let q = if btn == CardBtn::Citations {
+                        format!("citations(bibcode:{bc})")
+                    } else {
+                        format!("references(bibcode:{bc})")
+                    };
+                    self.run_ads_query_limit(q, None, crate::tabs::DEFAULT_LIMIT);
+                }
+                return;
+            }
             if let Some(key) = self.card_entry_key() {
                 match btn {
                     CardBtn::Arxiv => self.download_single(key, pdf::Source::Arxiv),
@@ -1784,7 +1816,9 @@ impl App {
                         self.note(MsgCat::Ok, format!("Opened {key}"));
                     }
                     CardBtn::Clear | CardBtn::Cancel => self.clear_card_pdf(&key),
-                    CardBtn::Import => {} // handled above for ADS scopes
+                    // handled above (Import for ADS scopes; the
+                    // citation-graph pair for every scope)
+                    CardBtn::Import | CardBtn::Citations | CardBtn::Refs => {}
                     CardBtn::MsToggle => {
                         let res = if self.lib.in_manuscript(&key) {
                             let rescued = !self.lib.in_personal(&key);
@@ -3050,14 +3084,51 @@ impl App {
             y += 1;
         }
         y += 1;
-        let mut byline = format!("{}   ·   {year}", format_authors(&authors));
-        if let Some(n) = cites {
-            byline.push_str(&format!("   ·   cited by {n}"));
-        }
-        for l in wrap_text(&byline, w) {
-            line_at(f, y, Line::from(Span::styled(l, Style::default().fg(Color::DarkGray))));
+        let byline = format!("{}   ·   {year}", format_authors(&authors));
+        let dim = Style::default().fg(Color::DarkGray);
+        let mut by_lines = wrap_text(&byline, w);
+        let mut last = by_lines.pop().unwrap_or_default();
+        for l in by_lines {
+            line_at(f, y, Line::from(Span::styled(l, dim)));
             y += 1;
         }
+        // the byline's trailing "cited by N" and "references →" are
+        // citation-graph affordances: hovering underlines, a click
+        // spawns citations(...)/references(...) as a new query scope
+        // (CardBtn dispatch resolves the bibcode); they share the last
+        // byline line when it fits, else drop to their own line
+        let tags: Vec<(String, CardBtn)> = cites
+            .map(|n| (format!("cited by {n}"), CardBtn::Citations))
+            .into_iter()
+            .chain([("references →".to_string(), CardBtn::Refs)])
+            .collect();
+        let tags_w: usize = tags.iter().map(|(l, _)| l.chars().count() + 7).sum();
+        if last.chars().count() + tags_w > w {
+            line_at(f, y, Line::from(Span::styled(std::mem::take(&mut last), dim)));
+            y += 1;
+        }
+        let mut lx = x0 + last.chars().count() as u16;
+        let mut spans: Vec<Span> = vec![];
+        if !last.is_empty() {
+            spans.push(Span::styled(last, dim));
+        }
+        for (label, btn) in tags {
+            if !spans.is_empty() {
+                spans.push(Span::styled("   ·   ", dim));
+                lx += 7;
+            }
+            let wl = label.chars().count() as u16;
+            let r = Rect { x: lx, y, width: wl, height: 1 };
+            if y < bottom {
+                self.card_buttons.push((r, btn));
+            }
+            let style =
+                if hit(r, hv.0, hv.1) { dim.add_modifier(Modifier::UNDERLINED) } else { dim };
+            spans.push(Span::styled(label, style));
+            lx += wl;
+        }
+        line_at(f, y, Line::from(spans));
+        y += 1;
         // links block + footer, plus PDF buttons + status once imported
         let rest = 3 + 2 + if in_lib { 2 } else { 0 };
         if !abstract_.is_empty() && y + rest < bottom {
@@ -3309,13 +3380,50 @@ impl App {
             e.adsurl().to_string(),
             e.doi().to_string(),
         );
+        // the links row holds URL links plus the citation-graph pair —
+        // "citations" / "references" spawn ADS query scopes rather than
+        // opening the browser, so they register as card buttons; built
+        // here (rendered below) because the row can flow onto extra
+        // lines on narrow cards and the layout budget must know
+        enum LinkTarget {
+            Url(String),
+            Query(CardBtn),
+        }
+        let mut links_row: Vec<(String, LinkTarget)> = vec![];
+        if !adsurl.is_empty() {
+            links_row.push(("ADS".into(), LinkTarget::Url(adsurl.clone())));
+        }
+        if !eprint.is_empty() {
+            links_row.push((
+                format!("arXiv:{eprint}"),
+                LinkTarget::Url(format!("https://arxiv.org/abs/{eprint}")),
+            ));
+        }
+        if !doi.is_empty() {
+            links_row.push(("DOI".into(), LinkTarget::Url(format!("https://doi.org/{doi}"))));
+        }
+        if !adsurl.is_empty() {
+            links_row.push(("citations".into(), LinkTarget::Query(CardBtn::Citations)));
+            links_row.push(("references".into(), LinkTarget::Query(CardBtn::Refs)));
+        }
+        // greedy flow: how many lines the links row will occupy
+        let mut link_lines: u16 = 1;
+        let mut used = 0usize;
+        for (label, _) in &links_row {
+            let wl = label.chars().count();
+            if used > 0 && used + wl > w {
+                link_lines += 1;
+                used = 0;
+            }
+            used += wl + 2;
+        }
         // footer + links/buttons need this much room below the abstract
         let kws = e.keywords().join(" · ");
         let kw_lines = if kws.is_empty() { 0 } else { wrap_text(&kws, w).len() as u16 + 1 };
         let has_ms = self.lib.manuscript.is_some() && self.lib.global_on;
         // links block (sep + links + sep + air) + buttons + ms chip +
         // status (line + blank) + keywords + key line
-        let rest = 4 + 1 + u16::from(has_ms) + 2 + kw_lines + 1;
+        let rest = 3 + link_lines + 1 + u16::from(has_ms) + 2 + kw_lines + 1;
         let abs = e.abstract_();
         if !abs.is_empty() && y + rest < bottom {
             y += 1;
@@ -3359,12 +3467,21 @@ impl App {
         let mut spans: Vec<Span> = vec![];
         let mut lx = x0;
         let cyan = Style::default().fg(Color::Cyan);
-        let link = |label: String, url: String, spans: &mut Vec<Span>, lx: &mut u16, links: &mut Vec<(Rect, String)>| {
+        for (label, target) in links_row {
             let wl = label.chars().count() as u16;
-            if y < bottom {
-                links.push((Rect { x: *lx, y, width: wl, height: 1 }, url));
+            if lx > x0 && (lx - x0 + wl) as usize > w {
+                // flow onto the next line rather than clipping
+                line_at(f, y, Line::from(std::mem::take(&mut spans)));
+                y += 1;
+                lx = x0;
             }
-            let r = Rect { x: *lx, y, width: wl, height: 1 };
+            let r = Rect { x: lx, y, width: wl, height: 1 };
+            if y < bottom {
+                match target {
+                    LinkTarget::Url(url) => self.card_links.push((r, url)),
+                    LinkTarget::Query(btn) => self.card_buttons.push((r, btn)),
+                }
+            }
             let style = if hit(r, hv.0, hv.1) {
                 cyan.add_modifier(Modifier::UNDERLINED)
             } else {
@@ -3372,22 +3489,7 @@ impl App {
             };
             spans.push(Span::styled(label, style));
             spans.push(Span::raw("  "));
-            *lx += wl + 2;
-        };
-        if !adsurl.is_empty() {
-            link("ADS".into(), adsurl.clone(), &mut spans, &mut lx, &mut self.card_links);
-        }
-        if !eprint.is_empty() {
-            link(
-                format!("arXiv:{eprint}"),
-                format!("https://arxiv.org/abs/{eprint}"),
-                &mut spans,
-                &mut lx,
-                &mut self.card_links,
-            );
-        }
-        if !doi.is_empty() {
-            link("DOI".into(), format!("https://doi.org/{doi}"), &mut spans, &mut lx, &mut self.card_links);
+            lx += wl + 2;
         }
         line_at(f, y, Line::from(spans));
         y += 1;

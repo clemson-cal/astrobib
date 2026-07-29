@@ -30,6 +30,10 @@ def run(t):
     # its cite key appears in the card footer
     require("Cabrera2024" in txt, "pub card cite key footer missing", t)
     require("arXiv:2407.20112" in txt, "pub card arXiv link missing", t)
+    # citation-graph affordances in the card links row (the entry has an
+    # adsurl, so both query affordances render alongside the URL links)
+    require("citations" in txt, "pub card citations affordance missing", t)
+    require("references" in txt, "pub card references affordance missing", t)
     # footer view badges: card on, log and keys off
     require("◼ card" in txt, "card badge should be on (◼)", t)
     require("◻ log" in txt, "log badge should be off (◻)", t)
