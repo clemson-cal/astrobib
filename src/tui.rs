@@ -2958,7 +2958,10 @@ impl App {
             "https://pypi.org/project/astrobib",
         ];
         let frame = f.area();
-        let w = 52.min(frame.width.saturating_sub(4));
+        // ambiguous-width glyphs (↗ ⟳) can render double on some
+        // terminals, shifting rows right — several columns of slack
+        // beyond the longest line keep everything inside the borders
+        let w = 58.min(frame.width.saturating_sub(4));
         let h = (17 + u16::from(self.update_status.is_some())).min(frame.height);
         let area = Rect {
             x: frame.width.saturating_sub(w) / 2,
@@ -2980,7 +2983,12 @@ impl App {
         ];
         let link_row = |url: &str, lines: &mut Vec<Line>, about_links: &mut Vec<(Rect, String)>| {
             let y = area.y + 1 + lines.len() as u16;
-            let r = Rect { x: area.x + 4, y, width: url.chars().count() as u16, height: 1 };
+            let r = Rect {
+                x: area.x + 5, // border + the " ↗  " prefix
+                y,
+                width: url.chars().count() as u16 + 1,
+                height: 1,
+            };
             about_links.push((r, url.to_string()));
             let hov = hit(r, self.hover.0, self.hover.1);
             let style = if hov { cyan.add_modifier(Modifier::UNDERLINED) } else { cyan };
@@ -3010,7 +3018,12 @@ impl App {
         {
             let label = "⟳ check for updates";
             let y = area.y + 1 + lines.len() as u16;
-            let r = Rect { x: area.x + 3, y, width: label.chars().count() as u16, height: 1 };
+            let r = Rect {
+                x: area.x + 3,
+                y,
+                width: label.chars().count() as u16 + 1,
+                height: 1,
+            };
             self.about_btn = r;
             let hov = hit(r, self.hover.0, self.hover.1);
             let style = if hov {
