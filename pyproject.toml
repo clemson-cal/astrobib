@@ -5,7 +5,7 @@ build-backend = "maturin"
 [project]
 name = "astrobib"
 version = "0.5.1"
-description = "ADS-native BibTeX library manager (Rust port)"
+description = "ADS-native literature manager for astrophysics: search, BibTeX libraries, manuscripts"
 readme = "README.md"
 license = { text = "MIT" }
 requires-python = ">=3.8"

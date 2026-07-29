@@ -2,7 +2,7 @@
 name = "astrobib"
 version = "0.5.1"
 edition = "2021"
-description = "ADS-native BibTeX library manager (Rust port)"
+description = "ADS-native literature manager for astrophysics: search, BibTeX libraries, manuscripts"
 license = "MIT"
 repository = "https://github.com/clemson-cal/astrobib"
 

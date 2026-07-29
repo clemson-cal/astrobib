@@ -3,7 +3,7 @@ use astrobib::query::{self, QueryContext};
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
-#[command(name = "astrobib", version, about = "ADS-native BibTeX library manager (Rust port)")]
+#[command(name = "astrobib", version, about = "ADS-native literature manager for astrophysics")]
 #[command(args_conflicts_with_subcommands = false)]
 struct Cli {
     /// Tier-2 local bib root to operate on (a directory holding bib/,
