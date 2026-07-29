@@ -127,6 +127,13 @@ struct MsRow {
     title: String,
 }
 
+/// Mtime snapshot backing the manuscript auto-rescan: every scanned
+/// source file paired with its mtime, plus the bib/ directory's mtime.
+type MsWatch = (
+    Vec<(std::path::PathBuf, std::time::SystemTime)>,
+    Option<std::time::SystemTime>,
+);
+
 impl Scope {
     fn label(&self) -> &str {
         match self {
@@ -230,6 +237,10 @@ struct App {
     confirm_btns: Vec<(Rect, bool)>, // (rect, is_confirm)
     // plain clicks on the same row within 400ms form a double-click
     last_click: Option<(std::time::Instant, usize, usize)>, // (t, scope, pos)
+    // silent manuscript auto-rescan (Python _poll_manuscript): mtime
+    // snapshot of the scanned sources and bib/, compared every ~1.5 s
+    ms_watch: MsWatch,
+    ms_watch_at: std::time::Instant,
 }
 
 /// option/alt+arrow (and emacs alt+b/f) word motions for text inputs.
@@ -383,6 +394,8 @@ impl App {
             pick_area: Rect::default(),
             confirm_btns: vec![],
             last_click: None,
+            ms_watch: (vec![], None),
+            ms_watch_at: std::time::Instant::now(),
         }
     }
 
@@ -557,6 +570,74 @@ impl App {
         match self.scopes.get_mut(1) {
             Some(s @ Scope::Manuscript { .. }) => *s = Scope::Manuscript { rows },
             _ => self.scopes.insert(1, Scope::Manuscript { rows }),
+        }
+        self.ms_watch = self.ms_watch_snapshot();
+    }
+
+    /// Mtime snapshot of everything the manuscript scan depends on:
+    /// every .tex/.md source (\input and embed expansion included) plus
+    /// the bib/ directory itself. refs.bib lives in the manuscript root
+    /// and is never a scanned source, so regenerating it cannot
+    /// re-trigger the watcher.
+    fn ms_watch_snapshot(&self) -> MsWatch {
+        let Some(root) = self.ms_root() else { return (vec![], None) };
+        let mut files = crate::export::manuscript_tex_files(&root);
+        files.extend(crate::export::manuscript_md_files(&root));
+        let srcs = files
+            .into_iter()
+            .filter_map(|f| {
+                let m = std::fs::metadata(&f).and_then(|m| m.modified()).ok()?;
+                Some((f, m))
+            })
+            .collect();
+        let bib = std::fs::metadata(root.join("bib"))
+            .and_then(|m| m.modified())
+            .ok();
+        (srcs, bib)
+    }
+
+    /// Silent auto-rescan on external changes — the Python app's
+    /// _poll_manuscript. Every ~1.5 s compare the mtime snapshot:
+    /// edited sources rescan the manuscript (refs.bib regenerates along
+    /// the way); a changed bib/ reloads the library tiers from disk.
+    /// Our own writes touch bib/ too, but every mutation path ends in
+    /// rescan_manuscript or rebuild_order, which refresh the snapshot —
+    /// and a redundant reload would be harmless anyway.
+    fn poll_manuscript(&mut self) {
+        if self.lib.manuscript.is_none()
+            || self.ms_watch_at.elapsed() < Duration::from_millis(1500)
+        {
+            return;
+        }
+        self.ms_watch_at = std::time::Instant::now();
+        let now = self.ms_watch_snapshot();
+        if now == self.ms_watch {
+            return;
+        }
+        if now.1 != self.ms_watch.1 {
+            self.reload_library(); // rebuild_order rescans the manuscript too
+        } else {
+            self.rescan_manuscript();
+        }
+    }
+
+    /// Reload both tiers from disk after an external change to the
+    /// manuscript's bib/ (a coauthor's pull, a hand-dropped .bib, …),
+    /// preserving the two-tier switch and UI state; rebuild_order
+    /// re-derives everything display-side.
+    fn reload_library(&mut self) {
+        match MergedLibrary::load(self.ms_root().as_deref()) {
+            Ok(mut lib) => {
+                lib.global_on = self.lib.global_on;
+                self.lib = lib;
+                self.rebuild_order();
+            }
+            Err(e) => {
+                // keep the stale library; refresh the snapshot so a
+                // persistent error can't warn every poll
+                self.ms_watch = self.ms_watch_snapshot();
+                self.note(MsgCat::Warn, format!("library reload failed: {e}"));
+            }
         }
     }
 
@@ -980,6 +1061,7 @@ impl App {
         while !self.quit {
             self.drain_downloads();
             self.drain_ads();
+            self.poll_manuscript();
             terminal.draw(|f| self.draw(f))?;
             if let Some(ev) = pending.take() {
                 debug_layout(&format!("{:>6}ms pending {ev:?}", t0.elapsed().as_millis()));
@@ -1244,6 +1326,11 @@ impl App {
         });
         self.selected.retain(|k| lib.get(k).is_some());
         self.refilter();
+        if self.lib.manuscript.is_some() {
+            // our own writes touch bib/; refresh the watch snapshot so
+            // the auto-rescan poll doesn't bounce them back as a reload
+            self.ms_watch = self.ms_watch_snapshot();
+        }
     }
 
     /// Header click: same column flips direction, a new column starts
