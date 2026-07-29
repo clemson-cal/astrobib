@@ -139,14 +139,39 @@ impl Scope {
 
 enum AdsMsg {
     Done {
+        id: u64,
         tab: crate::tabs::Tab,
         refresh_of: Option<usize>,
         result: Result<Vec<crate::ads::Article>, String>,
     },
     Imported {
+        id: u64,
         bibcode: String,
         result: Result<crate::bib::Data, String>,
     },
+}
+
+/// In-flight background work, listed in the T overlay. Worker threads
+/// cannot be killed, so cancelling a thread-backed task only marks it;
+/// the drain handler discards its result on arrival. The browser
+/// watcher is the exception: it cancels for real via poll_cancel.
+#[derive(Clone, Copy)]
+enum TaskKind {
+    Download,
+    Query,
+    Import,
+    Watch,
+}
+
+struct Task {
+    id: u64,
+    label: String,
+    kind: TaskKind,
+    started: std::time::Instant,
+    cancelled: bool,
+    /// cache keys the task may write; discarding a cancelled download
+    /// removes them again, restoring the failed-download end state
+    keys: Vec<String>,
 }
 
 /// Sortable table columns; clicking a header toggles direction.
@@ -226,6 +251,13 @@ struct App {
     pdf_status: String,
     // browser-download watcher cancel flag (X / clear cancels the poll)
     poll_cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+    // pending background tasks (the T overlay); the drain handlers
+    // remove each row when its result arrives
+    tasks: Vec<Task>,
+    next_task_id: u64,
+    show_tasks: bool,
+    task_cancel_rects: Vec<(Rect, u64)>, // per-row ✕ affordances
+    tasks_badge: Rect, // the clickable ⧗N footer indicator
     pick_area: Rect,
     confirm_btns: Vec<(Rect, bool)>, // (rect, is_confirm)
     // plain clicks on the same row within 400ms form a double-click
@@ -319,7 +351,7 @@ fn wrap_text(s: &str, w: usize) -> Vec<String> {
 
 enum DlMsg {
     Progress(String),
-    Done { done: usize, failed: Vec<String> },
+    Done { id: u64, done: usize, failed: Vec<String> },
 }
 
 impl App {
@@ -380,6 +412,11 @@ impl App {
             card_yanks: vec![],
             pdf_status: String::new(),
             poll_cancel: None,
+            tasks: vec![],
+            next_task_id: 0,
+            show_tasks: false,
+            task_cancel_rects: vec![],
+            tasks_badge: Rect::default(),
             pick_area: Rect::default(),
             confirm_btns: vec![],
             last_click: None,
@@ -487,12 +524,17 @@ impl App {
             }
             _ => crate::tabs::make_tab(&query, limit),
         };
+        // replacing the channel orphans any in-flight ADS work: its
+        // receiver drops, so those tasks can never report back
+        self.tasks
+            .retain(|t| !matches!(t.kind, TaskKind::Query | TaskKind::Import));
+        let id = self.add_task(TaskKind::Query, format!("⌕ ADS query — '{query}'"), vec![]);
         let (tx, rx) = std::sync::mpsc::channel();
         self.ads_rx = Some(rx);
         self.note(MsgCat::Info, format!("Searching ADS: {query}"));
         std::thread::spawn(move || {
             let result = crate::ads::search(&query, limit).map_err(|e| e.to_string());
-            let _ = tx.send(AdsMsg::Done { tab, refresh_of, result });
+            let _ = tx.send(AdsMsg::Done { id, tab, refresh_of, result });
         });
     }
 
@@ -604,25 +646,31 @@ impl App {
             return;
         }
         let first_idx = self.scopes.len();
-        let jobs: Vec<(usize, crate::tabs::Tab)> = saved
-            .iter()
-            .cloned()
-            .enumerate()
-            .map(|(i, t)| (first_idx + i, t))
-            .collect();
-        for t in saved {
-            self.scopes.push(Scope::Ads { tab: t, articles: vec![] });
+        for t in &saved {
+            self.scopes.push(Scope::Ads { tab: t.clone(), articles: vec![] });
         }
         if crate::ads::get_token().is_none() {
             return; // scopes restore without results; refresh needs a token
         }
+        let jobs: Vec<(usize, crate::tabs::Tab, u64)> = saved
+            .into_iter()
+            .enumerate()
+            .map(|(i, t)| {
+                let id = self.add_task(
+                    TaskKind::Query,
+                    format!("⌕ ADS query — '{}'", t.query),
+                    vec![],
+                );
+                (first_idx + i, t, id)
+            })
+            .collect();
         let (tx, rx) = std::sync::mpsc::channel();
         self.ads_rx = Some(rx);
         std::thread::spawn(move || {
-            for (idx, tab) in jobs {
+            for (idx, tab, id) in jobs {
                 let result =
                     crate::ads::search(&tab.query, tab.limit).map_err(|e| e.to_string());
-                let _ = tx.send(AdsMsg::Done { tab, refresh_of: Some(idx), result });
+                let _ = tx.send(AdsMsg::Done { id, tab, refresh_of: Some(idx), result });
             }
         });
     }
@@ -704,17 +752,24 @@ impl App {
             self.note(MsgCat::Warn, "an ADS request is already running".to_string());
             return;
         }
+        let items: Vec<(u64, String)> = bibcodes
+            .into_iter()
+            .map(|bc| {
+                let id = self.add_task(TaskKind::Import, format!("⤓ import {bc}"), vec![]);
+                (id, bc)
+            })
+            .collect();
         let (tx, rx) = std::sync::mpsc::channel();
         self.ads_rx = Some(rx);
-        self.note(MsgCat::Info, format!("Importing {} paper(s)…", bibcodes.len()));
+        self.note(MsgCat::Info, format!("Importing {} paper(s)…", items.len()));
         std::thread::spawn(move || {
-            for bibcode in bibcodes {
+            for (id, bibcode) in items {
                 let result = match crate::ads::fetch_bibtex(&bibcode) {
                     Ok(Some(data)) => Ok(data),
                     Ok(None) => Err("no BibTeX returned".to_string()),
                     Err(e) => Err(e.to_string()),
                 };
-                let _ = tx.send(AdsMsg::Imported { bibcode, result });
+                let _ = tx.send(AdsMsg::Imported { id, bibcode, result });
             }
         });
     }
@@ -739,37 +794,65 @@ impl App {
         }
         for m in msgs {
             match m {
-                AdsMsg::Done { mut tab, refresh_of, result } => match result {
-                    Ok(articles) => {
-                        let n = articles.len();
-                        tab.refreshed = Some(crate::tabs::now_secs());
-                        tab.bibcodes = articles.iter().map(|a| a.bibcode.clone()).collect();
-                        let scope = Scope::Ads { tab, articles };
-                        match refresh_of {
-                            Some(i) if i < self.scopes.len() => self.scopes[i] = scope,
-                            _ => {
-                                self.scopes.push(scope);
-                                self.set_scope(self.scopes.len() - 1);
+                AdsMsg::Done { id, mut tab, refresh_of, result } => {
+                    // a cancelled query's result is discarded on arrival
+                    // (the thread cannot be killed, only outwaited)
+                    if let Some(t) = self.finish_task(id).filter(|t| t.cancelled) {
+                        self.note(
+                            MsgCat::Info,
+                            format!("cancelled — {} (result discarded)", t.label),
+                        );
+                        continue;
+                    }
+                    match result {
+                        Ok(articles) => {
+                            let n = articles.len();
+                            tab.refreshed = Some(crate::tabs::now_secs());
+                            tab.bibcodes = articles.iter().map(|a| a.bibcode.clone()).collect();
+                            let scope = Scope::Ads { tab, articles };
+                            match refresh_of {
+                                Some(i) if i < self.scopes.len() => self.scopes[i] = scope,
+                                _ => {
+                                    self.scopes.push(scope);
+                                    self.set_scope(self.scopes.len() - 1);
+                                }
                             }
+                            self.save_tabs();
+                            self.note(MsgCat::Ok, format!("{n} ADS result(s)"));
                         }
-                        self.save_tabs();
-                        self.note(MsgCat::Ok, format!("{n} ADS result(s)"));
+                        Err(e) => self.note(MsgCat::Err, format!("ADS search failed: {e}")),
                     }
-                    Err(e) => self.note(MsgCat::Err, format!("ADS search failed: {e}")),
-                },
-                AdsMsg::Imported { bibcode, result } => match result {
-                    Ok(data) => match self.lib.save_entry(&data) {
-                        Ok(key) => {
-                            self.rebuild_order();
-                            self.note(MsgCat::Ok, format!("Added {key}"));
+                }
+                AdsMsg::Imported { id, bibcode, result } => {
+                    // discard a cancelled import: nothing was written —
+                    // save_entry only runs here, on the applied path
+                    if let Some(t) = self.finish_task(id).filter(|t| t.cancelled) {
+                        self.note(
+                            MsgCat::Info,
+                            format!("cancelled — {} (result discarded)", t.label),
+                        );
+                        continue;
+                    }
+                    match result {
+                        Ok(data) => match self.lib.save_entry(&data) {
+                            Ok(key) => {
+                                self.rebuild_order();
+                                self.note(MsgCat::Ok, format!("Added {key}"));
+                            }
+                            Err(e) => self.note(MsgCat::Err, format!("import failed: {e}")),
+                        },
+                        Err(e) => {
+                            self.note(MsgCat::Err, format!("import of {bibcode} failed: {e}"))
                         }
-                        Err(e) => self.note(MsgCat::Err, format!("import failed: {e}")),
-                    },
-                    Err(e) => {
-                        self.note(MsgCat::Err, format!("import of {bibcode} failed: {e}"))
                     }
-                },
+                }
             }
+        }
+        if done {
+            // the channel can deliver nothing further; drop leftover
+            // ADS tasks (safety net for orphaned work)
+            self.tasks
+                .retain(|t| !matches!(t.kind, TaskKind::Query | TaskKind::Import));
         }
     }
 
@@ -828,6 +911,70 @@ impl App {
                 format!("global tier hidden — {} local papers", self.order.len())
             },
         );
+    }
+
+    /// Register an in-flight background task; the returned id travels
+    /// with the worker's completion message back to the drain handler.
+    fn add_task(&mut self, kind: TaskKind, label: String, keys: Vec<String>) -> u64 {
+        self.next_task_id += 1;
+        let id = self.next_task_id;
+        self.tasks.push(Task {
+            id,
+            label,
+            kind,
+            started: std::time::Instant::now(),
+            cancelled: false,
+            keys,
+        });
+        id
+    }
+
+    /// Remove a task on completion, returning it so the drain handler
+    /// can tell whether it was cancelled in the meantime.
+    fn finish_task(&mut self, id: u64) -> Option<Task> {
+        self.tasks
+            .iter()
+            .position(|t| t.id == id)
+            .map(|i| self.tasks.remove(i))
+    }
+
+    /// Cancel a task: the browser watcher stops for real (poll_cancel);
+    /// thread-backed work cannot be killed, so the task is only marked
+    /// and its result is discarded on arrival.
+    fn cancel_task(&mut self, id: u64) {
+        let Some(t) = self.tasks.iter_mut().find(|t| t.id == id) else { return };
+        if t.cancelled {
+            return;
+        }
+        t.cancelled = true;
+        let (kind, label) = (t.kind, t.label.clone());
+        if matches!(kind, TaskKind::Watch) {
+            if let Some(cancel) = self.poll_cancel.take() {
+                cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+            }
+            self.note(MsgCat::Warn, "browser download cancelled".to_string());
+        } else {
+            self.note(
+                MsgCat::Warn,
+                format!("cancelling — {label} (result will be discarded)"),
+            );
+        }
+    }
+
+    /// Cancel the running browser-download watch (X / the card's ✕),
+    /// routing through the task registry when its task is present.
+    fn cancel_watch(&mut self) {
+        if let Some(id) = self
+            .tasks
+            .iter()
+            .find(|t| matches!(t.kind, TaskKind::Watch) && !t.cancelled)
+            .map(|t| t.id)
+        {
+            self.cancel_task(id);
+        } else if let Some(cancel) = self.poll_cancel.take() {
+            cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+            self.note(MsgCat::Warn, "browser download cancelled".to_string());
+        }
     }
 
     /// Emit an event message: color-coded in the log pane and shown in
@@ -1410,9 +1557,8 @@ impl App {
 
     /// X — cancel a running browser-download watch, else clear cached PDFs.
     fn clear_pdfs(&mut self) {
-        if let Some(cancel) = self.poll_cancel.take() {
-            cancel.store(true, std::sync::atomic::Ordering::Relaxed);
-            self.note(MsgCat::Warn, "browser download cancelled".to_string());
+        if self.poll_cancel.is_some() {
+            self.cancel_watch();
             return;
         }
         self.pdf_status.clear();
@@ -1435,12 +1581,23 @@ impl App {
         }
         let Some(e) = self.lib.get(&key) else { return };
         let (eprint, adsurl) = (e.eprint().to_string(), e.adsurl().to_string());
+        let src = match source {
+            pdf::Source::Arxiv => "arXiv",
+            pdf::Source::Oa => "ADS OA",
+            pdf::Source::Auto => "auto",
+        };
+        let id = self.add_task(
+            TaskKind::Download,
+            format!("↓ {src} PDF — {key}"),
+            vec![key.clone()],
+        );
         let (tx, rx) = std::sync::mpsc::channel();
         self.dl_rx = Some(rx);
         self.note(MsgCat::Info, format!("Downloading {key}…"));
         std::thread::spawn(move || {
             let ok = pdf::fetch_source(&key, &eprint, &adsurl, source).is_some();
             let _ = tx.send(DlMsg::Done {
+                id,
                 done: ok as usize,
                 failed: if ok { vec![] } else { vec![key] },
             });
@@ -1471,12 +1628,17 @@ impl App {
         );
         let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         self.poll_cancel = Some(cancel.clone());
+        let id = self.add_task(
+            TaskKind::Watch,
+            format!("👁 watching ~/Downloads — {key}"),
+            vec![key.clone()],
+        );
         let (tx, rx) = std::sync::mpsc::channel();
         self.dl_rx = Some(rx);
         self.note(MsgCat::Info, format!("Resolving browser source for {key}…"));
         std::thread::spawn(move || {
             let Some(url) = pdf::browser_resolve_url(&doi, &adsurl, &eprint) else {
-                let _ = tx.send(DlMsg::Done { done: 0, failed: vec![key] });
+                let _ = tx.send(DlMsg::Done { id, done: 0, failed: vec![key] });
                 return;
             };
             let before = pdf::downloads_snapshot();
@@ -1486,6 +1648,7 @@ impl App {
             )));
             let got = pdf::poll_downloads(&key, &before, 60, &cancel);
             let _ = tx.send(DlMsg::Done {
+                id,
                 done: got.is_some() as usize,
                 failed: if got.is_some() { vec![] } else { vec![key] },
             });
@@ -1525,9 +1688,19 @@ impl App {
             self.note(MsgCat::Warn, "nothing to download (cached, or no arXiv ID / ADS URL)".to_string());
             return;
         }
+        let total = items.len();
+        let label = if let [(k, _, _)] = items.as_slice() {
+            format!("↓ PDF — {k}")
+        } else {
+            format!("↓ PDFs — {total} papers")
+        };
+        let id = self.add_task(
+            TaskKind::Download,
+            label,
+            items.iter().map(|(k, _, _)| k.clone()).collect(),
+        );
         let (tx, rx) = std::sync::mpsc::channel();
         self.dl_rx = Some(rx);
-        let total = items.len();
         std::thread::spawn(move || {
             let mut done = 0;
             let mut failed = vec![];
@@ -1542,7 +1715,7 @@ impl App {
                     failed.push(key.clone());
                 }
             }
-            let _ = tx.send(DlMsg::Done { done, failed });
+            let _ = tx.send(DlMsg::Done { id, done, failed });
         });
         self.note(MsgCat::Info, format!("Downloading {total} PDF(s)…"));
     }
@@ -1557,7 +1730,29 @@ impl App {
         for m in msgs {
             match m {
                 DlMsg::Progress(s) => self.status = s,
-                DlMsg::Done { done, failed } => {
+                DlMsg::Done { id, done, failed } => {
+                    let finished = self.finish_task(id);
+                    if finished.as_ref().is_some_and(|t| t.cancelled) {
+                        // discard the cancelled task's result: remove
+                        // anything it cached so the end state matches the
+                        // existing failure/clear paths, and reset the
+                        // channel state exactly as the normal arm does
+                        let t = finished.unwrap();
+                        for k in &t.keys {
+                            let p = pdf::cache_path(k);
+                            if p.exists() {
+                                let _ = std::fs::remove_file(&p);
+                            }
+                        }
+                        self.note(
+                            MsgCat::Info,
+                            format!("cancelled — {} (result discarded)", t.label),
+                        );
+                        self.pdf_status.clear();
+                        self.dl_rx = None;
+                        self.poll_cancel = None;
+                        continue;
+                    }
                     // an unavailable PDF is an expected outcome (many
                     // publishers require the browser), not an app failure
                     let cat = if failed.is_empty() { MsgCat::Ok } else { MsgCat::Warn };
@@ -1617,6 +1812,15 @@ impl App {
             self.show_help = false; // any click dismisses the cheat-sheet
             return;
         }
+        // tasks overlay: a row's ✕ cancels; any other click dismisses
+        if self.show_tasks {
+            if let Some(&(_, id)) = self.task_cancel_rects.iter().find(|(r, _)| hit(*r, x, y)) {
+                self.cancel_task(id);
+            } else {
+                self.show_tasks = false;
+            }
+            return;
+        }
         // clicking away from the query prompt dismisses it, and the click
         // then performs its normal action (e.g. switching scope); the
         // filter likewise leaves entry mode, but stays applied (as ⏎) —
@@ -1635,6 +1839,11 @@ impl App {
                     self.note(MsgCat::Warn, "removal cancelled".to_string());
                 }
             }
+            return;
+        }
+        // the ⧗N footer indicator opens the pending-tasks overlay
+        if hit(self.tasks_badge, x, y) {
+            self.show_tasks = true;
             return;
         }
         // copy-regions: the card text copies its own entry's datum; in
@@ -1794,9 +2003,8 @@ impl App {
 
     /// Clear (or cancel a pending browser watch for) the card entry's PDF.
     fn clear_card_pdf(&mut self, key: &str) {
-        if let Some(cancel) = self.poll_cancel.take() {
-            cancel.store(true, std::sync::atomic::Ordering::Relaxed);
-            self.note(MsgCat::Warn, "browser download cancelled".to_string());
+        if self.poll_cancel.is_some() {
+            self.cancel_watch();
             return;
         }
         self.pdf_status.clear();
@@ -1910,6 +2118,19 @@ impl App {
         }
         if self.show_help {
             self.show_help = false; // any key dismisses the cheat-sheet
+            return;
+        }
+        if self.show_tasks {
+            match code {
+                KeyCode::Esc | KeyCode::Char('T') => self.show_tasks = false,
+                KeyCode::Char(c @ '1'..='9') => {
+                    let idx = c as usize - '1' as usize;
+                    if let Some(id) = self.tasks.get(idx).map(|t| t.id) {
+                        self.cancel_task(id);
+                    }
+                }
+                _ => {}
+            }
             return;
         }
         match &mut self.mode {
@@ -2039,6 +2260,7 @@ impl App {
                 }
                 KeyCode::Char('i') => self.import_highlighted(),
                 KeyCode::Char('L') => self.run_action(Action::Log),
+                KeyCode::Char('T') => self.show_tasks = true,
                 KeyCode::Char('y') => self.run_action(Action::Copy),
                 KeyCode::Char('Y') => self.do_copy(CopyItem::FullKey),
                 KeyCode::Char(' ') => self.run_action(Action::Select),
@@ -2142,6 +2364,11 @@ impl App {
         }
         if self.show_help {
             self.draw_help(f);
+        }
+        if self.show_tasks {
+            self.draw_tasks(f);
+        } else {
+            self.task_cancel_rects.clear();
         }
         if self.show_log {
             self.draw_log(f, log_area);
@@ -2326,6 +2553,7 @@ impl App {
             ("/", "filter", Some(Action::Filter)),
             ("D", "pub card", Some(Action::Card)),
             ("L", "event log", Some(Action::Log)),
+            ("T", "pending tasks", None),
             ("t", "global tier", Some(Action::GlobalTier)),
             ("?", "this cheat-sheet", Some(Action::Help)),
             ("q", "quit", Some(Action::Quit)),
@@ -2366,6 +2594,93 @@ impl App {
         }
         let p = Paragraph::new(Text::from(lines))
             .block(Block::default().borders(Borders::ALL).title(" keys "));
+        f.render_widget(p, area);
+    }
+
+    /// Centered pending-tasks overlay (T, or clicking ⧗N): one row per
+    /// in-flight background task with elapsed time and a ✕ cancel
+    /// affordance; digits 1-9 cancel by row. A task that finishes while
+    /// the overlay is open simply disappears on the next frame.
+    fn draw_tasks(&mut self, f: &mut Frame) {
+        self.task_cancel_rects.clear();
+        let frame = f.area();
+        let n = self.tasks.len();
+        let h = (n.max(1) as u16 + 4).min(frame.height);
+        let w = 56.min(frame.width.saturating_sub(4));
+        let area = Rect {
+            x: frame.width.saturating_sub(w) / 2,
+            y: frame.height.saturating_sub(h) / 2,
+            width: w,
+            height: h,
+        };
+        f.render_widget(ratatui::widgets::Clear, area);
+        let inner = w.saturating_sub(2) as usize;
+        let mut lines: Vec<Line> = vec![];
+        let mut rects: Vec<(Rect, u64)> = vec![];
+        if self.tasks.is_empty() {
+            lines.push(Line::from(Span::styled(
+                " no pending tasks",
+                Style::default().fg(Color::DarkGray),
+            )));
+        }
+        for (i, t) in self.tasks.iter().enumerate() {
+            let y = area.y + 1 + i as u16;
+            let secs = t.started.elapsed().as_secs();
+            let elapsed = if secs >= 60 {
+                format!("{}m{:02}s", secs / 60, secs % 60)
+            } else {
+                format!("{secs}s")
+            };
+            // fixed columns — " N  label……  elapsed  ✕" — so the ✕
+            // click rect is exact
+            let label_w = inner.saturating_sub(14);
+            let mut label: String = t.label.chars().take(label_w).collect();
+            let pad = label_w.saturating_sub(label.chars().count());
+            label.push_str(&" ".repeat(pad));
+            let num = if i < 9 && !t.cancelled {
+                format!(" {}  ", i + 1)
+            } else {
+                "    ".to_string()
+            };
+            let dim = Style::default().fg(Color::DarkGray);
+            let (num_s, label_s) = if t.cancelled {
+                (dim, dim)
+            } else {
+                (Style::default().fg(Color::Cyan), Style::default())
+            };
+            let mut spans = vec![
+                Span::styled(num, num_s),
+                Span::styled(label, label_s),
+                Span::styled(format!("{elapsed:>7} "), dim),
+            ];
+            if t.cancelled {
+                spans.push(Span::styled(" …", dim)); // awaiting discard
+            } else {
+                let r = Rect { x: area.x + w.saturating_sub(3), y, width: 2, height: 1 };
+                let hov = hit(r, self.hover.0, self.hover.1);
+                rects.push((r, t.id));
+                spans.push(Span::styled(
+                    " ✕",
+                    if hov {
+                        Style::default().fg(Color::LightRed).add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::default().fg(Color::Red)
+                    },
+                ));
+            }
+            lines.push(Line::from(spans));
+        }
+        lines.push(Line::default());
+        lines.push(Line::from(Span::styled(
+            " 1-9 / ✕ cancel · Esc close",
+            Style::default().fg(Color::DarkGray),
+        )));
+        self.task_cancel_rects = rects;
+        let p = Paragraph::new(Text::from(lines)).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(" pending tasks "),
+        );
         f.render_widget(p, area);
     }
 
@@ -3500,6 +3815,7 @@ impl App {
     }
 
     fn draw_status(&mut self, f: &mut Frame, area: Rect) {
+        self.tasks_badge = Rect::default();
         let line = match self.mode {
             Mode::Filter => {
                 let avail = area.width.saturating_sub(2) as usize;
@@ -3578,20 +3894,22 @@ impl App {
                 } else {
                     (String::new(), Color::Gray)
                 };
-                let pending = [
-                    self.dl_rx.is_some(),
-                    self.ads_rx.is_some(),
-                    self.poll_cancel.is_some(),
-                ]
-                .iter()
-                .filter(|b| **b)
-                .count();
+                let pending = self.tasks.len();
                 let mut spans = vec![];
                 if pending > 0 {
-                    spans.push(Span::styled(
-                        format!("⧗{pending} "),
-                        Style::default().fg(Color::Yellow),
-                    ));
+                    let label = format!("⧗{pending} ");
+                    self.tasks_badge = Rect {
+                        x: area.x,
+                        y: area.y,
+                        width: label.chars().count() as u16,
+                        height: 1,
+                    };
+                    let style = if hit(self.tasks_badge, self.hover.0, self.hover.1) {
+                        Style::default().fg(Color::Yellow).add_modifier(Modifier::UNDERLINED)
+                    } else {
+                        Style::default().fg(Color::Yellow)
+                    };
+                    spans.push(Span::styled(label, style));
                 }
                 spans.extend([
                     Span::styled(
