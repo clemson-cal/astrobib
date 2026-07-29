@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.5.0 — 2026-07-28
+
+Complete rewrite in Rust (ratatui). This is the first release of the Rust implementation, distributed as a compiled binary in platform wheels — `pipx install astrobib` / `uv tool install astrobib` work as before, with no Python runtime involved. The Python implementation is retired and remains available at the v0.4.0 tag and release.
+
+### Added
+- Instant startup and quit; the whole library parses in milliseconds with no cache.
+- Scope tabs above the table: the library, one scope per saved ADS query (shared tabs.json, per-manuscript contexts), and a Manuscript scope classifying every `.tex` citation (ok / library / missing / ambiguous, plus uncited members) with `S` pre-filling a search from a missing key.
+- Two-tier library model: `astrobib [LIBRARY_DIR]` points at any local bib root (walk-up default, `.git` no longer required); `t` or the `global` badge toggles the global tier — hidden means local-only reads and writes, with sole-copy rescue still protecting removals. `--no-global` starts hidden.
+- iOS-style selection mode (Space, gutter click, or option/ctrl+click; `a`/`A` select visible/all) with bulk import, download, membership, and removal; removal sits behind a confirm modal on Delete/Backspace.
+- Mouse throughout: clickable scope pills, sortable column headers, hover previews from the citekey column, roll-over styling, double-click opens a cached PDF, clickable pub-card links/buttons/copy-regions, footer view badges.
+- Copy without a mouse: `y` which-key chord (key, full key, bibcode, ADS/arXiv/DOI URLs, PDF path, title, abstract); card text regions click-to-copy.
+- Event log (`L`) with categories and scrollback; readline-style editing (tui-input, real terminal cursor) in the filter and query prompts; result-count control in the prompt (↑/↓) and `+`/`-` on live scopes.
+- Dynamic layout: candidate-fitted author column, responsive column priorities, height-driven abstract display.
+
+### Changed
+- Cite keys, short keys, and on-disk `.bib` serialization are byte-identical to 0.4.0 (golden-tested against it); libraries and manuscript dbs need no migration.
+- The key panel is a transient `?` cheat-sheet; actions live where their objects are (card buttons, chips, badges).
+
+### Removed
+- Starring (`astrobib_starred` is ignored on read and still stripped from manuscript copies), the `M` ms-only view, and the Python implementation itself.
+
 ## 0.4.0 — 2026-07-28
 
 ### Added
