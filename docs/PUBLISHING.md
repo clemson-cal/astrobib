@@ -2,8 +2,6 @@
 
 astrobib releases to PyPI as maturin `bindings = "bin"` wheels: the compiled Rust binary is packaged as the `astrobib` entry point, per platform (macOS arm64/x86_64, manylinux x86_64/aarch64) plus an sdist, so `pipx install astrobib` (or `pip install astrobib`) keeps working with no Rust toolchain on the user's machine.
 
-0.5.0 is the first Rust release. It supersedes Python 0.4.0, the last release of the retired Python implementation (preserved at tag `v0.4.0`, along with its `scripts/release.py` process).
-
 **Nothing is ever published without the user's explicit request.** Do not push a `v*` tag, run `maturin publish`/`maturin upload`, or otherwise upload to PyPI unless the user asks for a release in so many words.
 
 ---
@@ -61,4 +59,3 @@ maturin publish --release          # builds for the host platform and uploads
 
 ## Notes
 
-- `[tool.maturin] exclude = ["astrobib/**"]` in pyproject.toml guards against maturin treating the tree as a mixed python/rust project if a top-level `astrobib/` Python package ever reappears; with none present it is a harmless no-op.

@@ -38,7 +38,3 @@ Issues = "https://github.com/clemson-cal/astrobib/issues"
 
 [tool.maturin]
 bindings = "bin"
-# The retired Python package (astrobib/, preserved at tag v0.4.0) still sits
-# in the tree; without this exclude maturin auto-detects it as a mixed
-# python/rust project and bundles the .py files into the wheel.
-exclude = ["astrobib/**"]
