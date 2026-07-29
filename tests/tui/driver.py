@@ -76,7 +76,9 @@ class Session:
             cwd = os.path.join(self.home, "ms")
             os.makedirs(os.path.join(cwd, "bib"))
             for name, content in manuscript.items():
-                with open(os.path.join(cwd, name), "w") as f:
+                path = os.path.join(cwd, name)
+                os.makedirs(os.path.dirname(path), exist_ok=True)
+                with open(path, "w") as f:
                     f.write(content)
         self.cwd = cwd
 

@@ -5,6 +5,9 @@
 ### Added
 - Markdown manuscripts, same policy as LaTeX: `.md` sources beside `bib/` are scanned for citations (`main.md` sole root when present, Obsidian `![[embeds]]` expand like `\input`), with pandoc-style `@key` / `[@a; @b]` cites and Obsidian wikilinks — `[[key]]` counts as a citation when it resolves in the library and stays a note link when it doesn't. Code blocks, inline code, and HTML comments never scan.
 - `astrobib refs [FILE] [--dry-run]`: renders the cited-works bibliography into the manuscript's markdown — sorted by author, with year, italic title, journal (AAS macros expanded), and ADS/arXiv/DOI links — between `<!-- astrobib:references -->` markers (a `## References` section is appended on first run); unresolved cites are reported.
+- refs.bib is back: for TeX manuscripts the TUI regenerates it silently on every rescan (write-on-change), each entry keyed by the string actually cited so hash suffixes stay out of the manuscript; `astrobib refs [--prune] [-o PATH]` is the CLI sync flow ported from 0.4.0 (copy cited entries into the manuscript db, optionally prune uncited ones with sole-copy rescue, write refs.bib).
+- `astrobib tidy` (alias `regularize`): co-author interop — colleagues without astrobib drop raw ADS BibTeX into `bib/` under any filename; tidy canonicalizes those files (reproducible-key fast path, else the ADS lookup ladder), renames them to `{Key}.bib`, dedupes against the library, prints cite-key replacement one-liners, and regenerates refs.bib.
+- The pub card in a query scope grows the library card's PDF buttons (and download status) the moment the shown article is imported, acting on the imported entry.
 - Option/alt+arrow (and emacs alt+b/f) word motions in the filter and query inputs.
 
 ### Changed

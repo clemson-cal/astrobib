@@ -2,7 +2,7 @@
 //! astrobib/export.py) and Markdown — plus the rendered Markdown
 //! bibliography. refs.bib generation comes with the sync flow.
 
-use crate::library::Entry;
+use crate::library::{CiteState, Entry, MergedLibrary};
 use regex::Regex;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -246,6 +246,45 @@ pub fn scan_md_files(paths: &[PathBuf]) -> Vec<MdCite> {
         }
     }
     ordered
+}
+
+// ── refs.bib generation (port of export.py's export_refs) ───────────
+
+/// The refs.bib content for a set of cited strings: one block per cite
+/// that resolves to a manuscript-db member, keyed by the string actually
+/// cited (full key or unambiguous prefix — hash suffixes never need to
+/// appear in the manuscript), sorted, from the manuscript copy of the
+/// data.
+pub fn refs_bib_content(cited: &[String], lib: &MergedLibrary) -> String {
+    let mut sorted: Vec<&String> = cited.iter().collect();
+    sorted.sort();
+    sorted.dedup();
+    let mut blocks: Vec<String> = vec![];
+    for c in sorted {
+        let (state, entry) = lib.resolve_citation(c);
+        if !matches!(state, CiteState::Ok) {
+            continue;
+        }
+        let Some(e) = entry else { continue };
+        let e = lib
+            .manuscript
+            .as_ref()
+            .and_then(|m| m.get(e.key()))
+            .unwrap_or(e);
+        let mut data = e.data.clone();
+        data.insert("ID".to_string(), c.clone());
+        blocks.push(crate::bib::format_entry(&data));
+    }
+    blocks.join("\n")
+}
+
+/// Write refs.bib only on change. Returns whether the file changed.
+pub fn write_refs_bib(out: &Path, content: &str) -> std::io::Result<bool> {
+    if std::fs::read_to_string(out).map(|t| t == content).unwrap_or(false) {
+        return Ok(false);
+    }
+    std::fs::write(out, content)?;
+    Ok(true)
 }
 
 // ── Rendered Markdown bibliography ──────────────────────────────────

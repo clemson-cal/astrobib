@@ -553,10 +553,30 @@ impl App {
             return;
         }
         let rows = self.ms_rows();
+        self.sync_refs_bib(&rows);
         match self.scopes.get_mut(1) {
             Some(s @ Scope::Manuscript { .. }) => *s = Scope::Manuscript { rows },
             _ => self.scopes.insert(1, Scope::Manuscript { rows }),
         }
+    }
+
+    /// Keep refs.bib beside the manuscript in step with its citations —
+    /// the Python app's silent regenerate-on-change. Created only for
+    /// TeX manuscripts (astrobib refs opts a markdown one in); once the
+    /// file exists it is kept fresh whatever the sources.
+    fn sync_refs_bib(&self, rows: &[MsRow]) {
+        let Some(root) = self.ms_root() else { return };
+        let out = root.join("refs.bib");
+        if !out.exists() && crate::export::manuscript_tex_files(&root).is_empty() {
+            return;
+        }
+        let cited: Vec<String> = rows
+            .iter()
+            .filter(|r| !r.uncited)
+            .map(|r| r.cited.clone())
+            .collect();
+        let content = crate::export::refs_bib_content(&cited, &self.lib);
+        let _ = crate::export::write_refs_bib(&out, &content);
     }
 
     fn ms_root(&self) -> Option<std::path::PathBuf> {
@@ -1081,6 +1101,18 @@ impl App {
         crate::keys::generate_key(&d)
     }
 
+    /// The library entry the pub card's buttons act on: in an ADS scope
+    /// the shown article's imported twin (if any), else the selected
+    /// entry. Distinct from selected_key because the card can preview a
+    /// hovered row.
+    fn card_entry_key(&self) -> Option<String> {
+        if let Some(Scope::Ads { articles, .. }) = self.scopes.get(self.active_scope) {
+            let a = self.card_article_pos().and_then(|p| articles.get(p))?;
+            return self.lib.get_by_bibcode(&a.bibcode).map(|e| e.key().to_string());
+        }
+        self.selected_key().map(str::to_string)
+    }
+
     fn selected_key(&self) -> Option<&str> {
         // the manuscript scope resolves to library entries, so entry
         // actions apply there; ADS rows don't resolve until imported
@@ -1180,6 +1212,7 @@ impl App {
     fn rebuild_order(&mut self) {
         if matches!(self.scopes.get(1), Some(Scope::Manuscript { .. })) {
             let rows = self.ms_rows();
+            self.sync_refs_bib(&rows);
             if let Some(s) = self.scopes.get_mut(1) {
                 *s = Scope::Manuscript { rows };
             }
@@ -1653,7 +1686,7 @@ impl App {
                 }
                 return;
             }
-            if let Some(key) = self.selected_key().map(str::to_string) {
+            if let Some(key) = self.card_entry_key() {
                 match btn {
                     CardBtn::Arxiv => self.download_single(key, pdf::Source::Arxiv),
                     CardBtn::Oa => self.download_single(key, pdf::Source::Oa),
@@ -2878,7 +2911,8 @@ impl App {
         let eprint = crate::ads::arxiv_id(a).map(str::to_string).unwrap_or_default();
         let cites = a.citation_count;
         let hyp_key = self.hypothetical_key(a);
-        let in_lib = self.lib.get_by_bibcode(&bibcode).is_some();
+        let lib_key = self.lib.get_by_bibcode(&bibcode).map(|e| e.key().to_string());
+        let in_lib = lib_key.is_some();
 
         let hv = self.hover;
         let hov_region: Option<CopyItem> = self
@@ -2937,7 +2971,8 @@ impl App {
             line_at(f, y, Line::from(Span::styled(l, Style::default().fg(Color::DarkGray))));
             y += 1;
         }
-        let rest = 3 + 2; // links block + footer
+        // links block + footer, plus PDF buttons + status once imported
+        let rest = 3 + 2 + if in_lib { 2 } else { 0 };
         if !abstract_.is_empty() && y + rest < bottom {
             y += 1;
             let avail = (bottom - y).saturating_sub(rest) as usize;
@@ -3007,6 +3042,62 @@ impl App {
         y += 1;
         line_at(f, y, Line::from(Span::styled(sep, dimsep)));
         y += 2;
+        // once imported, the library card's PDF buttons appear here too,
+        // acting on the imported entry (card_entry_key routes clicks)
+        if let Some(kk) = &lib_key {
+            let cached = pdf::is_cached(kk);
+            let mut buttons: Vec<(&str, CardBtn, Color)> = vec![];
+            if !cached {
+                if !eprint.is_empty() {
+                    buttons.push(("arXiv ↓", CardBtn::Arxiv, Color::Cyan));
+                }
+                buttons.push(("ADS OA ↓", CardBtn::Oa, Color::Cyan));
+                buttons.push(("browser ↓", CardBtn::Browser, Color::Yellow));
+                buttons.push(("pick …", CardBtn::Pick, Color::Magenta));
+            } else {
+                buttons.push(("Open ↗", CardBtn::Open, Color::Green));
+                buttons.push(("Clear ✕", CardBtn::Clear, Color::Gray));
+            }
+            let mut bspans: Vec<Span> = vec![];
+            let mut bx = x0;
+            for (label, btn, fg) in buttons {
+                let wl = pill_width(label);
+                let r = Rect { x: bx, y, width: wl, height: 1 };
+                if y < bottom {
+                    self.card_buttons.push((r, btn));
+                }
+                let bg = if hit(r, hv.0, hv.1) {
+                    Color::Rgb(58, 63, 72)
+                } else {
+                    Color::Rgb(40, 44, 52)
+                };
+                push_pill(&mut bspans, label, bg, fg);
+                bspans.push(Span::raw(" "));
+                bx += wl + 1;
+            }
+            line_at(f, y, Line::from(bspans));
+            y += 1;
+            if self.poll_cancel.is_some() {
+                let label = "⏳ waiting for download…  cancel ✕";
+                if y < bottom {
+                    self.card_buttons.push((
+                        Rect { x: x0, y, width: label.chars().count() as u16, height: 1 },
+                        CardBtn::Cancel,
+                    ));
+                }
+                line_at(f, y, Line::from(Span::styled(label, Style::default().fg(Color::Yellow))));
+            } else if !self.pdf_status.is_empty() {
+                line_at(
+                    f,
+                    y,
+                    Line::from(Span::styled(
+                        self.pdf_status.clone(),
+                        Style::default().fg(Color::Yellow),
+                    )),
+                );
+            }
+            y += 1;
+        }
         let mut foot: Vec<Span> = vec![Span::styled(
             hyp_key.clone(),
             region_style(cyan, CopyItem::Key),

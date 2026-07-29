@@ -54,13 +54,28 @@ enum Command {
         #[arg(long)]
         local_only: bool,
     },
-    /// Render the cited-works bibliography into a markdown manuscript
+    /// Canonicalize hand-dropped .bib files in the manuscript's bib/
+    /// (re-key, rename, dedupe), then regenerate refs.bib
+    #[command(visible_alias = "regularize")]
+    Tidy {
+        /// Report what would change without touching anything
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Sync the manuscript db with cited keys, then write refs.bib
+    /// (TeX) and/or the rendered bibliography (markdown)
     Refs {
         /// Markdown file to update (default: main.md, or the sole .md)
         file: Option<std::path::PathBuf>,
-        /// Print the bibliography instead of writing the file
+        /// Print what would be written without touching anything
         #[arg(long)]
         dry_run: bool,
+        /// Remove uncited entries from the manuscript database
+        #[arg(long)]
+        prune: bool,
+        /// refs.bib output path (default: refs.bib in the manuscript root)
+        #[arg(short, long)]
+        output: Option<std::path::PathBuf>,
     },
 }
 
@@ -136,12 +151,19 @@ fn main() -> anyhow::Result<()> {
         Some(Command::Import { file, global_only, local_only }) => {
             import_bib(&mut lib, &file, global_only, local_only)
         }
-        Some(Command::Refs { file, dry_run }) => {
-            let Some(root) = &ms_root else {
+        Some(Command::Tidy { dry_run }) => {
+            let Some(root) = ms_root.clone() else {
+                eprintln!("No local bib root here — tidy needs a manuscript directory.");
+                std::process::exit(1);
+            };
+            tidy_bib_dir(&mut lib, &root, dry_run)
+        }
+        Some(Command::Refs { file, dry_run, prune, output }) => {
+            let Some(root) = ms_root.clone() else {
                 eprintln!("No local bib root here — refs needs a manuscript directory.");
                 std::process::exit(1);
             };
-            md_refs(&lib, root, file.as_deref(), dry_run)
+            run_refs(&mut lib, &root, file.as_deref(), output.as_deref(), prune, dry_run)
         }
         Some(Command::Show { key }) => match lib.resolve(&key) {
             Some(e) => {
@@ -164,29 +186,146 @@ fn main() -> anyhow::Result<()> {
     }
 }
 
-/// astrobib refs — regenerate the marker-delimited markdown bibliography
-/// from every citation in the manuscript's .tex and .md sources.
-fn md_refs(
-    lib: &MergedLibrary,
+/// astrobib tidy — co-author interop. Colleagues without astrobib add
+/// references by dropping raw ADS BibTeX into bib/ under any filename
+/// and key; this canonicalizes those files (reproducible-key fast path,
+/// else the ADS lookup ladder), renames them to {Key}.bib, dedupes
+/// against the library, prints cite-key replacement one-liners, and
+/// regenerates refs.bib.
+fn tidy_bib_dir(
+    lib: &mut MergedLibrary,
+    root: &std::path::Path,
+    dry_run: bool,
+) -> anyhow::Result<()> {
+    let bib_dir = root.join("bib");
+    // (path, entries) for files that aren't canonical one-entry {Key}.bib
+    let mut foreign: Vec<(std::path::PathBuf, Vec<astrobib::bib::Data>)> = vec![];
+    let mut files: Vec<std::path::PathBuf> = std::fs::read_dir(&bib_dir)
+        .map(|rd| {
+            rd.flatten()
+                .map(|e| e.path())
+                .filter(|p| p.extension().is_some_and(|x| x == "bib"))
+                .collect()
+        })
+        .unwrap_or_default();
+    files.sort();
+    for path in files {
+        let Ok(text) = std::fs::read_to_string(&path) else { continue };
+        let entries = astrobib::bib::parse_entries(&text);
+        let canonical = entries.len() == 1
+            && entries.first().is_some_and(|d| {
+                let id = d.get("ID").map(String::as_str).unwrap_or("");
+                id == astrobib::keys::generate_key(d)
+                    && path.file_name().is_some_and(|f| {
+                        f.to_string_lossy() == format!("{id}.bib")
+                    })
+            });
+        if !canonical && !entries.is_empty() {
+            foreign.push((path, entries));
+        }
+    }
+    if foreign.is_empty() {
+        println!("bib/ is already canonical.");
+        return run_refs(lib, root, None, None, false, dry_run);
+    }
+    let mut renames: Vec<(String, String)> = vec![];
+    let (mut tidied, mut skipped) = (0usize, 0usize);
+    for (path, entries) in foreign {
+        let fname = path.file_name().unwrap_or_default().to_string_lossy().to_string();
+        let mut all_ok = true;
+        let mut resolved: Vec<astrobib::bib::Data> = vec![];
+        for mut data in entries {
+            let orig_key = data.get("ID").cloned().unwrap_or_else(|| "?".to_string());
+            if orig_key != astrobib::keys::generate_key(&data) {
+                if dry_run {
+                    println!("  {fname}: would resolve {orig_key} against ADS");
+                    continue;
+                }
+                match astrobib::ads::lookup_entry(&data) {
+                    Ok(r) => data = r,
+                    Err(reason) => {
+                        println!("  ⚠ {fname}: {orig_key} left alone — {reason}");
+                        all_ok = false;
+                        skipped += 1;
+                        continue;
+                    }
+                }
+            }
+            resolved.push(data);
+        }
+        if dry_run {
+            continue;
+        }
+        for data in &resolved {
+            let key = astrobib::keys::generate_key(data);
+            let orig_key = data.get("ID").cloned().unwrap_or_default();
+            // an entry already canonical elsewhere: this copy is a dupe
+            let dup = lib
+                .manuscript
+                .as_ref()
+                .and_then(|ms| ms.get(&key))
+                .is_some_and(|e| e.path != path);
+            if !dup {
+                let mut d = data.clone();
+                d.insert("ID".to_string(), key.clone());
+                lib.save_entry(&d)?; // both tiers, canonical {Key}.bib
+            }
+            let short = lib
+                .get(&key)
+                .map(|e| if e.short_key.is_empty() { key.clone() } else { e.short_key.clone() })
+                .unwrap_or_else(|| key.clone());
+            if orig_key != short && orig_key != key {
+                renames.push((orig_key.clone(), short.clone()));
+                println!("  {fname}: {orig_key} → {short}{}", if dup { "  (duplicate — dropped)" } else { "" });
+            } else {
+                println!("  {fname} → {key}.bib");
+            }
+            tidied += 1;
+        }
+        // the canonical copies exist now; the foreign file goes
+        if all_ok {
+            std::fs::remove_file(&path)?;
+        }
+    }
+    if dry_run {
+        println!("(dry run — nothing written)");
+        return Ok(());
+    }
+    // in-memory state has stale paths for the removed files: reload
+    let global_on = lib.global_on;
+    *lib = MergedLibrary::load(Some(root))?;
+    lib.global_on = global_on;
+    println!("\n{tidied} entr{} canonicalized, {skipped} left alone.", if tidied == 1 { "y" } else { "ies" });
+    if !renames.is_empty() {
+        println!("\nCite key replacements (copy/paste to update the manuscript):");
+        for (old, new) in &renames {
+            println!("  perl -pi -e 's/\\b\\Q{old}\\E\\b/{new}/g' main.tex");
+        }
+    }
+    println!();
+    run_refs(lib, root, None, None, false, false)
+}
+
+/// astrobib refs — port of the v0.4.0 manuscript sync flow, extended to
+/// markdown manuscripts. Cited keys missing from the manuscript db are
+/// copied in from the personal library; keys found nowhere are reported;
+/// refs.bib is generated from the manuscript db (each entry keyed by the
+/// string actually cited); a markdown manuscript also gets its rendered
+/// bibliography.
+fn run_refs(
+    lib: &mut MergedLibrary,
     root: &std::path::Path,
     file: Option<&std::path::Path>,
+    output: Option<&std::path::Path>,
+    prune: bool,
     dry_run: bool,
 ) -> anyhow::Result<()> {
     use astrobib::export;
+    use astrobib::library::CiteState;
+
+    let tex_files = export::manuscript_tex_files(root);
     let md_files = export::manuscript_md_files(root);
-    let target = match file {
-        Some(f) => f.to_path_buf(),
-        None => match md_files.first() {
-            Some(f) if md_files.len() == 1 || f.ends_with("main.md") => f.clone(),
-            _ => {
-                eprintln!(
-                    "Several .md files and no main.md — name the target: astrobib refs FILE"
-                );
-                std::process::exit(1);
-            }
-        },
-    };
-    let mut cited: Vec<String> = export::scan_tex_files(&export::manuscript_tex_files(root));
+    let mut cited: Vec<String> = export::scan_tex_files(&tex_files);
     let mut seen: std::collections::HashSet<String> = cited.iter().cloned().collect();
     for c in export::scan_md_files(&md_files) {
         if (!c.wikilink || lib.resolve_citation(&c.raw).1.is_some()) && seen.insert(c.raw.clone())
@@ -194,33 +333,145 @@ fn md_refs(
             cited.push(c.raw);
         }
     }
-    let mut keys_seen: std::collections::HashSet<String> = std::collections::HashSet::new();
-    let mut entries = vec![];
-    let mut unresolved = vec![];
-    for c in &cited {
-        match lib.resolve_citation(c).1 {
-            Some(e) => {
-                if keys_seen.insert(e.key().to_string()) {
-                    entries.push(e);
-                }
+
+    // sync: copy library-only cites into the manuscript db
+    let mut copied: Vec<String> = vec![];
+    let mut missing: Vec<String> = vec![];
+    let mut ambiguous: Vec<String> = vec![];
+    let mut targets: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut sorted = cited.clone();
+    sorted.sort();
+    for c in &sorted {
+        let (state, entry) = lib.resolve_citation(c);
+        let key = entry.map(|e| e.key().to_string());
+        match state {
+            CiteState::Ok => {
+                targets.insert(key.unwrap());
             }
-            None => unresolved.push(c.clone()),
+            CiteState::Library => {
+                let key = key.unwrap();
+                if !dry_run {
+                    lib.add_to_manuscript(&key)?;
+                }
+                copied.push(if *c == key { key.clone() } else { format!("{c} → {key}") });
+                targets.insert(key);
+            }
+            CiteState::Ambiguous => ambiguous.push(c.clone()),
+            CiteState::Missing => missing.push(c.clone()),
         }
     }
-    let block = export::render_md_bibliography(&entries);
-    if dry_run {
-        println!("{block}");
-    } else {
-        let changed = export::update_md_bibliography(&target, &block)?;
-        println!(
-            "{} reference(s) in {}{}",
-            entries.len(),
-            target.display(),
-            if changed { "" } else { "  (unchanged)" }
-        );
+    let uncited: Vec<String> = lib
+        .manuscript
+        .as_ref()
+        .map(|ms| {
+            ms.entries()
+                .iter()
+                .map(|e| e.key().to_string())
+                .filter(|k| !targets.contains(k))
+                .collect()
+        })
+        .unwrap_or_default();
+    if prune && !dry_run {
+        for k in &uncited {
+            lib.remove_from_manuscript(k)?; // sole copies are rescued
+        }
     }
-    for c in &unresolved {
-        eprintln!("unresolved: {c}");
+
+    // refs.bib from the manuscript db, keyed by the cited strings
+    let bib_out = match output {
+        Some(p) if p.is_absolute() => Some(p.to_path_buf()),
+        Some(p) => Some(root.join(p)),
+        None if !tex_files.is_empty() || root.join("refs.bib").exists() => {
+            Some(root.join("refs.bib"))
+        }
+        None => None, // pure-markdown manuscript: no refs.bib unless asked
+    };
+    let content = export::refs_bib_content(&cited, lib);
+    let n_bib = {
+        let mut s = cited.clone();
+        s.sort();
+        s.dedup();
+        s.iter()
+            .filter(|c| matches!(lib.resolve_citation(c).0, CiteState::Ok))
+            .count()
+    };
+    if let Some(out) = &bib_out {
+        if dry_run {
+            println!("would write {n_bib} entr{} → {}", if n_bib == 1 { "y" } else { "ies" }, out.display());
+        } else {
+            let changed = export::write_refs_bib(out, &content)?;
+            println!(
+                "{n_bib} entr{} → {}{}",
+                if n_bib == 1 { "y" } else { "ies" },
+                out.display(),
+                if changed { "" } else { "  (unchanged)" }
+            );
+        }
+    }
+
+    // rendered bibliography for a markdown manuscript
+    if !md_files.is_empty() {
+        let target = match file {
+            Some(f) => Some(f.to_path_buf()),
+            None => match md_files.first() {
+                Some(f) if md_files.len() == 1 || f.ends_with("main.md") => Some(f.clone()),
+                _ => {
+                    eprintln!("Several .md files and no main.md — name the target: astrobib refs FILE");
+                    None
+                }
+            },
+        };
+        if let Some(target) = target {
+            let mut keys_seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+            let mut entries = vec![];
+            for c in &cited {
+                if let Some(e) = lib.resolve_citation(c).1 {
+                    if keys_seen.insert(e.key().to_string()) {
+                        entries.push(e);
+                    }
+                }
+            }
+            let block = export::render_md_bibliography(&entries);
+            if dry_run {
+                println!("{block}");
+            } else {
+                let changed = export::update_md_bibliography(&target, &block)?;
+                println!(
+                    "{} reference(s) in {}{}",
+                    entries.len(),
+                    target.display(),
+                    if changed { "" } else { "  (unchanged)" }
+                );
+            }
+        }
+    }
+
+    if !copied.is_empty() {
+        println!(
+            "{}opied {} entr{} from the personal library:",
+            if dry_run { "would have c" } else { "C" },
+            copied.len(),
+            if copied.len() == 1 { "y" } else { "ies" }
+        );
+        for k in &copied {
+            println!("  {k}");
+        }
+    }
+    if prune && !uncited.is_empty() {
+        println!(
+            "{} {} uncited entr{}",
+            if dry_run { "would prune" } else { "Pruned" },
+            uncited.len(),
+            if uncited.len() == 1 { "y" } else { "ies" }
+        );
+    } else if !uncited.is_empty() {
+        println!("{} uncited entr{} in the manuscript db (--prune removes)", uncited.len(), if uncited.len() == 1 { "y" } else { "ies" });
+    }
+    for c in &ambiguous {
+        eprintln!("ambiguous: {c}");
+    }
+    for c in &missing {
+        eprintln!("missing: {c}");
     }
     Ok(())
 }

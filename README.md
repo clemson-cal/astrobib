@@ -72,8 +72,13 @@ Cite pandoc-style — bare `@Zrake2019` or bracketed `[@Zrake2019; @Metzger2017]
 `astrobib refs` renders the bibliography of everything cited into the manuscript — a sorted, linked reference list (authors, year, italic title, journal, ADS/arXiv/DOI links) kept between `<!-- astrobib:references -->` markers, appended as a `## References` section the first time. Regenerate any time; your prose is never touched.
 
 ---
+## refs.bib and co-authors
+For TeX manuscripts, `refs.bib` regenerates silently whenever the TUI rescans: every cited manuscript-db member, emitted under the string you actually cited (full key or unambiguous prefix), so hash suffixes never need to appear in your `.tex`. `astrobib refs [--prune]` does the same from the CLI, first copying cited-but-missing entries into the manuscript db (`--prune` also removes uncited ones, rescuing sole copies).
+Co-authors don't need astrobib. They add a reference by pasting BibTeX from the ADS website into `bib/any-name.bib` (and, if they like, appending it to `refs.bib` by hand so the paper still compiles). Next time you check out the repo, `astrobib tidy` canonicalizes those files — re-keys them through ADS when needed, renames them to `{Key}.bib`, dedupes, prints copy-pasteable cite-key replacements — and regenerates `refs.bib` for the commit.
+
+---
 ## CLI
-`list`, `search [--ads]`, `add <bibcode|ADS URL>`, `show <key>`, `import <file.bib> [--global-only|--local-only]`, `refs [FILE] [--dry-run]`, plus `--library PATH` (relocate the global tier) and `--no-global`.
+`list`, `search [--ads]`, `add <bibcode|ADS URL>`, `show <key>`, `import <file.bib> [--global-only|--local-only]`, `refs [FILE] [--prune] [--dry-run]`, `tidy [--dry-run]`, plus `--library PATH` (relocate the global tier) and `--no-global`.
 `import` resolves each entry against ADS (arXiv ID → DOI → exact title+author+year) unless its cite key is already reproducible from its own data — canonical astrobib entries import byte-identically — and prints copy-pasteable key replacements for your `.tex` files.
 
 ---
