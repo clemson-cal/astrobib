@@ -2901,7 +2901,7 @@ impl App {
             line_at(f, y, Line::from(Span::styled(l, Style::default().fg(Color::DarkGray))));
             y += 1;
         }
-        let rest = 3 + 1 + 2; // links block + buttons + footer
+        let rest = 3 + 2; // links block + footer
         if !abstract_.is_empty() && y + rest < bottom {
             y += 1;
             let avail = (bottom - y).saturating_sub(rest) as usize;
@@ -2971,22 +2971,6 @@ impl App {
         y += 1;
         line_at(f, y, Line::from(Span::styled(sep, dimsep)));
         y += 2;
-        // import button (not yet in the library) — the i shortcut lives in ?
-        if !in_lib {
-            let label = "import";
-            let wl = pill_width(label);
-            let r = Rect { x: x0, y, width: wl, height: 1 };
-            self.card_buttons.push((r, CardBtn::Import));
-            let bg = if hit(r, hv.0, hv.1) {
-                Color::Rgb(58, 63, 72)
-            } else {
-                Color::Rgb(40, 44, 52)
-            };
-            let mut bspans: Vec<Span> = vec![];
-            push_pill(&mut bspans, label, bg, Color::Green);
-            line_at(f, y, Line::from(bspans));
-            y += 2;
-        }
         let mut foot: Vec<Span> = vec![Span::styled(
             hyp_key.clone(),
             region_style(cyan, CopyItem::Key),
@@ -2998,10 +2982,23 @@ impl App {
         if in_lib {
             foot.push(Span::styled("  ● in library", Style::default().fg(Color::Magenta)));
         } else {
-            foot.push(Span::styled(
-                "  → import",
-                Style::default().fg(Color::DarkGray),
-            ));
+            // the footer arrow IS the import affordance (i also works)
+            let key_w = hyp_key.chars().count() as u16;
+            let label = "→ import";
+            let r = Rect {
+                x: x0 + key_w + 2,
+                y,
+                width: label.chars().count() as u16,
+                height: 1,
+            };
+            self.card_buttons.push((r, CardBtn::Import));
+            let style = if hit(r, hv.0, hv.1) {
+                Style::default().fg(Color::Green).add_modifier(Modifier::UNDERLINED)
+            } else {
+                Style::default().fg(Color::DarkGray)
+            };
+            foot.push(Span::raw("  "));
+            foot.push(Span::styled(label, style));
         }
         line_at(f, y, Line::from(foot));
         self.card_yanks = yanks;
