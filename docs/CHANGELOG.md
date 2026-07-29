@@ -11,15 +11,10 @@
 - The manuscript rescans itself: source and bib/ mtimes are polled every ~1.5 s, so editing main.tex/main.md in an external editor (or a git pull) refreshes the Manuscript view and refs.bib with no keypress; externally added or removed bib/ entries reload the tier.
 - `astrobib update [--all]`, ported from 0.4.0: refreshes entries whose arXiv preprint has since been published — canonical ADS BibTeX rewritten in place under the same cite key and filename, per-tier user-curated keywords preserved, manuscript copies updated, ADS quota reported.
 - Citation-graph navigation from the pub card: "cited by N" on a query card is clickable, and both cards grow citations/references affordances that spawn `citations(bibcode:…)` / `references(bibcode:…)` query scopes — persisted like any saved query.
-- A pending-tasks overlay on `T` (or click the `⧗N` footer indicator): every in-flight download, query, import, and browser watch listed with elapsed time and per-task cancel (digits 1-9 or ✕). Thread-backed work can't be killed mid-flight, so cancel marks the task and its result is discarded on arrival — including deleting a cancelled download's late-cached PDFs; the browser watch cancels for real.
+- A `⧗N` footer indicator counts in-flight work (downloads, queries, imports, browser watches), each result keyed to its task.
 - Option/alt+arrow (and emacs alt+b/f) word motions in the filter and query inputs.
-
-### Added
 - View the .bib entry verbatim: `v`, or the `@ bib` affordance at the card's bottom right, flips the pub card to the raw file (`◂ card` flips back).
 - Hovering any card link or button explains itself in the footer — what a click does, plus the shortcut key when one exists.
-
-### Removed
-- The pending-tasks overlay (T): tasks are seconds-long, completions land in the log, and the `⧗N` indicator covers "something's running". The internal registry stays — it keys each in-flight result to its task, and cancel-on-arrival still backs the browser-watch ✕.
 
 ### Changed
 - Closing a query scope (ctrl+w) keeps the selection in place, activating the capsule that was to the right (previously it stepped left).
