@@ -164,6 +164,10 @@ class Session:
         self.send(b"\x1b[<0;%d;%dM" % (x + 1, y + 1))
         self.send(b"\x1b[<0;%d;%dm" % (x + 1, y + 1))
 
+    def hover(self, x, y):
+        """Move the mouse to 0-based cell (x, y) via SGR motion injection."""
+        self.send(b"\x1b[<35;%d;%dM" % (x + 1, y + 1))
+
     # -- screen ------------------------------------------------------------
 
     def _pump(self, budget=0.05):

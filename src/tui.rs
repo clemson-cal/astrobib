@@ -2670,6 +2670,18 @@ impl App {
     fn draw(&mut self, f: &mut Frame) {
         self.card_buttons.clear();
         self.hover_hint = None;
+        // While a covering modal is up (about / pick / confirm — not the
+        // non-modal keys panel or log), blind the surfaces beneath it to
+        // the mouse: a position inside the modal also sits on rects behind
+        // it, and their hover styling would show around the modal's edges.
+        // The real position is restored before the modal itself draws so
+        // its own links and buttons still react.
+        let modal_up =
+            self.show_about || matches!(self.mode, Mode::Pick { .. } | Mode::Confirm { .. });
+        let real_hover = self.hover;
+        if modal_up {
+            self.hover = (u16::MAX, u16::MAX);
+        }
         let log_h = if self.show_log {
             (self.log.len().min(8) + 2) as u16
         } else {
@@ -2712,13 +2724,16 @@ impl App {
         if self.show_help {
             self.draw_help(f, help_area);
         }
-        if self.show_about {
-            self.draw_about(f);
-        }
         if self.show_log {
             self.draw_log(f, log_area);
         }
         self.draw_status(f, status);
+        // Modals draw last (topmost) with the real mouse position back in
+        // place so their own hover styling works.
+        self.hover = real_hover;
+        if self.show_about {
+            self.draw_about(f);
+        }
         if let Mode::Pick { .. } = self.mode {
             self.draw_picker(f);
         } else {
