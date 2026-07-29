@@ -340,7 +340,10 @@ fn draw_link_stack(
                 }
             }
             let (badge_style, style) = if !enabled {
-                let d = dim.add_modifier(Modifier::DIM);
+                // dim cyan stays visible on themes where doubly-dimmed
+                // gray sinks into the background, and reads as the
+                // inactive form of the active color
+                let d = cyan.add_modifier(Modifier::DIM);
                 (d, d)
             } else if hov {
                 (dim, cyan.add_modifier(Modifier::UNDERLINED))
@@ -2681,7 +2684,7 @@ impl App {
             Constraint::Min(1),
             Constraint::Length(help_h),
             Constraint::Length(log_h),
-            Constraint::Length(1),
+            Constraint::Length(3), // rule + air + the footer line
         ])
         .areas(f.area());
         let mut constraints = vec![Constraint::Min(40)];
@@ -3661,7 +3664,8 @@ impl App {
                 y += 1;
             }
         }
-        let mut y = content_end;
+        // the stack follows the text (truncation reserved its room)
+        y += 1;
         f.render_widget(
             Paragraph::new(Line::from(Span::styled("─".repeat(w as usize), divider()))),
             Rect { x: x0, y, width: w, height: 1 },
@@ -3875,8 +3879,6 @@ impl App {
                 y += 1;
             }
         }
-        // anchored to the card bottom so targets never move
-        y = y.max(bottom.saturating_sub(rest));
         let sep = "─".repeat(w);
         let dimsep = divider();
         line_at(f, y, Line::from(Span::styled(sep.clone(), dimsep)));
@@ -4179,8 +4181,7 @@ impl App {
         }
 
         // ── link stack (bordered top and bottom, like #detail-links),
-        //    anchored to the card bottom so targets never move ──
-        y = y.max(bottom.saturating_sub(rest));
+        //    right below the abstract ──
         let sep = "─".repeat(w);
         let dimsep = divider();
         line_at(f, y, Line::from(Span::styled(sep.clone(), dimsep)));
@@ -4393,6 +4394,16 @@ impl App {
     }
 
     fn draw_status(&mut self, f: &mut Frame, area: Rect) {
+        // a rule and a breath of space separate the footer from the
+        // content above
+        f.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                "─".repeat(area.width as usize),
+                divider(),
+            ))),
+            Rect { x: area.x, y: area.y, width: area.width, height: 1 },
+        );
+        let area = Rect { x: area.x, y: area.y + 2, width: area.width, height: 1 };
         let line = match self.mode {
             Mode::Filter => {
                 let avail = area.width.saturating_sub(2) as usize;

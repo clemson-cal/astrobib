@@ -23,7 +23,7 @@
 - Card operations are visible even when unavailable: links, query actions, and copy rows without a value (no DOI, no cached PDF, …) render dimmed and unclickable, their rollover hint saying so, instead of disappearing.
 - The card ⇄ bib toggler is a segmented "▤ card │ @ bib" control at the card's bottom-right — active side underlined, inactive side dimmed and clickable.
 - The card shows the publication line — journal (AAS macros expanded), volume(issue), pages — under the byline, on both the library and query cards.
-- The action block and footer are anchored to the card bottom in both views, so links, copies, and buttons never move with abstract length (the abstract absorbs the slack).
+- The action block sits right below the abstract (card view) or the bib text (bib view) in both cards — consistent flow, with the segmented toggler alone pinned to the corner. A rule and a breath of space now separate the footer from the content above.
 - The y copy chord works on query results, copying from the shown article (hypothetical key, bibcode, URLs, title, abstract).
 - Closing a query scope (ctrl+w) keeps the selection in place, activating the capsule that was to the right (previously it stepped left).
 - The scope capsules wrap onto further rows when saved queries outgrow the width, instead of clipping.
