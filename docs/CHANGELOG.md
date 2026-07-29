@@ -20,6 +20,7 @@
 - Every divider — the card's horizontal and vertical rules, the table header rule, the log and footer rules — shares one quite-dim color.
 
 ### Fixed
+- Citations/references queries often found nothing: a preprint-imported entry carries the arXiv bibcode, and `citations(bibcode:…)` returns zero on an alternate bibcode. The queries now use `identifier:…`, which resolves to the canonical record (live-verified: 0 vs 9642 results on GW170817's preprint bibcode).
 - Literal `\ensuremath` no longer appears in titles: the wrapper expands to its contents, and common math macros (\sim ∼, \mu μ, Greek letters, \pm ±, \times ×, \deg °, \odot ⊙) convert to Unicode. Golden serialization vectors are untouched (display-only path).
 - Hovering inside the @ about modal (or the picker/confirm modals) no longer underlines or brightens the covered surfaces around the modal's edges: hover is suppressed beneath covering modals, and modals always draw topmost. The pyte driver gained mouse-motion injection and a hover-sweep scenario proving no outside cell changes. The modal also grew slack columns beyond its longest line: terminals that render ↗/⟳ double-wide shift rows right, which pushed the issues link's hover underline through the border — the second half of the same report.
 - A stalled browser download's ✕ ignored clicks: the waiting line began with a double-width ⏳, shifting every rendered cell one column right of its click rect. Single-width glyph; rect and glyphs agree again.

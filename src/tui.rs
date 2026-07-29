@@ -1543,10 +1543,14 @@ impl App {
     /// card's paper — the C / R keys and the ⌕ card rows.
     fn spawn_citation_query(&mut self, refs: bool) {
         if let Some(bc) = self.card_bibcode() {
+            // identifier: (not bibcode:) — a preprint-imported entry
+            // carries the arXiv bibcode, and citations(bibcode:…) finds
+            // nothing on an alternate bibcode; identifier: resolves to
+            // the canonical record (0 vs 9642 on GW170817's preprint)
             let q = if refs {
-                format!("references(bibcode:{bc})")
+                format!("references(identifier:{bc})")
             } else {
-                format!("citations(bibcode:{bc})")
+                format!("citations(identifier:{bc})")
             };
             self.run_ads_query_limit(q, None, crate::tabs::DEFAULT_LIMIT);
         }
@@ -4258,28 +4262,6 @@ impl App {
         line_at(f, y, Line::from(spans));
         y += 1;
 
-        // ── manuscript membership chip (acts on the card's entry) ────
-        if has_ms {
-            let in_ms = self.lib.in_manuscript(&key);
-            let label = if in_ms { "◆ in manuscript" } else { "◇ add to manuscript" };
-            let wl = pill_width(label);
-            let r = Rect { x: x0, y, width: wl, height: 1 };
-            self.card_buttons.push((r, CardBtn::MsToggle));
-            let hovb = hit(r, hv.0, hv.1);
-            if hovb {
-                self.hover_hint = Some(card_hint(CardBtn::MsToggle).to_string());
-            }
-            let bg = if hovb { Color::Rgb(58, 63, 72) } else { Color::Rgb(40, 44, 52) };
-            let mut spans: Vec<Span> = vec![];
-            push_pill(
-                &mut spans,
-                label,
-                bg,
-                if in_ms { Color::Magenta } else { Color::Gray },
-            );
-            line_at(f, y, Line::from(spans));
-            y += 1;
-        }
 
         // ── PDF status (⏳ waiting…, ✓/✗ results) ────────────────────
         if self.poll_cancel.is_some() {
@@ -4342,7 +4324,35 @@ impl App {
                 s.style = s.style.patch(tint);
             }
         }
-        line_at(f, y, Line::from(spans));
+        // the manuscript chip joins the citekey line when it fits,
+        // else drops to the next line
+        if has_ms {
+            let in_ms = self.lib.in_manuscript(&key);
+            let label = if in_ms { "◆ in manuscript" } else { "◇ add to manuscript" };
+            let cw = pill_width(label);
+            let inline = used + 2 + cw <= w as u16;
+            let (cx, cy) = if inline { (x0 + used + 2, y) } else { (x0, y + 1) };
+            let r = Rect { x: cx, y: cy, width: cw, height: 1 };
+            self.card_buttons.push((r, CardBtn::MsToggle));
+            let hovb = hit(r, hv.0, hv.1);
+            if hovb {
+                self.hover_hint = Some(card_hint(CardBtn::MsToggle).to_string());
+            }
+            let bg = if hovb { Color::Rgb(58, 63, 72) } else { Color::Rgb(40, 44, 52) };
+            let fg = if in_ms { Color::Magenta } else { Color::Gray };
+            if inline {
+                spans.push(Span::raw("  "));
+                push_pill(&mut spans, label, bg, fg);
+                line_at(f, y, Line::from(spans));
+            } else {
+                line_at(f, y, Line::from(std::mem::take(&mut spans)));
+                let mut cs: Vec<Span> = vec![];
+                push_pill(&mut cs, label, bg, fg);
+                line_at(f, cy, Line::from(cs));
+            }
+        } else {
+            line_at(f, y, Line::from(spans));
+        }
         self.card_yanks = yanks;
         self.draw_card_toggle(f, x0, w as u16, bottom, false);
     }
