@@ -191,11 +191,36 @@ enum SortCol {
     Key,
 }
 
+/// Every divider in the app — the card's horizontal rules and the
+/// vertical column divider, the table header rule, and the log/footer
+/// rules — uses this one quite-dim color.
+const DIVIDER_FG: Color = Color::Rgb(62, 66, 74);
+
+fn divider() -> Style {
+    Style::default().fg(DIVIDER_FG)
+}
+
 /// One row of the card's link stack: ↗ rows open the browser, ⌕ rows
 /// act inside astrobib (query scopes).
 enum LinkTarget {
     Url(String),
     Query(CardBtn),
+    Copy(CopyItem),
+}
+
+/// Footer hint for a ⧉ copy row: what is copied, and the y-chord.
+fn copy_hint(item: CopyItem) -> &'static str {
+    match item {
+        CopyItem::Key => "⧉ copy the cite key  ·  y y",
+        CopyItem::FullKey => "⧉ copy the full key  ·  y Y",
+        CopyItem::Bibcode => "⧉ copy the bibcode  ·  y b",
+        CopyItem::AdsUrl => "⧉ copy the ADS URL  ·  y a",
+        CopyItem::ArxivUrl => "⧉ copy the arXiv URL  ·  y x",
+        CopyItem::DoiUrl => "⧉ copy the DOI URL  ·  y d",
+        CopyItem::PdfPath => "⧉ copy the cached PDF's path  ·  y p",
+        CopyItem::Title => "⧉ copy the title  ·  y t",
+        CopyItem::Abstract => "⧉ copy the abstract  ·  y A",
+    }
 }
 
 /// Footer hint for a card affordance: what happens, and the key.
@@ -216,57 +241,94 @@ fn card_hint(btn: CardBtn) -> &'static str {
     }
 }
 
-/// Render the card's vertical link stack: one row per destination, the
-/// leftmost badge naming its kind — ↗ opens the browser, ⌕ acts inside
-/// astrobib (spawns a query scope). Registers whole-row click rects
-/// into the passed vecs and returns the y below the stack.
+/// Render the card's action block as two columns — links and query
+/// actions on the left, the permanent ⧉ copy menu on the right — split
+/// by a dim vertical divider (omitted when either column is empty).
+/// Badges name each row's kind: ↗ opens the browser, ⌕ acts inside
+/// astrobib, ⧉ copies. Registers whole-row click rects and returns the
+/// y below the block.
 #[allow(clippy::too_many_arguments)]
 fn draw_link_stack(
     f: &mut Frame,
     x0: u16,
-    mut y: u16,
+    y: u16,
     w: u16,
     bottom: u16,
     hover: (u16, u16),
-    items: Vec<(String, LinkTarget)>,
+    left: Vec<(String, LinkTarget)>,
+    right: Vec<(String, LinkTarget)>,
     card_links: &mut Vec<(Rect, String)>,
     card_buttons: &mut Vec<(Rect, CardBtn)>,
     hint: &mut Option<String>,
+    yanks: &mut Vec<(Rect, CopyItem)>,
 ) -> u16 {
     let cyan = Style::default().fg(Color::Cyan);
     let dim = Style::default().fg(Color::DarkGray);
-    for (label, target) in items {
-        let badge = match &target {
-            LinkTarget::Url(_) => "↗",
-            LinkTarget::Query(_) => "⌕",
-        };
-        let wl = (badge.chars().count() + 1 + label.chars().count()) as u16;
-        let r = Rect { x: x0, y, width: wl, height: 1 };
-        if y < bottom {
+    let two_col = !left.is_empty() && !right.is_empty();
+    // left column width: its longest row (badge + space + label), capped
+    let left_w = if two_col {
+        left.iter()
+            .map(|(l, _)| l.chars().count() as u16 + 2)
+            .max()
+            .unwrap_or(0)
+            .min(w / 2)
+    } else {
+        0
+    };
+    let rows = left.len().max(right.len());
+    let mut render =
+        |f: &mut Frame, item: Option<(String, LinkTarget)>, x: u16, colw: u16, ry: u16| {
+            let Some((label, target)) = item else { return };
+            let badge = match &target {
+                LinkTarget::Url(_) => "↗",
+                LinkTarget::Query(_) => "⌕",
+                LinkTarget::Copy(_) => "⧉",
+            };
+            let shown: String = label.chars().take(colw.saturating_sub(2) as usize).collect();
+            let wl = (badge.chars().count() + 1 + shown.chars().count()) as u16;
+            let r = Rect { x, y: ry, width: wl, height: 1 };
             let hov = hit(r, hover.0, hover.1);
             if hov {
                 *hint = Some(match &target {
                     LinkTarget::Url(_) => format!("↗ open {label} in the browser"),
                     LinkTarget::Query(btn) => card_hint(*btn).to_string(),
+                    LinkTarget::Copy(item) => copy_hint(*item).to_string(),
                 });
             }
             match target {
                 LinkTarget::Url(url) => card_links.push((r, url)),
                 LinkTarget::Query(btn) => card_buttons.push((r, btn)),
+                LinkTarget::Copy(item) => yanks.push((r, item)),
             }
             let style = if hov { cyan.add_modifier(Modifier::UNDERLINED) } else { cyan };
             f.render_widget(
                 Paragraph::new(Line::from(vec![
                     Span::styled(badge, dim),
                     Span::raw(" "),
-                    Span::styled(label, style),
+                    Span::styled(shown, style),
                 ])),
-                Rect { x: x0, y, width: w, height: 1 },
+                Rect { x, y: ry, width: colw, height: 1 },
             );
+        };
+    let mut left = left.into_iter();
+    let mut right = right.into_iter();
+    for i in 0..rows {
+        let ry = y + i as u16;
+        if ry >= bottom {
+            break;
         }
-        y += 1;
+        if two_col {
+            render(f, left.next(), x0, left_w, ry);
+            f.render_widget(
+                Paragraph::new(Line::from(Span::styled("│", divider()))),
+                Rect { x: x0 + left_w + 1, y: ry, width: 1, height: 1 },
+            );
+            render(f, right.next(), x0 + left_w + 3, w.saturating_sub(left_w + 3), ry);
+        } else {
+            render(f, left.next().or_else(|| right.next()), x0, w, ry);
+        }
     }
-    y
+    y + rows as u16
 }
 
 /// Pub card buttons; they act on the card's (highlighted) entry.
@@ -307,11 +369,15 @@ struct App {
     dl_rx: Option<std::sync::mpsc::Receiver<DlMsg>>,
     // ? keyboard cheat-sheet overlay; any key or click dismisses
     show_help: bool,
+    // the @ about modal: clickable links, the update-check button
+    show_about: bool,
+    about_links: Vec<(Rect, String)>,
+    about_btn: Rect,
+    upd_rx: Option<std::sync::mpsc::Receiver<String>>,
+    update_status: Option<String>,
     // pub card shows the raw .bib file instead of the formatted view
     show_bib_source: bool,
     // copy-chord modal region and its clickable rows
-    panel_area: Rect,
-    panel_copy_rows: Vec<(Rect, CopyItem)>,
     // last known mouse position, for roll-over styling of clickables
     hover: (u16, u16),
     // transient footer hint while hovering a copy-region (never logged)
@@ -485,9 +551,12 @@ impl App {
             table_area: Rect::default(),
             dl_rx: None,
             show_help: false,
+            show_about: false,
+            about_links: vec![],
+            about_btn: Rect::default(),
+            upd_rx: None,
+            update_status: None,
             show_bib_source: false,
-            panel_area: Rect::default(),
-            panel_copy_rows: vec![],
             hover: (u16::MAX, u16::MAX),
             hover_hint: None,
             log: vec![],
@@ -1288,6 +1357,7 @@ impl App {
         while !self.quit {
             self.drain_downloads();
             self.drain_ads();
+            self.drain_update();
             self.poll_manuscript();
             terminal.draw(|f| self.draw(f))?;
             if let Some(ev) = pending.take() {
@@ -2006,6 +2076,17 @@ impl App {
             self.show_help = false; // any click dismisses the cheat-sheet
             return;
         }
+        if self.show_about {
+            if let Some((_, url)) = self.about_links.iter().find(|(r, _)| hit(*r, x, y)) {
+                pdf::browser_open(url);
+                self.note(MsgCat::Info, "opened in browser".to_string());
+            } else if hit(self.about_btn, x, y) {
+                self.check_updates();
+            } else {
+                self.show_about = false;
+            }
+            return;
+        }
         // clicking away from the query prompt dismisses it, and the click
         // then performs its normal action (e.g. switching scope); the
         // filter likewise leaves entry mode, but stays applied (as ⏎) —
@@ -2032,11 +2113,28 @@ impl App {
             if let Some(Scope::Ads { articles, .. }) = self.scopes.get(self.active_scope) {
                 if let Some(a) = self.card_article_pos().and_then(|p| articles.get(p)) {
                     let text = match item {
-                        CopyItem::Title => a.title.clone(),
-                        CopyItem::Abstract => crate::ads::clean_abstract(&a.abstract_),
-                        _ => self.hypothetical_key(a),
+                        CopyItem::Title => Some(a.title.clone()),
+                        CopyItem::Abstract => Some(crate::ads::clean_abstract(&a.abstract_)),
+                        CopyItem::Bibcode => Some(a.bibcode.clone()),
+                        CopyItem::AdsUrl => Some(format!(
+                            "https://ui.adsabs.harvard.edu/abs/{}/abstract",
+                            a.bibcode
+                        )),
+                        CopyItem::ArxivUrl => crate::ads::arxiv_id(a)
+                            .map(|id| format!("https://arxiv.org/abs/{id}")),
+                        CopyItem::DoiUrl => {
+                            a.doi.first().map(|d| format!("https://doi.org/{d}"))
+                        }
+                        CopyItem::PdfPath => self
+                            .card_entry_key()
+                            .filter(|k| pdf::is_cached(k))
+                            .map(|k| pdf::cache_path(&k).to_string_lossy().into_owned()),
+                        _ => Some(self.hypothetical_key(a)),
                     };
-                    self.finish_copy(&text);
+                    match text {
+                        Some(text) => self.finish_copy(&text),
+                        None => self.note(MsgCat::Warn, "nothing to copy".to_string()),
+                    }
                 }
                 return;
             }
@@ -2052,17 +2150,10 @@ impl App {
             self.note(MsgCat::Info, "opened in browser".to_string());
             return;
         }
-        // control panel rows: the copy menu while the y-chord is active,
-        // the actions list otherwise
-        // copy-chord modal: a row copies, anything else cancels the chord
+        // a click leaves an active y-chord and then acts normally —
+        // the card's ⧉ rows are the visible copy menu
         if matches!(self.mode, Mode::Copy) {
-            if let Some(&(_, item)) = self.panel_copy_rows.iter().find(|(r, _)| hit(*r, x, y)) {
-                self.do_copy(item);
-            } else {
-                self.exit_copy_mode();
-                self.note(MsgCat::Warn, "copy cancelled".to_string());
-            }
-            return;
+            self.exit_copy_mode();
         }
         // pub card buttons (act on the card's entry)
         if let Some(&(_, btn)) = self.card_buttons.iter().find(|(r, _)| hit(*r, x, y)) {
@@ -2313,6 +2404,10 @@ impl App {
             self.show_help = false; // any key dismisses the cheat-sheet
             return;
         }
+        if self.show_about {
+            self.show_about = false; // any key dismisses the about modal
+            return;
+        }
         match &mut self.mode {
             Mode::Filter => match code {
                 KeyCode::Esc => {
@@ -2433,6 +2528,7 @@ impl App {
                 KeyCode::Char('?') => self.run_action(Action::Help),
                 KeyCode::Char('t') => self.run_action(Action::GlobalTier),
                 KeyCode::Char('v') => self.show_bib_source = !self.show_bib_source,
+                KeyCode::Char('@') => self.show_about = true,
                 KeyCode::Char('c') => self.spawn_citation_query(false),
                 KeyCode::Char('C') => self.spawn_citation_query(true),
                 KeyCode::Char('a') => self.select_all(true),
@@ -2511,7 +2607,6 @@ impl App {
     fn draw(&mut self, f: &mut Frame) {
         self.card_buttons.clear();
         self.hover_hint = None;
-        self.panel_copy_rows.clear();
         let log_h = if self.show_log {
             (self.log.len().min(8) + 2) as u16
         } else {
@@ -2545,13 +2640,11 @@ impl App {
         } else {
             self.card_yanks.clear();
         }
-        if matches!(self.mode, Mode::Copy) {
-            self.draw_copy_modal(f);
-        } else {
-            self.panel_area = Rect::default();
-        }
         if self.show_help {
             self.draw_help(f);
+        }
+        if self.show_about {
+            self.draw_about(f);
         }
         if self.show_log {
             self.draw_log(f, log_area);
@@ -2647,78 +2740,6 @@ impl App {
     /// y-chord the same way. Tab headers are clickable.
     /// Centered which-key modal for the y chord: clickable rows, items
     /// without a value dimmed; clicking elsewhere or Esc cancels.
-    fn draw_copy_modal(&mut self, f: &mut Frame) {
-        self.panel_copy_rows.clear();
-        let entries: &[(&str, &str, CopyItem)] = &[
-            ("y", "cite key", CopyItem::Key),
-            ("Y", "full key", CopyItem::FullKey),
-            ("b", "bibcode", CopyItem::Bibcode),
-            ("a", "ADS URL", CopyItem::AdsUrl),
-            ("x", "arXiv URL", CopyItem::ArxivUrl),
-            ("d", "DOI URL", CopyItem::DoiUrl),
-            ("p", "PDF path", CopyItem::PdfPath),
-            ("t", "title", CopyItem::Title),
-            ("A", "abstract", CopyItem::Abstract),
-        ];
-        let frame = f.area();
-        let h = entries.len() as u16 + 3;
-        let w = 30.min(frame.width.saturating_sub(4));
-        let area = Rect {
-            x: frame.width.saturating_sub(w) / 2,
-            y: frame.height.saturating_sub(h) / 2,
-            width: w,
-            height: h.min(frame.height),
-        };
-        self.panel_area = area;
-        f.render_widget(ratatui::widgets::Clear, area);
-        let mut lines: Vec<Line> = vec![];
-        for (i, (key, label, item)) in entries.iter().enumerate() {
-            let y = area.y + 1 + i as u16;
-            let avail = self.copy_value(*item).is_some();
-            if avail {
-                self.panel_copy_rows.push((
-                    Rect { x: area.x + 1, y, width: w.saturating_sub(2), height: 1 },
-                    *item,
-                ));
-            }
-            let hov = avail && hit(
-                Rect { x: area.x + 1, y, width: w.saturating_sub(2), height: 1 },
-                self.hover.0,
-                self.hover.1,
-            );
-            let (mut ks, mut ls) = if avail {
-                (Style::default().fg(Color::Cyan), Style::default())
-            } else {
-                (
-                    Style::default().fg(Color::DarkGray),
-                    Style::default().fg(Color::DarkGray),
-                )
-            };
-            if hov {
-                ks = ks.bg(Color::Rgb(50, 54, 62));
-                ls = ls.bg(Color::Rgb(50, 54, 62)).add_modifier(Modifier::BOLD);
-            }
-            lines.push(Line::from(vec![
-                Span::styled(format!(" {key:>2}  "), ks),
-                Span::styled((*label).to_string(), ls),
-            ]));
-        }
-        lines.push(Line::default());
-        lines.push(Line::from(Span::styled(
-            " Esc cancel",
-            Style::default().fg(Color::DarkGray),
-        )));
-        let p = Paragraph::new(Text::from(lines)).block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(" copy → clipboard "),
-        );
-        f.render_widget(p, area);
-    }
-
-    /// Centered keyboard cheat-sheet (?); any key or click dismisses.
-    /// Entries whose action is currently unavailable render dimmed, the
-    /// old actions panel's behavior (available() is the single policy).
     fn draw_help(&mut self, f: &mut Frame) {
         let entries: &[(&str, &str, Option<Action>)] = &[
             ("␣", "select / toggle row", Some(Action::Select)),
@@ -2738,6 +2759,7 @@ impl App {
             ("L", "event log", Some(Action::Log)),
             ("t", "global tier", Some(Action::GlobalTier)),
             ("v", "bib source", None),
+            ("@", "about", None),
             ("c", "citations", None),
             ("C", "references", None),
             ("?", "this cheat-sheet", Some(Action::Help)),
@@ -2782,10 +2804,134 @@ impl App {
         f.render_widget(p, area);
     }
 
-    /// Centered pending-tasks overlay (T, or clicking ⧗N): one row per
-    /// in-flight background task with elapsed time and a ✕ cancel
-    /// affordance; digits 1-9 cancel by row. A task that finishes while
-    /// the overlay is open simply disappears on the next frame.
+    /// ⟳ — ask PyPI for the newest astrobib version, on a worker
+    /// thread; the result lands in the about modal and the log.
+    fn check_updates(&mut self) {
+        if self.upd_rx.is_some() {
+            return;
+        }
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.upd_rx = Some(rx);
+        self.update_status = Some("checking PyPI…".to_string());
+        std::thread::spawn(move || {
+            let current = env!("CARGO_PKG_VERSION");
+            let msg = (|| -> Result<String, String> {
+                let v: serde_json::Value = ureq::get("https://pypi.org/pypi/astrobib/json")
+                    .timeout(std::time::Duration::from_secs(6))
+                    .call()
+                    .map_err(|e| e.to_string())?
+                    .into_json()
+                    .map_err(|e| e.to_string())?;
+                let latest = v["info"]["version"].as_str().unwrap_or("").to_string();
+                Ok(if latest.is_empty() {
+                    "could not read the PyPI version".to_string()
+                } else if latest == current {
+                    format!("astrobib {current} is up to date")
+                } else {
+                    format!("astrobib {latest} is out — pipx upgrade astrobib")
+                })
+            })()
+            .unwrap_or_else(|e| format!("update check failed: {e}"));
+            let _ = tx.send(msg);
+        });
+    }
+
+    fn drain_update(&mut self) {
+        let Some(rx) = &self.upd_rx else { return };
+        match rx.try_recv() {
+            Ok(msg) => {
+                self.update_status = Some(msg.clone());
+                self.note(MsgCat::Info, msg);
+                self.upd_rx = None;
+            }
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => self.upd_rx = None,
+            Err(std::sync::mpsc::TryRecvError::Empty) => {}
+        }
+    }
+
+    /// The @ about modal.
+    fn draw_about(&mut self, f: &mut Frame) {
+        self.about_links.clear();
+        let dim = Style::default().fg(Color::DarkGray);
+        let cyan = Style::default().fg(Color::Cyan);
+        // labels are the full URLs so terminals that linkify text (e.g.
+        // Warp) pick them up too; our own click handler opens them as well
+        let links = [
+            "https://jzrake.people.clemson.edu",
+            "https://pypi.org/project/astrobib",
+        ];
+        let frame = f.area();
+        let w = 52.min(frame.width.saturating_sub(4));
+        let h = (17 + u16::from(self.update_status.is_some())).min(frame.height);
+        let area = Rect {
+            x: frame.width.saturating_sub(w) / 2,
+            y: frame.height.saturating_sub(h) / 2,
+            width: w,
+            height: h,
+        };
+        f.render_widget(ratatui::widgets::Clear, area);
+        let mut lines: Vec<Line> = vec![
+            Line::from(Span::styled(
+                format!(" astrobib {}", env!("CARGO_PKG_VERSION")),
+                Style::default().add_modifier(Modifier::BOLD),
+            )),
+            Line::from(Span::styled(" © 2026 Jonathan Zrake · MIT license", dim)),
+            Line::default(),
+            Line::from(Span::raw(" Clemson University Physics and Astronomy")),
+            Line::from(Span::raw(" Supported by NSF award number 2408034")),
+            Line::default(),
+        ];
+        let link_row = |url: &str, lines: &mut Vec<Line>, about_links: &mut Vec<(Rect, String)>| {
+            let y = area.y + 1 + lines.len() as u16;
+            let r = Rect { x: area.x + 4, y, width: url.chars().count() as u16, height: 1 };
+            about_links.push((r, url.to_string()));
+            let hov = hit(r, self.hover.0, self.hover.1);
+            let style = if hov { cyan.add_modifier(Modifier::UNDERLINED) } else { cyan };
+            lines.push(Line::from(vec![
+                Span::styled(" ↗  ", dim),
+                Span::styled(url.to_string(), style),
+            ]));
+        };
+        let mut about_links = std::mem::take(&mut self.about_links);
+        for url in links {
+            link_row(url, &mut lines, &mut about_links);
+        }
+        lines.push(Line::default());
+        lines.push(Line::from(Span::styled(" report a bug / request a feature:", dim)));
+        link_row(
+            "https://github.com/clemson-cal/astrobib/issues",
+            &mut lines,
+            &mut about_links,
+        );
+        self.about_links = about_links;
+        lines.push(Line::default());
+        lines.push(Line::from(Span::styled(
+            " built with ratatui · written with Claude Fable 5",
+            dim,
+        )));
+        lines.push(Line::default());
+        {
+            let label = "⟳ check for updates";
+            let y = area.y + 1 + lines.len() as u16;
+            let r = Rect { x: area.x + 3, y, width: label.chars().count() as u16, height: 1 };
+            self.about_btn = r;
+            let hov = hit(r, self.hover.0, self.hover.1);
+            let style = if hov {
+                Style::default().fg(Color::Green).add_modifier(Modifier::UNDERLINED)
+            } else {
+                Style::default().fg(Color::Green)
+            };
+            lines.push(Line::from(vec![Span::raw("  "), Span::styled(label, style)]));
+        }
+        if let Some(s) = &self.update_status {
+            lines.push(Line::from(Span::styled(format!("  {s}"), dim)));
+        }
+        let p = Paragraph::new(Text::from(lines)).block(
+            Block::default().borders(Borders::ALL).title(" about "),
+        );
+        f.render_widget(p, area);
+    }
+
     /// Centered modal list of ~/Downloads PDFs for the pick action.
     fn draw_picker(&mut self, f: &mut Frame) {
         let Mode::Pick { files, sel, key } = &self.mode else {
@@ -2972,7 +3118,7 @@ impl App {
             f.render_widget(
                 Paragraph::new(Span::styled(
                     "─".repeat(area.width as usize),
-                    Style::default().fg(Color::DarkGray),
+                    divider(),
                 )),
                 Rect { x: area.x, y: area.y + 1, width: area.width, height: 1 },
             );
@@ -3112,7 +3258,7 @@ impl App {
             f.render_widget(
                 Paragraph::new(Span::styled(
                     "─".repeat(area.width as usize),
-                    Style::default().fg(Color::DarkGray),
+                    divider(),
                 )),
                 Rect { x: area.x, y: area.y + 1, width: area.width, height: 1 },
             );
@@ -3291,7 +3437,7 @@ impl App {
         f.render_widget(
             Paragraph::new(Span::styled(
                 "─".repeat(area.width as usize),
-                Style::default().fg(Color::DarkGray),
+                divider(),
             )),
             Rect { x: area.x, y: area.y + 1, width: area.width, height: 1 },
         );
@@ -3352,9 +3498,30 @@ impl App {
         f.render_widget(Paragraph::new(Line::from(Span::styled(label, style))), r);
     }
 
-    /// The verbatim .bib file in place of the formatted card (v / @ bib).
-    fn draw_bib_source(&mut self, f: &mut Frame, area: Rect, path: &std::path::Path) {
-        self.card_yanks.clear();
+    /// The verbatim .bib file in place of the formatted card (v / @ bib),
+    /// with the permanent ⧉ copy menu pinned above the bottom.
+    fn draw_bib_source(&mut self, f: &mut Frame, area: Rect, key: &str) {
+        let Some(e) = self.lib.get(key) else { return };
+        let path = e.path.clone();
+        let mut copies: Vec<(String, LinkTarget)> = vec![
+            ("cite key".into(), LinkTarget::Copy(CopyItem::Key)),
+            ("full key".into(), LinkTarget::Copy(CopyItem::FullKey)),
+        ];
+        if e.bibcode().is_some() {
+            copies.push(("bibcode".into(), LinkTarget::Copy(CopyItem::Bibcode)));
+        }
+        if !e.adsurl().is_empty() {
+            copies.push(("ADS URL".into(), LinkTarget::Copy(CopyItem::AdsUrl)));
+        }
+        if !e.eprint().is_empty() {
+            copies.push(("arXiv URL".into(), LinkTarget::Copy(CopyItem::ArxivUrl)));
+        }
+        if !e.doi().is_empty() {
+            copies.push(("DOI URL".into(), LinkTarget::Copy(CopyItem::DoiUrl)));
+        }
+        if pdf::is_cached(key) {
+            copies.push(("PDF path".into(), LinkTarget::Copy(CopyItem::PdfPath)));
+        }
         let x0 = area.x + 3;
         let w = area.width.saturating_sub(5);
         let bottom = area.y + area.height;
@@ -3369,7 +3536,10 @@ impl App {
             Rect { x: x0, y, width: w, height: 1 },
         );
         y += 2;
-        let text = std::fs::read_to_string(path)
+        // the copy stack sits above the toggler row; content stops there
+        let stack_h = copies.len() as u16 + 2; // sep + rows + air
+        let content_end = bottom.saturating_sub(stack_h + 1);
+        let text = std::fs::read_to_string(&path)
             .unwrap_or_else(|_| "could not read file".to_string());
         'outer: for line in text.lines() {
             let rows = if line.trim().is_empty() {
@@ -3378,7 +3548,7 @@ impl App {
                 wrap_text(line, w as usize)
             };
             for row in rows {
-                if y + 1 >= bottom {
+                if y + 1 >= content_end {
                     f.render_widget(
                         Paragraph::new(Line::from(Span::styled("…", dim))),
                         Rect { x: x0, y, width: w, height: 1 },
@@ -3392,6 +3562,28 @@ impl App {
                 y += 1;
             }
         }
+        let mut y = content_end;
+        f.render_widget(
+            Paragraph::new(Line::from(Span::styled("─".repeat(w as usize), divider()))),
+            Rect { x: x0, y, width: w, height: 1 },
+        );
+        y += 1;
+        let mut yanks: Vec<(Rect, CopyItem)> = vec![];
+        draw_link_stack(
+            f,
+            x0,
+            y,
+            w,
+            bottom,
+            self.hover,
+            copies,
+            vec![],
+            &mut self.card_links,
+            &mut self.card_buttons,
+            &mut self.hover_hint,
+            &mut yanks,
+        );
+        self.card_yanks = yanks;
         self.draw_card_toggle(f, x0, w, bottom, true);
     }
 
@@ -3493,9 +3685,23 @@ impl App {
         }
         stack.push(("citations".into(), LinkTarget::Query(CardBtn::Citations)));
         stack.push(("references".into(), LinkTarget::Query(CardBtn::Refs)));
-        // link stack block + footer, plus PDF buttons + status once
-        // imported
-        let rest = 2 + stack.len() as u16 + 2 + if in_lib { 2 } else { 0 };
+        let mut copies: Vec<(String, LinkTarget)> = vec![
+            ("cite key".into(), LinkTarget::Copy(CopyItem::Key)),
+            ("bibcode".into(), LinkTarget::Copy(CopyItem::Bibcode)),
+            ("ADS URL".into(), LinkTarget::Copy(CopyItem::AdsUrl)),
+        ];
+        if !eprint.is_empty() {
+            copies.push(("arXiv URL".into(), LinkTarget::Copy(CopyItem::ArxivUrl)));
+        }
+        if !doi.is_empty() {
+            copies.push(("DOI URL".into(), LinkTarget::Copy(CopyItem::DoiUrl)));
+        }
+        copies.push(("title".into(), LinkTarget::Copy(CopyItem::Title)));
+        if !abstract_.is_empty() {
+            copies.push(("abstract".into(), LinkTarget::Copy(CopyItem::Abstract)));
+        }
+        // action block + footer, plus PDF buttons + status once imported
+        let rest = 2 + stack.len().max(copies.len()) as u16 + 2 + if in_lib { 2 } else { 0 };
         if !abstract_.is_empty() && y + rest < bottom {
             y += 1;
             let avail = (bottom - y).saturating_sub(rest) as usize;
@@ -3521,10 +3727,10 @@ impl App {
             }
         }
         let sep = "─".repeat(w);
-        let dimsep = Style::default().fg(Color::DarkGray);
+        let dimsep = divider();
         line_at(f, y, Line::from(Span::styled(sep.clone(), dimsep)));
         y += 1;
-        y = draw_link_stack(f, x0, y, w as u16, bottom, self.hover, stack, &mut self.card_links, &mut self.card_buttons, &mut self.hover_hint);
+        y = draw_link_stack(f, x0, y, w as u16, bottom, self.hover, stack, copies, &mut self.card_links, &mut self.card_buttons, &mut self.hover_hint, &mut yanks);
         line_at(f, y, Line::from(Span::styled(sep, dimsep)));
         y += 2;
         // once imported, the library card's PDF buttons appear here too,
@@ -3639,8 +3845,8 @@ impl App {
         };
         let Some(e) = self.lib.get(&key) else { return };
         if self.show_bib_source {
-            let path = e.path.clone();
-            self.draw_bib_source(f, area, &path);
+            let key = key.clone();
+            self.draw_bib_source(f, area, &key);
             return;
         }
         let x0 = area.x + 3; // border + 2 padding
@@ -3738,7 +3944,31 @@ impl App {
             links_row.push(("citations".into(), LinkTarget::Query(CardBtn::Citations)));
             links_row.push(("references".into(), LinkTarget::Query(CardBtn::Refs)));
         }
-        let link_lines = links_row.len() as u16;
+        // the permanent copy menu (the y-chord's targets), right column
+        let mut copies: Vec<(String, LinkTarget)> = vec![
+            ("cite key".into(), LinkTarget::Copy(CopyItem::Key)),
+            ("full key".into(), LinkTarget::Copy(CopyItem::FullKey)),
+        ];
+        if e.bibcode().is_some() {
+            copies.push(("bibcode".into(), LinkTarget::Copy(CopyItem::Bibcode)));
+        }
+        if !adsurl.is_empty() {
+            copies.push(("ADS URL".into(), LinkTarget::Copy(CopyItem::AdsUrl)));
+        }
+        if !eprint.is_empty() {
+            copies.push(("arXiv URL".into(), LinkTarget::Copy(CopyItem::ArxivUrl)));
+        }
+        if !doi.is_empty() {
+            copies.push(("DOI URL".into(), LinkTarget::Copy(CopyItem::DoiUrl)));
+        }
+        if pdf::is_cached(&key) {
+            copies.push(("PDF path".into(), LinkTarget::Copy(CopyItem::PdfPath)));
+        }
+        copies.push(("title".into(), LinkTarget::Copy(CopyItem::Title)));
+        if !e.abstract_().is_empty() {
+            copies.push(("abstract".into(), LinkTarget::Copy(CopyItem::Abstract)));
+        }
+        let link_lines = links_row.len().max(copies.len()) as u16;
         // footer + links/buttons need this much room below the abstract
         let kws = e.keywords().join(" · ");
         let kw_lines = if kws.is_empty() { 0 } else { wrap_text(&kws, w).len() as u16 + 1 };
@@ -3783,10 +4013,10 @@ impl App {
 
         // ── link stack (bordered top and bottom, like #detail-links) ──
         let sep = "─".repeat(w);
-        let dimsep = Style::default().fg(Color::DarkGray);
+        let dimsep = divider();
         line_at(f, y, Line::from(Span::styled(sep.clone(), dimsep)));
         y += 1;
-        y = draw_link_stack(f, x0, y, w as u16, bottom, self.hover, links_row, &mut self.card_links, &mut self.card_buttons, &mut self.hover_hint);
+        y = draw_link_stack(f, x0, y, w as u16, bottom, self.hover, links_row, copies, &mut self.card_links, &mut self.card_buttons, &mut self.hover_hint, &mut yanks);
         line_at(f, y, Line::from(Span::styled(sep, dimsep)));
         y += 2; // a little air below the link stack
 
@@ -4024,7 +4254,7 @@ impl App {
             Mode::Copy => Line::from(vec![
                 Span::styled("copy: ", Style::default().fg(Color::Cyan)),
                 Span::styled(
-                    "y key · Y full key · b bibcode · a ADS · x arXiv · d DOI · p PDF path · t title · Esc cancel",
+                    "y key · Y full key · b bibcode · a ADS · x arXiv · d DOI · p PDF path · t title · A abstract · Esc cancel",
                     Style::default().fg(Color::DarkGray),
                 ),
             ]),

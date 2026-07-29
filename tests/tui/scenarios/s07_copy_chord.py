@@ -1,30 +1,22 @@
-"""The y chord opens the which-key copy modal; Esc cancels it.
-
-The scenario never actually copies: on macOS that would go through pbcopy
-and overwrite the user's real clipboard (the pty sandbox does not contain
-the pasteboard).
-"""
+"""The permanent ⧉ copy column on the card, and the y chord acting from
+the keyboard (its which-key menu now lives in the footer)."""
 
 from driver import require
 
-DESCRIPTION = "y copy chord opens its modal"
+DESCRIPTION = "permanent copy column + y chord"
 
 
 def run(t):
+    txt = t.text()
+    # the card's right column always shows the copy menu
+    for label in ("cite key", "full key", "bibcode", "ADS URL"):
+        require(label in txt, f"copy row {label!r} missing from card", t)
+    require("│" in txt, "vertical column divider missing", t)
+    # y arms the chord: the footer shows the which-key line
     t.send("y")
-    t.wait_for("copy → clipboard")
-    for label in (
-        "cite key",
-        "full key",
-        "bibcode",
-        "ADS URL",
-        "arXiv URL",
-        "DOI URL",
-        "PDF path",
-        "title",
-        "abstract",
-    ):
-        require(label in t.text(), f"copy target {label!r} missing from modal", t)
-    require("Esc cancel" in t.text(), "cancel hint missing", t)
-    t.key("esc")
-    t.wait_gone("copy → clipboard")
+    t.wait_for(lambda: "copy:" in t.text(), what="footer which-key line")
+    require("A abstract" in t.text(), "footer chord line incomplete", t)
+    # yy copies the cite key
+    t.send("y")
+    t.wait_for(lambda: "Copied:" in t.text(), what="copy confirmation")
+    t.wait_gone("copy: ")

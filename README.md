@@ -1,6 +1,8 @@
 # astrobib
 *A terminal-based literature manager for astrophysics research*
 
+[![PyPI](https://img.shields.io/pypi/v/astrobib.svg)](https://pypi.org/project/astrobib/) [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 astrobib connects to the [NASA/Harvard ADS](https://ui.adsabs.harvard.edu) to search, fetch, and organize papers as plain BibTeX files, with a fast terminal UI. It ships as a single native binary: instant startup, instant quit, no runtime dependencies.
 
 Your library is just a directory of `.bib` files, indistinguishable from hand-written BibTeX, and cite keys derive from each paper's stable identity (arXiv ID or bibcode) — so any two copies of a paper, fetched by anyone at any time, agree on the key forever. Libraries from all earlier astrobib versions work unchanged.
@@ -83,4 +85,7 @@ Co-authors don't need astrobib. They add a reference by pasting BibTeX from the 
 `import` resolves each entry against ADS (arXiv ID → DOI → exact title+author+year) unless its cite key is already reproducible from its own data — canonical astrobib entries import byte-identically — and prints copy-pasteable key replacements for your `.tex` files.
 
 ---
-See [docs/DESIGN.md](docs/DESIGN.md) for the data-format contract.
+See [docs/DESIGN.md](docs/DESIGN.md) for the data-format contract. Bugs and feature requests: [github.com/clemson-cal/astrobib/issues](https://github.com/clemson-cal/astrobib/issues).
+
+© 2026 Jonathan Zrake · MIT license · Clemson University Physics and Astronomy · Supported by NSF award number 2408034
+Built with [ratatui](https://ratatui.rs); written with Claude (Fable 5).

@@ -15,6 +15,9 @@
 - Option/alt+arrow (and emacs alt+b/f) word motions in the filter and query inputs.
 - View the .bib entry verbatim: `v`, or the `@ bib` toggler pinned to the card's bottom-right corner, flips the pub card to the raw file, soft-wrapped to the card (`◂ card` — same corner — flips back).
 - Hovering any card link or button explains itself in the footer — what a click does, plus the shortcut key when one exists.
+- The copy menu is permanent: the card's action block is two columns — links and query actions on the left, every ⧉ copy target on the right (also on the bib-source view) — split by a dim vertical rule. The y chord still works from the keyboard, its which-key menu now a footer line; the centered modal is gone.
+- An `@` about modal: version, copyright and MIT license, affiliation and NSF award 2408034, clickable links (homepage, PyPI, issue tracker — shown as full URLs so terminals linkify them too), a ratatui / Claude Fable 5 acknowledgment, and a ⟳ check-for-updates button that asks PyPI and suggests `pipx upgrade astrobib` when a newer release exists.
+- Every divider — the card's horizontal and vertical rules, the table header rule, the log and footer rules — shares one quite-dim color.
 
 ### Changed
 - Closing a query scope (ctrl+w) keeps the selection in place, activating the capsule that was to the right (previously it stepped left).
