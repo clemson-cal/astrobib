@@ -1,18 +1,22 @@
-"""? opens the keyboard cheat-sheet; any key dismisses it without acting."""
+"""? opens the keys panel above the log (non-modal: other keys still
+work); ? or Esc closes it."""
 
 from driver import require
 
-DESCRIPTION = "? cheat-sheet opens, any key dismisses"
+DESCRIPTION = "? keys panel is non-modal; ?/Esc close"
 
 
 def run(t):
     t.send("?")
-    t.wait_for("this cheat-sheet")
-    require("select / toggle row" in t.text(), "cheat-sheet body missing", t)
-    require("◼ keys" in t.text(), "keys badge should light up while open", t)
-    # any key dismisses — and is swallowed, not executed ('y' would
-    # otherwise open the copy modal)
-    t.send("y")
+    t.wait_for(lambda: "this cheat-sheet" in t.text(), what="keys panel")
+    require(" keys " in t.text(), "panel title missing", t)
+    # non-modal: navigation keys act while the panel is up
+    t.send("j")
+    t.settle()
+    require("this cheat-sheet" in t.text(), "panel wrongly dismissed by j", t)
+    t.send("?")
     t.wait_gone("this cheat-sheet")
-    require("copy → clipboard" not in t.text(), "dismissal key must be swallowed", t)
-    require("◻ keys" in t.text(), "keys badge should turn back off", t)
+    t.send("?")
+    t.wait_for(lambda: "this cheat-sheet" in t.text(), what="panel reopens")
+    t.key("esc")
+    t.wait_gone("this cheat-sheet")

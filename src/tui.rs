@@ -200,6 +200,38 @@ fn divider() -> Style {
     Style::default().fg(DIVIDER_FG)
 }
 
+/// Unhovered table text (author, title) and the card's abstract body —
+/// modestly dimmer than the terminal foreground.
+const TABLE_TEXT: Color = Color::Rgb(150, 155, 163);
+const ABSTRACT_TEXT: Color = Color::Rgb(170, 174, 182);
+
+/// The keys panel's entries and fixed column width.
+const HELP_COLW: u16 = 30;
+const HELP_ENTRIES: &[(&str, &str, Option<Action>)] = &[
+    ("␣", "select / toggle row", Some(Action::Select)),
+    ("a", "select visible", Some(Action::Select)),
+    ("A", "select all", Some(Action::Select)),
+    ("j k", "move cursor", None),
+    ("g G", "first / last row", None),
+    ("m", "manuscript ± (selection)", Some(Action::Manuscript)),
+    ("p", "download PDF", Some(Action::Download)),
+    ("B", "browser download", Some(Action::BrowserDl)),
+    ("o", "open PDF", Some(Action::OpenPdf)),
+    ("X", "clear PDF / cancel DL", Some(Action::ClearPdf)),
+    ("y", "copy…", Some(Action::Copy)),
+    ("⌫", "remove…", Some(Action::Remove)),
+    ("/", "filter", Some(Action::Filter)),
+    ("D", "pub card", Some(Action::Card)),
+    ("L", "event log", Some(Action::Log)),
+    ("t", "global tier", Some(Action::GlobalTier)),
+    ("v", "bib source", None),
+    ("@", "about", None),
+    ("C", "citations", None),
+    ("R", "references", None),
+    ("?", "this cheat-sheet", Some(Action::Help)),
+    ("q", "quit", Some(Action::Quit)),
+];
+
 /// One row of the card's link stack: ↗ rows open the browser, ⌕ rows
 /// act inside astrobib (query scopes).
 enum LinkTarget {
@@ -2072,10 +2104,6 @@ impl App {
             self.mode = Mode::Normal;
             return;
         }
-        if self.show_help {
-            self.show_help = false; // any click dismisses the cheat-sheet
-            return;
-        }
         if self.show_about {
             if let Some((_, url)) = self.about_links.iter().find(|(r, _)| hit(*r, x, y)) {
                 pdf::browser_open(url);
@@ -2400,10 +2428,6 @@ impl App {
             self.quit = true;
             return;
         }
-        if self.show_help {
-            self.show_help = false; // any key dismisses the cheat-sheet
-            return;
-        }
         if self.show_about {
             self.show_about = false; // any key dismisses the about modal
             return;
@@ -2548,7 +2572,9 @@ impl App {
                 KeyCode::Char('Y') => self.do_copy(CopyItem::FullKey),
                 KeyCode::Char(' ') => self.run_action(Action::Select),
                 KeyCode::Esc => {
-                    if self.select_mode {
+                    if self.show_help {
+                        self.show_help = false;
+                    } else if self.select_mode {
                         self.exit_select_mode();
                     } else if !self.filter.value().is_empty() {
                         self.filter = tui_input::Input::default();
@@ -2612,8 +2638,14 @@ impl App {
         } else {
             0
         };
-        let [main, log_area, status] = Layout::vertical([
+        let help_h = if self.show_help {
+            Self::help_height(f.area().width)
+        } else {
+            0
+        };
+        let [main, help_area, log_area, status] = Layout::vertical([
             Constraint::Min(1),
+            Constraint::Length(help_h),
             Constraint::Length(log_h),
             Constraint::Length(1),
         ])
@@ -2641,7 +2673,7 @@ impl App {
             self.card_yanks.clear();
         }
         if self.show_help {
-            self.draw_help(f);
+            self.draw_help(f, help_area);
         }
         if self.show_about {
             self.draw_about(f);
@@ -2740,48 +2772,23 @@ impl App {
     /// y-chord the same way. Tab headers are clickable.
     /// Centered which-key modal for the y chord: clickable rows, items
     /// without a value dimmed; clicking elsewhere or Esc cancels.
-    fn draw_help(&mut self, f: &mut Frame) {
-        let entries: &[(&str, &str, Option<Action>)] = &[
-            ("␣", "select / toggle row", Some(Action::Select)),
-            ("a", "select visible", Some(Action::Select)),
-            ("A", "select all", Some(Action::Select)),
-            ("j k", "move cursor", None),
-            ("g G", "first / last row", None),
-            ("m", "manuscript ± (selection)", Some(Action::Manuscript)),
-            ("p", "download PDF", Some(Action::Download)),
-            ("B", "browser download", Some(Action::BrowserDl)),
-            ("o", "open PDF", Some(Action::OpenPdf)),
-            ("X", "clear PDF / cancel DL", Some(Action::ClearPdf)),
-            ("y", "copy…", Some(Action::Copy)),
-            ("⌫", "remove…", Some(Action::Remove)),
-            ("/", "filter", Some(Action::Filter)),
-            ("D", "pub card", Some(Action::Card)),
-            ("L", "event log", Some(Action::Log)),
-            ("t", "global tier", Some(Action::GlobalTier)),
-            ("v", "bib source", None),
-            ("@", "about", None),
-            ("C", "citations", None),
-            ("R", "references", None),
-            ("?", "this cheat-sheet", Some(Action::Help)),
-            ("q", "quit", Some(Action::Quit)),
-        ];
-        let frame = f.area();
-        let rows = entries.len().div_ceil(2) as u16;
-        let h = rows + 2;
-        let w = 62.min(frame.width.saturating_sub(4));
-        let colw = (w - 2) / 2;
-        let area = Rect {
-            x: frame.width.saturating_sub(w) / 2,
-            y: frame.height.saturating_sub(h) / 2,
-            width: w,
-            height: h.min(frame.height),
-        };
-        f.render_widget(ratatui::widgets::Clear, area);
+    /// Rows the keys panel needs at this width (it flows into as many
+    /// columns as fit), plus its border rows.
+    fn help_height(width: u16) -> u16 {
+        let cols = (width.saturating_sub(2) / HELP_COLW).max(1) as usize;
+        HELP_ENTRIES.len().div_ceil(cols) as u16 + 2
+    }
+
+    /// The keys cheat-sheet, a non-modal panel above the log: keys keep
+    /// working while it shows; ? (or Esc, or the footer badge) closes.
+    fn draw_help(&mut self, f: &mut Frame, area: Rect) {
+        let cols = (area.width.saturating_sub(2) / HELP_COLW).max(1) as usize;
+        let rows = HELP_ENTRIES.len().div_ceil(cols);
         let mut lines: Vec<Line> = vec![];
-        for r in 0..rows as usize {
+        for r in 0..rows {
             let mut spans: Vec<Span> = vec![];
-            for c in 0..2usize {
-                if let Some((key, label, action)) = entries.get(r + c * rows as usize) {
+            for c in 0..cols {
+                if let Some((key, label, action)) = HELP_ENTRIES.get(r + c * rows) {
                     let avail = action.map_or(true, |a| self.available(a));
                     let (ks, ls) = if avail {
                         (Style::default().fg(Color::Cyan), Style::default())
@@ -2792,15 +2799,19 @@ impl App {
                         )
                     };
                     let text = format!(" {key:>3}  {label}");
-                    let pad = (colw as usize).saturating_sub(text.chars().count());
+                    let pad = (HELP_COLW as usize).saturating_sub(text.chars().count());
                     spans.push(Span::styled(format!(" {key:>3}  "), ks));
                     spans.push(Span::styled(format!("{label}{}", " ".repeat(pad)), ls));
                 }
             }
             lines.push(Line::from(spans));
         }
-        let p = Paragraph::new(Text::from(lines))
-            .block(Block::default().borders(Borders::ALL).title(" keys "));
+        let p = Paragraph::new(Text::from(lines)).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(divider())
+                .title(" keys "),
+        );
         f.render_widget(p, area);
     }
 
@@ -3165,8 +3176,8 @@ impl App {
                         )
                     } else {
                         (
-                            Style::default().fg(Color::Gray),
-                            Style::default().fg(Color::Gray).add_modifier(Modifier::ITALIC),
+                            Style::default().fg(TABLE_TEXT),
+                            Style::default().fg(TABLE_TEXT).add_modifier(Modifier::ITALIC),
                             Style::default().fg(Color::Green).add_modifier(Modifier::DIM),
                         )
                     };
@@ -3307,7 +3318,7 @@ impl App {
                     Style::default().fg(Color::Green),
                     Style::default().fg(Color::Magenta),
                     Style::default().fg(Color::Green).add_modifier(Modifier::DIM),
-                    Style::default().fg(Color::Gray),
+                    Style::default().fg(TABLE_TEXT),
                     Style::default().fg(Color::Cyan).add_modifier(Modifier::DIM),
                 )
             }
@@ -3367,7 +3378,7 @@ impl App {
                         if lit {
                             Style::default().fg(Color::White).add_modifier(Modifier::ITALIC)
                         } else {
-                            Style::default().fg(Color::Gray).add_modifier(Modifier::ITALIC)
+                            Style::default().fg(TABLE_TEXT).add_modifier(Modifier::ITALIC)
                         },
                     )),
                 ];
@@ -3721,7 +3732,7 @@ impl App {
                 line_at(
                     f,
                     y,
-                    Line::from(Span::styled(l, region_style(Style::default(), CopyItem::Abstract))),
+                    Line::from(Span::styled(l, region_style(Style::default().fg(ABSTRACT_TEXT), CopyItem::Abstract))),
                 );
                 y += 1;
             }
@@ -3835,7 +3846,10 @@ impl App {
     /// note). Text is pre-wrapped so every row's click rect is exact.
     fn draw_detail(&mut self, f: &mut Frame, area: Rect) {
         self.card_links.clear();
-        f.render_widget(Block::default().borders(Borders::LEFT), area);
+        f.render_widget(
+            Block::default().borders(Borders::LEFT).border_style(divider()),
+            area,
+        );
         if self.active_ads().is_some() {
             self.draw_article_card(f, area);
             return;
@@ -4007,7 +4021,7 @@ impl App {
                     y,
                     Line::from(Span::styled(
                         l,
-                        region_style(Style::default(), CopyItem::Abstract),
+                        region_style(Style::default().fg(ABSTRACT_TEXT), CopyItem::Abstract),
                     )),
                 );
                 y += 1;
