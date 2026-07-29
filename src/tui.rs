@@ -3011,7 +3011,7 @@ impl App {
         self.about_links = about_links;
         lines.push(Line::default());
         lines.push(Line::from(Span::styled(
-            " built with ratatui · written with Claude Fable 5",
+            " built with ratatui · development assisted by Claude Fable 5",
             dim,
         )));
         lines.push(Line::default());
