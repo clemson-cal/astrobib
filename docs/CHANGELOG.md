@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.5.1 — 2026-07-28
+
+### Fixed
+- Clicking a table row beyond the library's entry count in a query-results or manuscript scope did nothing: the click handler bounds-checked against the library filter set instead of the active scope's row count (keyboard navigation was unaffected).
+
+### Changed
+- ADS query results grew library-side polish: sortable column headers, the hypothetical cite key each article would get on import (hover it to preview the pub card, click to copy), and a full article card with copyable title/abstract/key and clickable ADS/arXiv/DOI links.
+- Importing from the card is the footer's `→ import` (clickable, `i` still works); the separate button is gone.
+- An article with no open-access PDF is reported as an expected outcome in yellow — "no auto PDF (try browser ↓)" — rather than a red error; red is reserved for actual failures.
+
 ## 0.5.0 — 2026-07-28
 
 astrobib is now a single native binary, distributed in platform wheels — `pipx install astrobib` / `uv tool install astrobib` work as before, with no runtime dependencies. Startup and quit are instantaneous. Existing libraries, manuscript databases, and cite keys carry over unchanged.

@@ -1,6 +1,6 @@
 [package]
 name = "astrobib"
-version = "0.5.0"
+version = "0.5.1"
 edition = "2021"
 description = "ADS-native BibTeX library manager (Rust port)"
 license = "MIT"
