@@ -406,6 +406,9 @@ struct App {
     about_links: Vec<(Rect, String)>,
     about_btn: Rect,
     upd_rx: Option<std::sync::mpsc::Receiver<String>>,
+    // canonical-BibTeX previews for un-imported ADS articles, by bibcode
+    bib_preview: std::collections::HashMap<String, String>,
+    bib_rx: Option<std::sync::mpsc::Receiver<(String, String)>>,
     update_status: Option<String>,
     // pub card shows the raw .bib file instead of the formatted view
     show_bib_source: bool,
@@ -587,6 +590,8 @@ impl App {
             about_links: vec![],
             about_btn: Rect::default(),
             upd_rx: None,
+            bib_preview: std::collections::HashMap::new(),
+            bib_rx: None,
             update_status: None,
             show_bib_source: false,
             hover: (u16::MAX, u16::MAX),
@@ -1390,6 +1395,7 @@ impl App {
             self.drain_downloads();
             self.drain_ads();
             self.drain_update();
+            self.drain_bib_preview();
             self.poll_manuscript();
             terminal.draw(|f| self.draw(f))?;
             if let Some(ev) = pending.take() {
@@ -2815,6 +2821,40 @@ impl App {
         f.render_widget(p, area);
     }
 
+    /// Fetch (once) the canonical BibTeX an import of this article
+    /// would write — bib-source preview for un-imported query results.
+    fn request_bib_preview(&mut self, bibcode: String) {
+        if self.bib_rx.is_some() || self.bib_preview.contains_key(&bibcode) {
+            return;
+        }
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.bib_rx = Some(rx);
+        std::thread::spawn(move || {
+            let text = match crate::ads::fetch_bibtex(&bibcode) {
+                Ok(Some(mut data)) => {
+                    let key = crate::keys::generate_key(&data);
+                    data.insert("ID".to_string(), key);
+                    crate::bib::format_entry(&data)
+                }
+                Ok(None) => "no BibTeX record for this bibcode".to_string(),
+                Err(e) => format!("could not fetch BibTeX: {e}"),
+            };
+            let _ = tx.send((bibcode, text));
+        });
+    }
+
+    fn drain_bib_preview(&mut self) {
+        let Some(rx) = &self.bib_rx else { return };
+        match rx.try_recv() {
+            Ok((bc, text)) => {
+                self.bib_preview.insert(bc, text);
+                self.bib_rx = None;
+            }
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => self.bib_rx = None,
+            Err(std::sync::mpsc::TryRecvError::Empty) => {}
+        }
+    }
+
     /// ⟳ — ask PyPI for the newest astrobib version, on a worker
     /// thread; the result lands in the about modal and the log.
     fn check_updates(&mut self) {
@@ -3533,25 +3573,38 @@ impl App {
         if pdf::is_cached(key) {
             copies.push(("PDF path".into(), LinkTarget::Copy(CopyItem::PdfPath)));
         }
+        let name = path
+            .file_name()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_default();
+        let text = std::fs::read_to_string(&path)
+            .unwrap_or_else(|_| "could not read file".to_string());
+        self.draw_bib_panel(f, area, &format!("bib/{name}"), &text, copies);
+    }
+
+    /// Shared renderer for the verbatim-BibTeX views: header line,
+    /// soft-wrapped body, the ⧉ copy stack, the pinned toggler.
+    fn draw_bib_panel(
+        &mut self,
+        f: &mut Frame,
+        area: Rect,
+        header: &str,
+        text: &str,
+        copies: Vec<(String, LinkTarget)>,
+    ) {
         let x0 = area.x + 3;
         let w = area.width.saturating_sub(5);
         let bottom = area.y + area.height;
         let mut y = area.y + 1;
         let dim = Style::default().fg(Color::DarkGray);
-        let name = path
-            .file_name()
-            .map(|s| s.to_string_lossy().to_string())
-            .unwrap_or_default();
         f.render_widget(
-            Paragraph::new(Line::from(Span::styled(format!("bib/{name}"), dim))),
+            Paragraph::new(Line::from(Span::styled(header.to_string(), dim))),
             Rect { x: x0, y, width: w, height: 1 },
         );
         y += 2;
         // the copy stack sits above the toggler row; content stops there
         let stack_h = copies.len() as u16 + 2; // sep + rows + air
         let content_end = bottom.saturating_sub(stack_h + 1);
-        let text = std::fs::read_to_string(&path)
-            .unwrap_or_else(|_| "could not read file".to_string());
         'outer: for line in text.lines() {
             let rows = if line.trim().is_empty() {
                 vec![String::new()]
@@ -3620,6 +3673,41 @@ impl App {
         let hyp_key = self.hypothetical_key(a);
         let lib_key = self.lib.get_by_bibcode(&bibcode).map(|e| e.key().to_string());
         let in_lib = lib_key.is_some();
+        // v on a query result: an imported twin shows its real file; an
+        // un-imported article previews the exact canonical BibTeX an
+        // import would write (fetched once, cached by bibcode)
+        if self.show_bib_source {
+            if let Some(k) = &lib_key {
+                let k = k.clone();
+                self.draw_bib_source(f, area, &k);
+                return;
+            }
+            let mut copies: Vec<(String, LinkTarget)> = vec![
+                ("cite key".into(), LinkTarget::Copy(CopyItem::Key)),
+                ("bibcode".into(), LinkTarget::Copy(CopyItem::Bibcode)),
+                ("ADS URL".into(), LinkTarget::Copy(CopyItem::AdsUrl)),
+            ];
+            if !eprint.is_empty() {
+                copies.push(("arXiv URL".into(), LinkTarget::Copy(CopyItem::ArxivUrl)));
+            }
+            if !doi.is_empty() {
+                copies.push(("DOI URL".into(), LinkTarget::Copy(CopyItem::DoiUrl)));
+            }
+            match self.bib_preview.get(&bibcode).cloned() {
+                Some(text) => self.draw_bib_panel(
+                    f,
+                    area,
+                    "canonical BibTeX — what import would write",
+                    &text,
+                    copies,
+                ),
+                None => {
+                    self.request_bib_preview(bibcode.clone());
+                    self.draw_bib_panel(f, area, "fetching BibTeX…", "", copies);
+                }
+            }
+            return;
+        }
 
         let hv = self.hover;
         let hov_region: Option<CopyItem> = self
@@ -3836,6 +3924,7 @@ impl App {
         }
         line_at(f, y, Line::from(foot));
         self.card_yanks = yanks;
+        self.draw_card_toggle(f, x0, w as u16, bottom, false);
     }
 
     /// The pub card, emulating the Python DetailPanel's flow: body (title,
