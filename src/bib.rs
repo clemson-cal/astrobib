@@ -230,6 +230,21 @@ fn simple_macro(name: &str) -> Option<&'static str> {
         "_" => "_",
         "{" => "{",
         "}" => "}",
+        // Common math-mode symbols from ADS titles (usually inside
+        // \ensuremath{...} wrappers). Where bibtexparser v1 converted the
+        // macro at all we match its output codepoints (\sim → U+223C,
+        // \mu → U+03BC, \pm → U+00B1, Greek letters); \times, \deg and
+        // \odot it either left literal or mangled (\odot → "ødot"), so
+        // these are display improvements over the Python behavior.
+        "sim" => "∼",
+        "mu" => "μ",
+        "alpha" => "α",
+        "beta" => "β",
+        "gamma" => "γ",
+        "times" => "×",
+        "pm" => "±",
+        "deg" => "°",
+        "odot" => "⊙",
         _ => return None,
     })
 }
@@ -282,6 +297,14 @@ fn convert_macro(chars: &[char], bs: usize, wrapped: bool) -> Option<(String, us
             i += 1;
         }
         let word: String = chars[start..i].iter().collect();
+        // \ensuremath{...} is a no-op wrapper: drop the macro name and let
+        // the main loop convert the braced argument (stray braces are
+        // stripped at the end anyway). A bare \ensuremath with no braced
+        // argument stays literal, matching bibtexparser v1 and the golden
+        // vectors ("Binary\ensuremath-disk").
+        if word == "ensuremath" && i < chars.len() && chars[i] == '{' {
+            return Some((String::new(), i));
+        }
         if let Some(rep) = simple_macro(&word) {
             let end = finish_group(chars, i, wrapped)?;
             return Some((rep.to_string(), end));
@@ -404,6 +427,41 @@ mod tests {
         assert_eq!(latex_to_unicode(r"M{\'u}noz"), "Múnoz");
         assert_eq!(latex_to_unicode("{Title Case}"), "Title Case");
         assert_eq!(latex_to_unicode(r"{{Double} braced}"), "Double braced");
+    }
+
+    #[test]
+    fn converts_ensuremath() {
+        // wrapper stripped, inner macro converted
+        assert_eq!(latex_to_unicode(r"{\ensuremath{\sim}}100"), "∼100");
+        assert_eq!(latex_to_unicode(r"\ensuremath{\mu}m"), "μm");
+        assert_eq!(latex_to_unicode(r"\ensuremath{\alpha}"), "α");
+        assert_eq!(latex_to_unicode(r"\ensuremath{\times}"), "×");
+        assert_eq!(latex_to_unicode(r"M\ensuremath{_\odot}"), "M_⊙");
+        assert_eq!(
+            latex_to_unicode(r"\ensuremath{\sim}5 \ensuremath{\pm} 2 \ensuremath{\deg}"),
+            "∼5 ± 2 °"
+        );
+        // non-macro argument: wrapper still stripped
+        assert_eq!(latex_to_unicode(r"10\ensuremath{^{-3}}"), "10^-3");
+        // unknown inner macro degrades to the usual unknown-macro fallback,
+        // never the literal string "\ensuremath"
+        assert_eq!(latex_to_unicode(r"\ensuremath{\foo}"), r"\foo");
+        // bare \ensuremath without a braced argument stays literal, as in
+        // bibtexparser v1 (and the golden format vector)
+        assert_eq!(
+            latex_to_unicode(r"Binary\ensuremath-disk"),
+            r"Binary\ensuremath-disk"
+        );
+    }
+
+    #[test]
+    fn converts_math_macros() {
+        assert_eq!(latex_to_unicode(r"\sim"), "∼");
+        assert_eq!(latex_to_unicode(r"{\mu}Jy"), "μJy");
+        assert_eq!(latex_to_unicode(r"\beta"), "β");
+        assert_eq!(latex_to_unicode(r"\gamma"), "γ");
+        // longer words are not prefix-matched
+        assert_eq!(latex_to_unicode(r"\mum"), r"\mum");
     }
 
     #[test]
