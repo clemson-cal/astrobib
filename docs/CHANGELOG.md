@@ -10,10 +10,10 @@
 - The pub card in a query scope grows the library card's PDF buttons (and download status) the moment the shown article is imported, acting on the imported entry.
 - The manuscript rescans itself: source and bib/ mtimes are polled every ~1.5 s, so editing main.tex/main.md in an external editor (or a git pull) refreshes the Manuscript view and refs.bib with no keypress; externally added or removed bib/ entries reload the tier.
 - `astrobib update [--all]`, ported from 0.4.0: refreshes entries whose arXiv preprint has since been published — canonical ADS BibTeX rewritten in place under the same cite key and filename, per-tier user-curated keywords preserved, manuscript copies updated, ADS quota reported.
-- Citation-graph navigation from the pub card: "cited by N" on a query card is clickable, and both cards grow citations/references affordances that spawn `citations(bibcode:…)` / `references(bibcode:…)` query scopes — persisted like any saved query.
+- Citation-graph navigation from the pub card: the ⌕ citations / ⌕ references rows (and `c` / `C` from the keyboard) spawn `citations(bibcode:…)` / `references(bibcode:…)` query scopes for the shown paper — persisted like any saved query.
 - A `⧗N` footer indicator counts in-flight work (downloads, queries, imports, browser watches), each result keyed to its task.
 - Option/alt+arrow (and emacs alt+b/f) word motions in the filter and query inputs.
-- View the .bib entry verbatim: `v`, or the `@ bib` affordance at the card's bottom right, flips the pub card to the raw file (`◂ card` flips back).
+- View the .bib entry verbatim: `v`, or the `@ bib` toggler pinned to the card's bottom-right corner, flips the pub card to the raw file, soft-wrapped to the card (`◂ card` — same corner — flips back).
 - Hovering any card link or button explains itself in the footer — what a click does, plus the shortcut key when one exists.
 
 ### Changed

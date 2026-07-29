@@ -211,8 +211,8 @@ fn card_hint(btn: CardBtn) -> &'static str {
         CardBtn::MsToggle => "◆ add to / remove from the manuscript db  ·  m",
         CardBtn::Import => "→ import into the library  ·  i",
         CardBtn::BibView => "@ show the .bib entry verbatim  ·  v",
-        CardBtn::Citations => "⌕ new query: papers citing this one",
-        CardBtn::Refs => "⌕ new query: papers this one cites",
+        CardBtn::Citations => "⌕ new query: papers citing this one  ·  c",
+        CardBtn::Refs => "⌕ new query: papers this one cites  ·  C",
     }
 }
 
@@ -1414,6 +1414,19 @@ impl App {
     /// the shown article's imported twin (if any), else the selected
     /// entry. Distinct from selected_key because the card can preview a
     /// hovered row.
+    /// Open a citations(...) (or references(...)) query scope for the
+    /// card's paper — the c / C keys and the ⌕ card rows.
+    fn spawn_citation_query(&mut self, refs: bool) {
+        if let Some(bc) = self.card_bibcode() {
+            let q = if refs {
+                format!("references(bibcode:{bc})")
+            } else {
+                format!("citations(bibcode:{bc})")
+            };
+            self.run_ads_query_limit(q, None, crate::tabs::DEFAULT_LIMIT);
+        }
+    }
+
     fn card_entry_key(&self) -> Option<String> {
         if let Some(Scope::Ads { articles, .. }) = self.scopes.get(self.active_scope) {
             let a = self.card_article_pos().and_then(|p| articles.get(p))?;
@@ -2070,14 +2083,7 @@ impl App {
             // the card's bibcode — same path as the S prompt (the scope
             // becomes active and its tab persists via save_tabs)
             if matches!(btn, CardBtn::Citations | CardBtn::Refs) {
-                if let Some(bc) = self.card_bibcode() {
-                    let q = if btn == CardBtn::Citations {
-                        format!("citations(bibcode:{bc})")
-                    } else {
-                        format!("references(bibcode:{bc})")
-                    };
-                    self.run_ads_query_limit(q, None, crate::tabs::DEFAULT_LIMIT);
-                }
+                self.spawn_citation_query(btn == CardBtn::Refs);
                 return;
             }
             if let Some(key) = self.card_entry_key() {
@@ -2427,6 +2433,8 @@ impl App {
                 KeyCode::Char('?') => self.run_action(Action::Help),
                 KeyCode::Char('t') => self.run_action(Action::GlobalTier),
                 KeyCode::Char('v') => self.show_bib_source = !self.show_bib_source,
+                KeyCode::Char('c') => self.spawn_citation_query(false),
+                KeyCode::Char('C') => self.spawn_citation_query(true),
                 KeyCode::Char('a') => self.select_all(true),
                 KeyCode::Char('A') => self.select_all(false),
                 KeyCode::Char('S') => self.open_ads_prompt(),
@@ -2730,6 +2738,8 @@ impl App {
             ("L", "event log", Some(Action::Log)),
             ("t", "global tier", Some(Action::GlobalTier)),
             ("v", "bib source", None),
+            ("c", "citations", None),
+            ("C", "references", None),
             ("?", "this cheat-sheet", Some(Action::Help)),
             ("q", "quit", Some(Action::Quit)),
         ];
@@ -3319,6 +3329,29 @@ impl App {
 
     /// The pub card for an ADS result: body, links, citation count, an
     /// import button, and click-to-copy regions like the library card.
+    /// The card ⇄ bib-source toggler, pinned to the card's bottom-right
+    /// corner so it never moves between modes or with card content.
+    fn draw_card_toggle(&mut self, f: &mut Frame, x0: u16, w: u16, bottom: u16, source: bool) {
+        let label = if source { "◂ card" } else { "@ bib" };
+        let lw = label.chars().count() as u16;
+        let r = Rect { x: x0 + w.saturating_sub(lw), y: bottom.saturating_sub(1), width: lw, height: 1 };
+        self.card_buttons.push((r, CardBtn::BibView));
+        let hovb = hit(r, self.hover.0, self.hover.1);
+        if hovb {
+            self.hover_hint = Some(if source {
+                "◂ back to the formatted card  ·  v".to_string()
+            } else {
+                card_hint(CardBtn::BibView).to_string()
+            });
+        }
+        let style = if hovb {
+            Style::default().fg(Color::Green).add_modifier(Modifier::UNDERLINED)
+        } else {
+            Style::default().fg(Color::DarkGray)
+        };
+        f.render_widget(Paragraph::new(Line::from(Span::styled(label, style))), r);
+    }
+
     /// The verbatim .bib file in place of the formatted card (v / @ bib).
     fn draw_bib_source(&mut self, f: &mut Frame, area: Rect, path: &std::path::Path) {
         self.card_yanks.clear();
@@ -3338,36 +3371,28 @@ impl App {
         y += 2;
         let text = std::fs::read_to_string(path)
             .unwrap_or_else(|_| "could not read file".to_string());
-        for line in text.lines() {
-            if y + 1 >= bottom {
+        'outer: for line in text.lines() {
+            let rows = if line.trim().is_empty() {
+                vec![String::new()]
+            } else {
+                wrap_text(line, w as usize)
+            };
+            for row in rows {
+                if y + 1 >= bottom {
+                    f.render_widget(
+                        Paragraph::new(Line::from(Span::styled("…", dim))),
+                        Rect { x: x0, y, width: w, height: 1 },
+                    );
+                    break 'outer;
+                }
                 f.render_widget(
-                    Paragraph::new(Line::from(Span::styled("…", dim))),
+                    Paragraph::new(Line::from(Span::raw(row))),
                     Rect { x: x0, y, width: w, height: 1 },
                 );
-                break;
+                y += 1;
             }
-            let clipped: String = line.chars().take(w as usize).collect();
-            f.render_widget(
-                Paragraph::new(Line::from(Span::raw(clipped))),
-                Rect { x: x0, y, width: w, height: 1 },
-            );
-            y += 1;
         }
-        // bottom-right: back to the formatted card
-        let label = "◂ card";
-        let lw = label.chars().count() as u16;
-        let r = Rect { x: x0 + w.saturating_sub(lw), y: bottom - 1, width: lw, height: 1 };
-        self.card_buttons.push((r, CardBtn::BibView));
-        let hovb = hit(r, self.hover.0, self.hover.1);
-        if hovb {
-            self.hover_hint = Some("◂ back to the formatted card  ·  v".to_string());
-        }
-        let style = if hovb {
-            Style::default().fg(Color::Green).add_modifier(Modifier::UNDERLINED)
-        } else {
-            dim
-        };
-        f.render_widget(Paragraph::new(Line::from(Span::styled(label, style))), r);
+        self.draw_card_toggle(f, x0, w, bottom, true);
     }
 
     fn draw_article_card(&mut self, f: &mut Frame, area: Rect) {
@@ -3880,26 +3905,9 @@ impl App {
                 s.style = s.style.patch(tint);
             }
         }
-        // bottom-right: flip to the verbatim .bib view
-        let label = "@ bib";
-        let lw = label.chars().count() as u16;
-        if used + lw + 2 <= w as u16 {
-            let r = Rect { x: x0 + w as u16 - lw, y, width: lw, height: 1 };
-            self.card_buttons.push((r, CardBtn::BibView));
-            let hovb = hit(r, hv.0, hv.1);
-            if hovb {
-                self.hover_hint = Some(card_hint(CardBtn::BibView).to_string());
-            }
-            let style = if hovb {
-                Style::default().fg(Color::Green).add_modifier(Modifier::UNDERLINED)
-            } else {
-                Style::default().fg(Color::DarkGray)
-            };
-            spans.push(Span::raw(" ".repeat((w as u16 - used - lw) as usize)));
-            spans.push(Span::styled(label, style));
-        }
         line_at(f, y, Line::from(spans));
         self.card_yanks = yanks;
+        self.draw_card_toggle(f, x0, w as u16, bottom, false);
     }
 
 
