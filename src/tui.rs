@@ -43,6 +43,9 @@ enum Mode {
     Confirm { keys: Vec<String> },
     /// S — compose an ADS query; ↑/↓ steps the result limit, ⏎ runs it.
     AdsPrompt { input: tui_input::Input, limit: usize },
+    // first-run setup: collect the ADS token, then the email, into
+    // state.json; resume the query prompt afterwards when asked
+    Setup { input: tui_input::Input, email: bool, resume: bool },
     /// y pressed — the next key picks what to copy (the Copy panel tab
     /// shows the menu, which-key style); Esc cancels.
     Copy,
@@ -693,10 +696,8 @@ impl App {
     /// via to_ads_query (filter locally, escalate in one keystroke).
     fn open_ads_prompt(&mut self) {
         if crate::ads::get_token().is_none() {
-            self.note(
-                MsgCat::Warn,
-                "no ADS token — set ADS_API_TOKEN or add ads_token to state.json".to_string(),
-            );
+            // first run: collect the token right here, then come back
+            self.mode = Mode::Setup { input: tui_input::Input::default(), email: false, resume: true };
             return;
         }
         let mut input = if self.filter.value().is_empty() {
@@ -2144,7 +2145,7 @@ impl App {
         // then performs its normal action (e.g. switching scope); the
         // filter likewise leaves entry mode, but stays applied (as ⏎) —
         // clicking a row of the filtered results must not wipe them
-        if matches!(self.mode, Mode::AdsPrompt { .. } | Mode::Filter) {
+        if matches!(self.mode, Mode::AdsPrompt { .. } | Mode::Filter | Mode::Setup { .. }) {
             self.mode = Mode::Normal;
         }
         // confirm modal: only its two buttons act; other clicks are inert
@@ -2525,6 +2526,50 @@ impl App {
                     }
                 }
             }
+            Mode::Setup { input, email, resume } => match code {
+                KeyCode::Esc => self.mode = Mode::Normal,
+                KeyCode::Enter => {
+                    let (v, was_email, resume) = (input.value().trim().to_string(), *email, *resume);
+                    if !was_email {
+                        if v.is_empty() {
+                            return; // a token is the point; Esc cancels
+                        }
+                        if let Err(e) = crate::ads::save_state_field("ads_token", &v) {
+                            self.mode = Mode::Normal;
+                            self.note(MsgCat::Err, format!("could not save token: {e}"));
+                            return;
+                        }
+                        self.note(MsgCat::Ok, "ADS token saved".to_string());
+                        if crate::ads::get_email().is_none() {
+                            self.mode = Mode::Setup {
+                                input: tui_input::Input::default(),
+                                email: true,
+                                resume,
+                            };
+                            return;
+                        }
+                    } else if !v.is_empty() {
+                        if let Err(e) = crate::ads::save_state_field("email", &v) {
+                            self.note(MsgCat::Err, format!("could not save email: {e}"));
+                        } else {
+                            self.note(MsgCat::Ok, "email saved".to_string());
+                        }
+                    }
+                    self.mode = Mode::Normal;
+                    if resume {
+                        self.open_ads_prompt();
+                    }
+                }
+                _ => {
+                    use tui_input::backend::crossterm::EventHandler;
+                    if let Some(req) = word_motion(code, mods) {
+                        input.handle(req);
+                        return;
+                    }
+                    let ev = Event::Key(ratatui::crossterm::event::KeyEvent::new(code, mods));
+                    input.handle_event(&ev);
+                }
+            },
             Mode::AdsPrompt { input, limit } => match code {
                 KeyCode::Esc => self.mode = Mode::Normal,
                 KeyCode::Enter => {
@@ -4453,6 +4498,30 @@ impl App {
                 Line::from(vec![
                     Span::styled("/", Style::default().fg(Color::Cyan)),
                     Span::raw(shown),
+                ])
+            }
+            Mode::Setup { ref input, email, .. } => {
+                let label = if email { "email (optional, ⏎ skips): " } else { "ADS API token: " };
+                let prefix = label.chars().count() as u16;
+                let avail = area.width.saturating_sub(prefix + 34) as usize;
+                let scroll = input.visual_scroll(avail.max(10));
+                let shown: String = input.value().chars().skip(scroll).collect();
+                f.set_cursor_position((
+                    area.x + prefix + (input.visual_cursor().saturating_sub(scroll)) as u16,
+                    area.y,
+                ));
+                Line::from(vec![
+                    Span::styled(label, Style::default().fg(Color::Cyan)),
+                    Span::raw(shown),
+                    Span::styled(
+                        if email {
+                            "   ⏎ save · Esc cancel".to_string()
+                        } else {
+                            "   ⏎ save · Esc cancel · ui.adsabs.harvard.edu/user/settings/token"
+                                .to_string()
+                        },
+                        Style::default().fg(Color::DarkGray),
+                    ),
                 ])
             }
             Mode::AdsPrompt { ref input, limit } => {

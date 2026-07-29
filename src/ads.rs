@@ -59,6 +59,28 @@ fn require_token() -> Result<String> {
     })
 }
 
+/// Persist one field into state.json (creating it if absent),
+/// preserving every other field.
+pub fn save_state_field(key: &str, value: &str) -> std::io::Result<()> {
+    let path = state_file();
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let mut v: serde_json::Value = std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_else(|| serde_json::json!({ "version": 1 }));
+    v[key] = serde_json::Value::String(value.to_string());
+    std::fs::write(&path, serde_json::to_string_pretty(&v)? + "\n")
+}
+
+/// Saved email from state.json (a courtesy identifier for API use).
+pub fn get_email() -> Option<String> {
+    let raw = std::fs::read_to_string(state_file()).ok()?;
+    let v: serde_json::Value = serde_json::from_str(&raw).ok()?;
+    v.get("email")?.as_str().filter(|s| !s.is_empty()).map(str::to_string)
+}
+
 fn agent() -> ureq::Agent {
     ureq::AgentBuilder::new()
         .timeout(Duration::from_secs(30))

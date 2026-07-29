@@ -10,7 +10,7 @@ Concretely:
 
 - The bib database is a git repository containing BibTeX files in `bib/`. That is the entire format. No other files belong there.
 - BibTeX fields in `.bib` files come from ADS. Do not embed astrobib-specific semantics in `keywords` or any other BibTeX field. A `.bib` file written by astrobib must be indistinguishable from one written by hand from the ADS website.
-- The config file (`~/.config/astrobib/config.toml`) uses only standard TOML. Unknown keys are silently ignored. New keys always have defaults. Keys are never renamed without a migration shim that stays in the codebase.
+- Any config file (e.g. `~/.config/astrobib/config.toml`, when one exists) uses only standard TOML. Unknown keys are silently ignored. New keys always have defaults. Keys are never renamed without a migration shim that stays in the codebase.
 - Any future persistent app state (e.g., saved searches) is user-local, never stored in or synced via the bib database.
 
 ## What the database is and is not
@@ -18,8 +18,7 @@ Concretely:
 The bib database is a shared, group-visible record of BibTeX entries. It is:
 
 - A flat collection of `.bib` files, one per paper, in `bib/`
-- Versioned by git
-- Synced with `db push` / `db pull`
+- Versioned by git, synced with ordinary git push/pull
 
 It is not:
 
@@ -69,7 +68,7 @@ Any new directory or file added to the bib repo must be safely ignored by all as
 Both `config.toml` and any future app state files must include a `schema_version` integer. Version changes follow this rule:
 
 - Additive changes (new optional keys with defaults): bump schema_version, no migration needed
-- Destructive changes (renames, removals): write an explicit migration function in `config.py` that runs on load when an old version is detected
+- Destructive changes (renames, removals): write an explicit migration function in the config module that runs on load when an old version is detected
 
 ## Dev vs. stable coexistence
 
