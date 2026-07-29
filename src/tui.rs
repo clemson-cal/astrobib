@@ -1,9 +1,8 @@
 //! Ratatui TUI: library table with live filter, pub card, star toggle.
 //!
-//! Feature parity with the Textual app comes incrementally; the current cut
-//! covers browsing — instant startup, live filtering with the full query
-//! language, manuscript ● and star ★ indicators, a toggleable pub card,
-//! star toggling, and instant quit.
+//! The current cut centers on browsing — instant startup, live filtering
+//! with the full query language, manuscript ● and star ★ indicators, a
+//! toggleable pub card, star toggling, and instant quit.
 
 use crate::library::{has_cached_pdf, MergedLibrary};
 use crate::pdf;
@@ -90,8 +89,8 @@ impl MsgCat {
 }
 
 /// What the copy chord / Copy tab can put on the clipboard. Cite keys
-/// and bibcodes join with ", " under multi-selection (the Python TUI's
-/// convention); URLs, paths, and titles join with newlines.
+/// and bibcodes join with ", " under multi-selection (comma lists paste
+/// straight into \cite{...}); URLs, paths, and titles join with newlines.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum CopyItem {
     Key,
@@ -456,8 +455,7 @@ struct App {
     card_buttons: Vec<(Rect, CardBtn)>,
     card_links: Vec<(Rect, String)>,
     card_yanks: Vec<(Rect, CopyItem)>,
-    // transient PDF status shown on the card (waiting/result), like the
-    // Python card's #pdf-status line
+    // transient PDF status line shown on the card (waiting/result)
     pdf_status: String,
     // browser-download watcher cancel flag (X / clear cancels the poll)
     poll_cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
@@ -469,8 +467,8 @@ struct App {
     confirm_btns: Vec<(Rect, bool)>, // (rect, is_confirm)
     // plain clicks on the same row within 400ms form a double-click
     last_click: Option<(std::time::Instant, usize, usize)>, // (t, scope, pos)
-    // silent manuscript auto-rescan (Python _poll_manuscript): mtime
-    // snapshot of the scanned sources and bib/, compared every ~1.5 s
+    // silent manuscript auto-rescan: mtime snapshot of the scanned
+    // sources and bib/, compared every ~1.5 s
     ms_watch: MsWatch,
     ms_watch_at: std::time::Instant,
 }
@@ -697,7 +695,7 @@ impl App {
         if crate::ads::get_token().is_none() {
             self.note(
                 MsgCat::Warn,
-                "no ADS token — set ADS_API_TOKEN or configure the Python tool".to_string(),
+                "no ADS token — set ADS_API_TOKEN or add ads_token to state.json".to_string(),
             );
             return;
         }
@@ -755,9 +753,9 @@ impl App {
         });
     }
 
-    /// Scan .tex and .md sources and classify every cited key; append
-    /// uncited manuscript-db members — the Python ManuscriptView's row
-    /// set. Markdown wikilinks count only when they resolve (an
+    /// The manuscript view's row set: scan .tex and .md sources and
+    /// classify every cited key, then append uncited manuscript-db
+    /// members. Markdown wikilinks count only when they resolve (an
     /// unresolved [[link]] is an ordinary note link, not a citation);
     /// pandoc @cites always count and surface as missing.
     fn ms_rows(&self) -> Vec<MsRow> {
@@ -842,8 +840,8 @@ impl App {
         (srcs, bib)
     }
 
-    /// Silent auto-rescan on external changes — the Python app's
-    /// _poll_manuscript. Every ~1.5 s compare the mtime snapshot:
+    /// Silent auto-rescan on external changes.
+    /// Every ~1.5 s compare the mtime snapshot:
     /// edited sources rescan the manuscript (refs.bib regenerates along
     /// the way); a changed bib/ reloads the library tiers from disk.
     /// Our own writes touch bib/ too, but every mutation path ends in
@@ -887,9 +885,9 @@ impl App {
         }
     }
 
-    /// Keep refs.bib beside the manuscript in step with its citations —
-    /// the Python app's silent regenerate-on-change. Created only for
-    /// TeX manuscripts (astrobib refs opts a markdown one in); once the
+    /// Keep refs.bib beside the manuscript in step with its citations,
+    /// regenerating silently on every rescan. Created only for TeX
+    /// manuscripts (astrobib refs opts a markdown one in); once the
     /// file exists it is kept fresh whatever the sources.
     fn sync_refs_bib(&self, rows: &[MsRow]) {
         let Some(root) = self.ms_root() else { return };
@@ -910,8 +908,8 @@ impl App {
         self.lib.manuscript.as_ref().map(|m| m.root.clone())
     }
 
-    /// Persist the current ADS scopes in tabs.json-compatible form,
-    /// user-local and keyed per manuscript context (shared with Python).
+    /// Persist the current ADS scopes to the tabs.json state file,
+    /// user-local and keyed per manuscript context.
     fn save_tabs(&self) {
         let tabs: Vec<crate::tabs::Tab> = self
             .scopes
@@ -961,7 +959,7 @@ impl App {
     }
 
     /// +/- — step the active ADS scope's result limit through the
-    /// Python steps (20/50/100/200) and re-run the query.
+    /// fixed steps (20/50/100/200) and re-run the query.
     fn step_limit(&mut self, dir: isize) {
         const STEPS: [usize; 4] = [20, 50, 100, 200];
         let Some(Scope::Ads { tab, .. }) = self.scopes.get_mut(self.active_scope) else {
@@ -1360,7 +1358,7 @@ impl App {
 
     /// The entries an action applies to: the selection (in display order)
     /// when selection mode is active and non-empty, else the highlighted
-    /// row — the Python TUI's convention.
+    /// row — one convention for every bulk-capable action.
     fn action_keys(&self) -> Vec<String> {
         if self.select_mode && !self.selected.is_empty() {
             return self
@@ -1783,9 +1781,9 @@ impl App {
         }
     }
 
-    /// m — port of action_toggle_manuscript's library-view rule: if any
-    /// target is missing from the manuscript db, add all missing; else
-    /// (all present) remove all.
+    /// m — the library-view manuscript toggle rule: if any target is
+    /// missing from the manuscript db, add all missing; else (all
+    /// present) remove all.
     fn toggle_manuscript(&mut self) {
         if self.lib.manuscript.is_none() {
             self.note(MsgCat::Warn, "no manuscript db (run inside a manuscript repo)".to_string());
@@ -2822,10 +2820,10 @@ impl App {
         f.render_widget(p, area);
     }
 
-    /// The control panel, tabbed: Actions lists every action with
-    /// key, label, and click target, unavailable ones dimmed (the Python
-    /// key panel's behavior); Copy lists the clipboard targets of the
-    /// y-chord the same way. Tab headers are clickable.
+    /// The control panel, tabbed: Actions lists every action with key,
+    /// label, and click target, unavailable ones dimmed rather than
+    /// hidden; Copy lists the clipboard targets of the y-chord the same
+    /// way. Tab headers are clickable.
     /// Centered which-key modal for the y chord: clickable rows, items
     /// without a value dimmed; clicking elsewhere or Esc cancels.
     /// Rows the keys panel needs at this width (it flows into as many
@@ -4013,10 +4011,10 @@ impl App {
         self.draw_card_toggle(f, x0, w as u16, bottom, false);
     }
 
-    /// The pub card, emulating the Python DetailPanel's flow: body (title,
+    /// The pub card, top to bottom: body (title,
     /// authors · year, abstract), a bordered links row (ADS · arXiv:id ·
-    /// DOI, cyan, browser-opening), the PDF buttons (Python labels/colors;
-    /// ineligible ones hidden, not dimmed), a transient PDF status line,
+    /// DOI, cyan, browser-opening), the PDF buttons (ineligible ones
+    /// hidden, not dimmed), a transient PDF status line,
     /// and a footer (keywords, cite key with dim hash suffix, preprint
     /// note). Text is pre-wrapped so every row's click rect is exact.
     fn draw_detail(&mut self, f: &mut Frame, area: Rect) {
@@ -4222,8 +4220,8 @@ impl App {
         line_at(f, y, Line::from(Span::styled(sep, dimsep)));
         y += 2; // a little air below the link stack
 
-        // ── PDF buttons (Python labels, colors, and visibility rules),
-        //    drawn as rounded pills ─────────────────────────────────────
+        // ── PDF buttons, drawn as rounded pills; only the buttons whose
+        //    source is available appear ─────────────────────────────────
         let cached = pdf::is_cached(&key);
         let mut buttons: Vec<(&str, CardBtn, Color)> = vec![];
         if !cached && !eprint.is_empty() {
@@ -4555,8 +4553,7 @@ fn debug_layout(line: &str) {
 }
 
 /// System clipboard: pbcopy on macOS (reliable in any terminal), else
-/// the OSC 52 escape (terminal-dependent, but works over SSH) — the
-/// Python TUI's _copy_text strategy.
+/// the OSC 52 escape (terminal-dependent, but works over SSH).
 fn copy_to_clipboard(text: &str) -> bool {
     use std::io::Write;
     if cfg!(target_os = "macos") {

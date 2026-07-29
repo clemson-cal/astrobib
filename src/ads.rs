@@ -1,5 +1,5 @@
-//! Direct ADS API client — port of astrobib/ads_client.py (search,
-//! BibTeX export, link resolver, rate-limit quota).
+//! Direct ADS API client: search, BibTeX export, link resolver, and
+//! rate-limit quota tracking.
 
 use crate::bib::{self, Data};
 use anyhow::{anyhow, bail, Result};
@@ -38,7 +38,7 @@ fn state_file() -> PathBuf {
     base.join("state.json")
 }
 
-/// ADS token from $ADS_API_TOKEN or saved state — port of state.get_token.
+/// ADS token from $ADS_API_TOKEN, or the ads_token field of state.json.
 pub fn get_token() -> Option<String> {
     if let Ok(t) = std::env::var("ADS_API_TOKEN") {
         if !t.is_empty() {
@@ -53,7 +53,7 @@ pub fn get_token() -> Option<String> {
 fn require_token() -> Result<String> {
     get_token().ok_or_else(|| {
         anyhow!(
-            "No ADS API token.\nSet ADS_API_TOKEN or configure the Python astrobib.\n\
+            "No ADS API token.\nSet ADS_API_TOKEN or add ads_token to astrobib's state.json.\n\
              Get one at: https://ui.adsabs.harvard.edu/user/settings/token"
         )
     })
@@ -80,8 +80,7 @@ fn check(resp: std::result::Result<ureq::Response, ureq::Error>) -> Result<ureq:
     }
 }
 
-/// Rate-limit state from the most recent ADS response — port of the
-/// ads_client module-level `_quota`.
+/// Rate-limit state from the most recent ADS response.
 #[derive(Clone, Copy, Debug)]
 pub struct Quota {
     pub limit: i64,
@@ -91,15 +90,14 @@ pub struct Quota {
 
 static QUOTA: Mutex<Option<Quota>> = Mutex::new(None);
 
-/// The quota captured from the last API round-trip, if any — port of
-/// get_quota.
+/// The quota captured from the last API round-trip, if any.
 pub fn get_quota() -> Option<Quota> {
     *QUOTA.lock().unwrap()
 }
 
-/// Parse the X-RateLimit-* headers into the quota slot — port of
-/// _update_quota: only when the Limit header is present, and skipped
-/// entirely if any present header fails to parse (missing ones read 0).
+/// Parse the X-RateLimit-* headers into the quota slot: only when the
+/// Limit header is present, and skipped entirely if any present header
+/// fails to parse (missing ones read 0).
 fn update_quota(resp: &ureq::Response) {
     if resp.header("X-RateLimit-Limit").is_none() {
         return;
@@ -158,7 +156,7 @@ fn article_from_doc(d: &serde_json::Value) -> Article {
 }
 
 /// Fetch canonical BibTeX for a bibcode; the export omits the abstract,
-/// so it is fetched separately and appended — port of fetch_bibtex.
+/// so it is fetched separately (one extra search call) and appended.
 pub fn fetch_bibtex(bibcode: &str) -> Result<Option<Data>> {
     let token = require_token()?;
     let resp = check(
@@ -185,10 +183,9 @@ pub fn fetch_bibtex(bibcode: &str) -> Result<Option<Data>> {
     Ok(Some(data))
 }
 
-/// Query the ADS link resolver for a direct PDF URL — port of
-/// resolve_pdf_url. Returns None if no token, unknown bibcode, or the
-/// link type is unavailable; redirects are NOT followed (the JSON body
-/// carries the link).
+/// Query the ADS link resolver for a direct PDF URL. Returns None if no
+/// token, unknown bibcode, or the link type is unavailable; redirects
+/// are NOT followed (the JSON body carries the link).
 pub fn resolve_pdf_url(bibcode: &str, link_type: &str) -> Option<String> {
     let token = get_token()?;
     let agent = ureq::AgentBuilder::new()
@@ -212,10 +209,10 @@ pub fn resolve_pdf_url(bibcode: &str, link_type: &str) -> Option<String> {
         .map(str::to_string)
 }
 
-/// Resolve a foreign bib entry to a unique ADS record — port of
-/// _ads_lookup. Query preference: arXiv ID, then DOI (both unique),
-/// then exact title + first author + year, which must match exactly
-/// one record. Returns the canonical BibTeX data or a reason.
+/// Resolve a foreign bib entry to a unique ADS record. Query
+/// preference: arXiv ID, then DOI (both unique), then exact title +
+/// first author + year, which must match exactly one record. Returns
+/// the canonical BibTeX data or a reason.
 pub fn lookup_entry(data: &Data) -> Result<Data, String> {
     let get = |k: &str| data.get(k).map(String::as_str).unwrap_or("").trim();
     let eprint = get("eprint");
@@ -295,7 +292,7 @@ pub fn bibcode_from_url(text: &str) -> Option<String> {
 }
 
 /// Extract the DOI from a pasted doi.org URL, doi: prefix, or bare DOI —
-/// whole-string matches only, like the Python port.
+/// whole-string matches only, so a DOI inside prose never matches.
 pub fn doi_from_text(text: &str) -> Option<String> {
     static RE: OnceLock<Regex> = OnceLock::new();
     let re = RE.get_or_init(|| {
@@ -308,8 +305,7 @@ pub fn doi_from_text(text: &str) -> Option<String> {
 
 // ── astrobib update helpers (pure; the network loop lives in main.rs) ──
 
-/// True for arXiv-only records (bibcodes of the form 2024arXiv...) —
-/// port of is_preprint_bibcode.
+/// True for arXiv-only records (bibcodes of the form 2024arXiv...).
 pub fn is_preprint_bibcode(bibcode: &str) -> bool {
     let b = bibcode.as_bytes();
     b.len() >= 9 && b[..4].iter().all(u8::is_ascii_digit) && &b[4..9] == b"arXiv"
@@ -317,7 +313,7 @@ pub fn is_preprint_bibcode(bibcode: &str) -> bool {
 
 /// Candidate selection for `astrobib update`: the bibcode to check when
 /// the entry has an ADS URL and is preprint-form with an eprint — or any
-/// ADS record at all under `all` — port of the update command's filter.
+/// ADS record at all under `all`.
 pub fn update_candidate(adsurl: &str, eprint: &str, all: bool) -> Option<String> {
     let bc = bibcode_from_url(adsurl)?;
     if all || (!eprint.is_empty() && is_preprint_bibcode(&bc)) {
@@ -337,9 +333,9 @@ pub fn refresh_query(eprint: &str, bibcode: &str) -> String {
     }
 }
 
-/// "journal volume pages" venue display for a newly published record;
-/// leading backslashes on the journal (ADS macros like \apj) stripped —
-/// port of the update command's report line.
+/// "journal volume pages" venue display for a newly published record,
+/// used in the update command's report line; leading backslashes on the
+/// journal (ADS macros like \apj) are stripped.
 pub fn published_where(data: &Data) -> String {
     let get = |k: &str| data.get(k).map(String::as_str).unwrap_or("");
     [get("journal").trim_start_matches('\\'), get("volume"), get("pages")]

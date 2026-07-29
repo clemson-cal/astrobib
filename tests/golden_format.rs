@@ -1,15 +1,15 @@
-//! Golden test: .bib serialization must match Python's format_bib_entry.
+//! Golden test: .bib serialization must match the committed vectors.
 //!
-//! Vectors are (data map, expected file text) pairs generated from the
-//! Python implementation over the real library. Field order matters:
-//! fields outside FIELD_ORDER serialize in insertion order, so the data
-//! maps here (and bib::Data itself) preserve it — serde_json is built
-//! with preserve_order for exactly this reason.
+//! Vectors are (data map, expected file text) pairs that pin the frozen
+//! on-disk format over a real library. Field order matters: fields
+//! outside FIELD_ORDER serialize in insertion order, so the data maps
+//! here (and bib::Data itself) preserve it — serde_json is built with
+//! preserve_order for exactly this reason.
 
 use astrobib::bib::Data;
 
 #[test]
-fn format_matches_python_implementation() {
+fn serialization_matches_golden_vectors() {
     let raw = include_str!("golden_format.json");
     let vectors: Vec<serde_json::Value> = serde_json::from_str(raw).unwrap();
     assert!(!vectors.is_empty());

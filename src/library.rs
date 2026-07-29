@@ -1,7 +1,7 @@
-//! Entry and Library — port of the read side of astrobib/library.py.
+//! Entry and Library — the one-file-per-entry bib database on disk.
 //!
-//! No parse cache: Rust parses the whole library faster than the Python
-//! side reads its cache, so the mtime-keyed JSON cache has no analogue here.
+//! No parse cache: parsing the whole library is fast enough that
+//! caching would cost more in invalidation logic than it saves.
 
 use crate::bib::{self, Data};
 use std::cell::OnceCell;
@@ -181,8 +181,8 @@ impl Library {
         }
     }
 
-    /// Shortest unambiguous prefix per key (the AuthorYYYY base when unique,
-    /// else base + minimal hash prefix) — port of _compute_short_keys.
+    /// Shortest unambiguous prefix per key: the AuthorYYYY base when
+    /// unique, else base + minimal hash prefix.
     fn compute_short_keys(&mut self) {
         let mut sorted_keys: Vec<String> = self.entries.iter().map(|e| e.key().to_string()).collect();
         sorted_keys.sort();
@@ -227,7 +227,7 @@ impl Library {
         self.by_bibcode.get(bibcode).map(|&i| &self.entries[i])
     }
 
-    /// Resolve a full key, unambiguous prefix, or bibcode — port of resolve().
+    /// Resolve a full key, unambiguous prefix, or bibcode to an entry.
     pub fn resolve(&self, input: &str) -> Option<&Entry> {
         if let Some(e) = self.get(input) {
             return Some(e);
@@ -255,7 +255,7 @@ impl Library {
         self.by_key.contains_key(key)
     }
 
-    /// Write an entry under its generated key — port of save_entry.
+    /// Write an entry under its generated key.
     /// Returns the key; overwrites any existing entry with the same key.
     pub fn save_entry(&mut self, data: &Data) -> std::io::Result<String> {
         let mut data = data.clone();
@@ -276,8 +276,7 @@ impl Library {
         Ok(key)
     }
 
-    /// Delete an entry's file and drop it from the indexes — port of
-    /// remove_entry.
+    /// Delete an entry's file and drop it from the indexes.
     pub fn remove_entry(&mut self, key: &str) -> std::io::Result<()> {
         let path = self.root.join("bib").join(format!("{key}.bib"));
         if path.exists() {
@@ -311,9 +310,9 @@ impl Library {
 
 }
 
-/// Personal library merged with an optional manuscript database — port of
-/// the read side of MergedLibrary. The personal entry wins when a key
-/// exists in both; stars are personal and never written to the manuscript.
+/// Personal library merged with an optional manuscript database. The
+/// personal entry wins when a key exists in both; stars are personal
+/// and never written to the manuscript.
 pub struct MergedLibrary {
     /// Tier 1: the global personal library.
     pub personal: Library,
@@ -416,7 +415,7 @@ impl MergedLibrary {
         self.personal.has(key)
     }
 
-    /// Remove an entry from both databases — port of remove_entry.
+    /// Remove an entry from both databases.
     pub fn remove_entry(&mut self, key: &str) -> std::io::Result<()> {
         self.personal.remove_entry(key)?;
         if let Some(ms) = &mut self.manuscript {
@@ -425,16 +424,16 @@ impl MergedLibrary {
         Ok(())
     }
 
-    /// Copy an entry into the manuscript db (personal fields stripped) —
-    /// port of add_to_manuscript. Returns false if there is no manuscript,
-    /// the entry is unknown, or it is already a member.
+    /// Copy an entry into the manuscript db (personal fields stripped).
+    /// Returns false if there is no manuscript, the entry is unknown, or
+    /// it is already a member.
     pub fn add_to_manuscript(&mut self, key: &str) -> std::io::Result<bool> {
         let Some(entry) = self.get(key) else {
             return Ok(false);
         };
         let mut data = entry.data.clone();
-        // legacy personal field from the Python tool never enters a
-        // shared manuscript db
+        // the legacy personal star field never enters a shared
+        // manuscript db
         data.shift_remove("astrobib_starred");
         let Some(ms) = &mut self.manuscript else {
             return Ok(false);
@@ -447,8 +446,7 @@ impl MergedLibrary {
     }
 
     /// Refresh an entry's metadata under the same key in every tier that
-    /// holds it — port of MergedLibrary.update_entry (star preservation
-    /// dropped with the starring feature). The cite key and filename
+    /// holds it. The cite key and filename
     /// never change; each copy keeps its own user-curated keywords; the
     /// legacy personal star field never enters the manuscript copy. Not
     /// gated by global_on: a refresh rewrites existing copies wherever
@@ -473,9 +471,9 @@ impl MergedLibrary {
         Ok(any)
     }
 
-    /// Remove an entry from the manuscript db, first rescuing it into the
-    /// personal library when the manuscript holds the only copy — port of
-    /// remove_from_manuscript. Removal never destroys bibdata.
+    /// Remove an entry from the manuscript db, first rescuing it into
+    /// the personal library when the manuscript holds the only copy.
+    /// Removal never destroys bibdata.
     pub fn remove_from_manuscript(&mut self, key: &str) -> std::io::Result<bool> {
         let Some(ms) = &self.manuscript else {
             return Ok(false);
@@ -494,7 +492,7 @@ impl MergedLibrary {
 
 /// Field-merge for a metadata refresh: the new ADS record wins every
 /// field, except the old copy's user-curated keywords survive when
-/// non-empty — port of the merge inside MergedLibrary.update_entry.
+/// non-empty.
 pub fn refreshed_data(new: &Data, old: &Data) -> Data {
     let mut d = new.clone();
     if let Some(kw) = old.get("keywords") {
@@ -505,8 +503,7 @@ pub fn refreshed_data(new: &Data, old: &Data) -> Data {
     d
 }
 
-/// How a cite string from a manuscript resolves — port of
-/// resolve_citation's states.
+/// How a cite string from a manuscript resolves.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum CiteState {
     /// resolves to a manuscript-db member
@@ -521,7 +518,7 @@ pub enum CiteState {
 
 impl MergedLibrary {
     /// Classify a cite string: full key, unambiguous prefix, or raw
-    /// bibcode — port of resolve_citation.
+    /// bibcode.
     pub fn resolve_citation(&self, cited: &str) -> (CiteState, Option<&Entry>) {
         let entry = match self.get(cited) {
             Some(e) => Some(e),
@@ -566,8 +563,8 @@ pub fn find_manuscript_db() -> Option<PathBuf> {
     }
 }
 
-/// Library root: $ASTROBIB_LIBRARY, else $ASTROBIB_STATE_DIR/library, else
-/// ~/.local/share/astrobib/library — port of state.py resolution.
+/// Library root resolution: $ASTROBIB_LIBRARY, else
+/// $ASTROBIB_STATE_DIR/library, else ~/.local/share/astrobib/library.
 pub fn default_library_root() -> PathBuf {
     if let Ok(p) = std::env::var("ASTROBIB_LIBRARY") {
         return PathBuf::from(shellexpand_home(&p));

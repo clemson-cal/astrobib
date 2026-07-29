@@ -1,6 +1,5 @@
-//! Manuscript cite-key scanning — TeX (a port of the read side of
-//! astrobib/export.py) and Markdown — plus the rendered Markdown
-//! bibliography. refs.bib generation comes with the sync flow.
+//! Manuscript cite-key scanning — TeX and Markdown — plus the rendered
+//! Markdown bibliography. refs.bib generation comes with the sync flow.
 
 use crate::library::{CiteState, Entry, MergedLibrary};
 use regex::Regex;
@@ -248,7 +247,7 @@ pub fn scan_md_files(paths: &[PathBuf]) -> Vec<MdCite> {
     ordered
 }
 
-// ── refs.bib generation (port of export.py's export_refs) ───────────
+// ── refs.bib generation ─────────────────────────────────────────────
 
 /// The refs.bib content for a set of cited strings: one block per cite
 /// that resolves to a manuscript-db member, keyed by the string actually

@@ -1,5 +1,5 @@
-//! Ephemeral PDF cache — port of the download side of astrobib/pdf.py,
-//! including the browser-watch flow and user-file import.
+//! Ephemeral PDF cache: download, browser-watch flow, and user-file
+//! import into ~/.cache/astrobib/pdfs.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -25,8 +25,8 @@ pub fn is_cached(key: &str) -> bool {
     cache_path(key).exists()
 }
 
-/// GET a URL into the cache slot; rejects non-PDF payloads — port of
-/// _download_url (content-type must mention pdf or octet-stream).
+/// GET a URL into the cache slot; rejects non-PDF payloads (the
+/// content-type must mention pdf or octet-stream).
 fn download_url(path: &PathBuf, url: &str) -> Option<PathBuf> {
     let agent = ureq::AgentBuilder::new()
         .timeout(Duration::from_secs(60))
@@ -52,7 +52,7 @@ pub fn bibcode_from_adsurl(adsurl: &str) -> Option<&str> {
     t.rsplit('/').next().filter(|s| !s.is_empty())
 }
 
-/// Return the cached PDF path, downloading if needed — port of fetch().
+/// Return the cached PDF path, downloading if needed.
 /// Auto: ADS OA_PDF resolver first, then arXiv fallback.
 pub fn fetch(key: &str, eprint: &str, adsurl: &str) -> Option<PathBuf> {
     let path = cache_path(key);
@@ -62,8 +62,8 @@ pub fn fetch(key: &str, eprint: &str, adsurl: &str) -> Option<PathBuf> {
     fetch_source(key, eprint, adsurl, Source::Auto)
 }
 
-/// Source-specific fetch, forcing a re-download (the pub card's per-source
-/// buttons, matching Python's force=True).
+/// Source-specific fetch for the pub card's per-source buttons; always
+/// forces a re-download, replacing any cached copy.
 pub fn fetch_source(key: &str, eprint: &str, adsurl: &str, source: Source) -> Option<PathBuf> {
     let path = cache_path(key);
     if path.exists() {
@@ -89,8 +89,8 @@ pub fn fetch_source(key: &str, eprint: &str, adsurl: &str, source: Source) -> Op
     }
 }
 
-/// Best URL for manual PDF download, verified against the ADS resolver —
-/// port of browser_resolve_url. Makes a network call; run off the UI thread.
+/// Best URL for manual PDF download, verified against the ADS resolver.
+/// Makes a network call; run off the UI thread.
 pub fn browser_resolve_url(doi: &str, adsurl: &str, eprint: &str) -> Option<String> {
     if let Some(bc) = bibcode_from_adsurl(adsurl) {
         if let Some(url) = crate::ads::resolve_pdf_url(bc, "PUB_PDF") {
@@ -166,8 +166,8 @@ fn looks_like_pdf(path: &Path) -> bool {
 }
 
 /// Watch ~/Downloads for a new or rewritten PDF; move it into the cache
-/// on arrival — port of poll_downloads (two-poll size-stability check so
-/// a partial download is never grabbed).
+/// on arrival. A file must hold the same size across two polls before it
+/// is taken, so a partial download is never grabbed.
 pub fn poll_downloads(
     key: &str,
     before: &HashMap<PathBuf, (u64, i64)>,
@@ -202,8 +202,8 @@ pub fn poll_downloads(
     None
 }
 
-/// Copy a user-chosen PDF into the cache — port of import_file. Copies
-/// rather than moves; rejects files without a %PDF header.
+/// Copy a user-chosen PDF into the cache. Copies rather than moves;
+/// rejects files without a %PDF header.
 pub fn import_file(key: &str, source: &Path) -> Option<PathBuf> {
     if !looks_like_pdf(source) {
         return None;

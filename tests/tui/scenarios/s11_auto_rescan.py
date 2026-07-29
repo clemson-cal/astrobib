@@ -1,6 +1,6 @@
 """Editing a manuscript source in an external editor is picked up by the
 mtime poll: the Manuscript scope reclassifies the new cite and refs.bib
-regenerates, all without pressing r (the Python app's _poll_manuscript)."""
+regenerates, all without pressing r."""
 
 import os
 

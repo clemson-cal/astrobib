@@ -3,23 +3,24 @@
 //! Files are machine-written (by ADS export or by astrobib itself), one
 //! entry per file, every value brace-delimited — so this is a tolerant
 //! hand parser, not a general BibTeX implementation. Field names are
-//! lowercased on parse (as bibtexparser does); ID and ENTRYTYPE are the
-//! same synthetic uppercase keys the Python side uses. LaTeX accent
-//! macros are converted to Unicode (the convert_to_unicode analogue);
-//! other braces are preserved verbatim, matching the Python data model.
+//! lowercased on parse; ID and ENTRYTYPE are synthetic uppercase keys
+//! carrying the cite key and entry type. LaTeX accent macros are
+//! converted to Unicode on parse and remaining braces stripped (see
+//! latex_to_unicode); the parsed data map is the canonical data model.
 
 use indexmap::IndexMap;
 
 /// Entry data: insertion-ordered, because serialization writes fields
-/// outside FIELD_ORDER in insertion order, exactly like a Python dict.
+/// outside FIELD_ORDER in insertion order — the order is part of the
+/// on-disk format.
 pub type Data = IndexMap<String, String>;
 
-/// Field order for serialization — must match library.py FIELD_ORDER so
-/// both implementations write identical files for identical data.
-/// Note the camelCase names never match parsed data (bibtexparser
-/// lowercases field names and the lookup is case-sensitive, in Python
-/// too) — parsed archiveprefix/primaryclass land in the trailing
-/// insertion-ordered section. That quirk is the on-disk format; keep it.
+/// Field order for serialization — the canonical file layout, pinned by
+/// tests/golden_format.json. Note the camelCase names never match parsed
+/// data (field names are lowercased on parse and this lookup is
+/// case-sensitive) — parsed archiveprefix/primaryclass land in the
+/// trailing insertion-ordered section. That quirk is the on-disk format;
+/// keep it.
 pub const FIELD_ORDER: &[&str] = &[
     "author",
     "title",
@@ -117,8 +118,8 @@ fn parse_one(text: &str, from: usize) -> Option<(Data, usize)> {
                     .unwrap_or(bytes.len());
                 let val = text[i..end].trim();
                 i = end;
-                // bare values are @string macros: expand the common ones
-                // (BibTexParser(common_strings=True) month names)
+                // bare values are @string macros: expand the standard
+                // month names, leave anything else as-is
                 expand_common_string(val).to_string()
             }
         };
@@ -127,10 +128,11 @@ fn parse_one(text: &str, from: usize) -> Option<(Data, usize)> {
         }
     }
     let end = (i + 1).min(bytes.len());
-    // bibtexparser v1 stores fields in reverse file order with
-    // ENTRYTYPE/ID appended last; serialization writes unknown fields in
-    // dict order, so reproduce the layout exactly or rewritten files
-    // shuffle their trailing fields vs. the Python tool.
+    // Fields are stored in reverse file order with ENTRYTYPE/ID appended
+    // last, and serialization writes non-FIELD_ORDER fields in map order
+    // — so a parse→rewrite cycle flips the trailing fields between two
+    // stable forms. That layout is the canonical on-disk format, guarded
+    // by tests/golden_format.json.
     let mut data = Data::new();
     for (name, value) in fields.into_iter().rev() {
         data.insert(name, value);
@@ -189,7 +191,7 @@ fn combining(accent: char) -> Option<char> {
     })
 }
 
-/// bibtexparser's COMMON_STRINGS: month macro → full name.
+/// Standard @string month macros: abbreviation → full month name.
 fn expand_common_string(name: &str) -> &str {
     match name {
         "jan" => "January",
@@ -231,11 +233,10 @@ fn simple_macro(name: &str) -> Option<&'static str> {
         "{" => "{",
         "}" => "}",
         // Common math-mode symbols from ADS titles (usually inside
-        // \ensuremath{...} wrappers). Where bibtexparser v1 converted the
-        // macro at all we match its output codepoints (\sim → U+223C,
-        // \mu → U+03BC, \pm → U+00B1, Greek letters); \times, \deg and
-        // \odot it either left literal or mangled (\odot → "ødot"), so
-        // these are display improvements over the Python behavior.
+        // \ensuremath{...} wrappers). The output codepoints are
+        // deliberate: \sim → U+223C (not ASCII ~), \mu → U+03BC,
+        // \pm → U+00B1, and Greek letters map to their Unicode forms;
+        // \times, \deg and \odot convert to × ° ⊙.
         "sim" => "∼",
         "mu" => "μ",
         "alpha" => "α",
@@ -250,10 +251,9 @@ fn simple_macro(name: &str) -> Option<&'static str> {
 }
 
 /// Conversion of LaTeX accent/letter macros to Unicode, normalized to
-/// NFC, with every remaining brace removed afterward — matching
-/// bibtexparser.latexenc.latex_to_unicode, which strips all braces
-/// (grouping and protective alike, and even escaped ones, since \{
-/// converts to a literal brace before the strip).
+/// NFC, with every remaining brace removed afterward — grouping and
+/// protective braces alike, and even escaped ones, since \{ converts to
+/// a literal brace before the strip.
 pub fn latex_to_unicode(s: &str) -> String {
     use unicode_normalization::UnicodeNormalization;
     let chars: Vec<char> = s.chars().collect();
@@ -300,8 +300,8 @@ fn convert_macro(chars: &[char], bs: usize, wrapped: bool) -> Option<(String, us
         // \ensuremath{...} is a no-op wrapper: drop the macro name and let
         // the main loop convert the braced argument (stray braces are
         // stripped at the end anyway). A bare \ensuremath with no braced
-        // argument stays literal, matching bibtexparser v1 and the golden
-        // vectors ("Binary\ensuremath-disk").
+        // argument stays literal, as pinned by the golden vectors
+        // ("Binary\ensuremath-disk").
         if word == "ensuremath" && i < chars.len() && chars[i] == '{' {
             return Some((String::new(), i));
         }
@@ -369,9 +369,9 @@ fn finish_group(chars: &[char], i: usize, wrapped: bool) -> Option<usize> {
     }
 }
 
-/// Serialize an entry — byte-for-byte port of library.py format_bib_entry:
-/// FIELD_ORDER first (case-sensitive match), then everything else in
-/// insertion order.
+/// Serialize an entry in the canonical on-disk layout: FIELD_ORDER first
+/// (case-sensitive match), then everything else in insertion order. The
+/// exact byte output is pinned by tests/golden_format.json.
 pub fn format_entry(data: &Data) -> String {
     let key = data.get("ID").map(String::as_str).unwrap_or("");
     let etype = data.get("ENTRYTYPE").map(String::as_str).unwrap_or("article");
@@ -408,7 +408,7 @@ mod tests {
         let d = parse_entry(text).unwrap();
         assert_eq!(d["ID"], "Zrake2019abcde");
         assert_eq!(d["ENTRYTYPE"], "article");
-        // braces are stripped on parse, as bibtexparser's convert_to_unicode does
+        // braces are stripped on parse
         assert_eq!(d["author"], "Zrake, Jonathan and MacFadyen, Andrew");
         assert_eq!(d["title"], "Magnetic energy production");
         assert_eq!(d["year"], "2019");
@@ -446,8 +446,8 @@ mod tests {
         // unknown inner macro degrades to the usual unknown-macro fallback,
         // never the literal string "\ensuremath"
         assert_eq!(latex_to_unicode(r"\ensuremath{\foo}"), r"\foo");
-        // bare \ensuremath without a braced argument stays literal, as in
-        // bibtexparser v1 (and the golden format vector)
+        // bare \ensuremath without a braced argument stays literal
+        // (pinned by the golden format vector)
         assert_eq!(
             latex_to_unicode(r"Binary\ensuremath-disk"),
             r"Binary\ensuremath-disk"

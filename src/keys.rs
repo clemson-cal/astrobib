@@ -1,9 +1,9 @@
 //! Collision-resistant cite key generation from BibTeX data.
 //!
-//! Byte-for-byte port of astrobib/keys.py: keys denote papers for life, so
-//! this must generate the identical AuthorYYYYlllll key as the Python
-//! implementation for every record either tool has ever seen. Any change
-//! here must keep tests/golden_keys.json passing.
+//! Keys denote papers for life: the AuthorYYYYlllll algorithm is frozen,
+//! and every record ever keyed must keep producing the same key. The
+//! committed vectors in tests/golden_keys.json pin the algorithm; any
+//! change here must keep them passing.
 
 use crate::bib::Data;
 use sha2::{Digest, Sha256};
@@ -68,7 +68,7 @@ pub fn generate_key(data: &Data) -> String {
             let trimmed = adsurl.trim_end_matches('/');
             trimmed.rsplit('/').next().unwrap_or(trimmed).to_string()
         };
-        // Python: stable_id[:4].isdigit() — a possibly-shorter prefix
+        // The (possibly shorter than 4-char) prefix must be all digits
         let prefix: String = stable_id.chars().take(4).collect();
         if !adsurl.is_empty() && !prefix.is_empty() && prefix.chars().all(|c| c.is_ascii_digit()) {
             year = prefix;
@@ -88,8 +88,8 @@ pub fn generate_key(data: &Data) -> String {
         .next()
         .unwrap_or("")
         .trim();
-    // NFD, then keep letters only (category L*): drops combining marks and
-    // punctuation, exactly like Python's `category != Mn and isalpha`.
+    // NFD, then keep letters only (category L*): drops combining marks
+    // and punctuation, so accented names reduce to their base letters.
     let ascii_name: String = first_author
         .nfd()
         .filter(|c| c.general_category_group() == GeneralCategoryGroup::Letter)

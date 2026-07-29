@@ -1,4 +1,4 @@
-//! Local filter query language — port of astrobib/query.py.
+//! Local filter query language for the library view.
 //!
 //! Grammar: whitespace-separated terms AND together; uppercase OR separates
 //! alternative groups (AND binds tighter than OR, as in ADS). Uppercase-only
@@ -152,9 +152,9 @@ pub fn matches(groups: &[Vec<Term>], e: &Entry, ctx: &QueryContext) -> bool {
         .any(|g| g.iter().all(|t| term_matches(t, e, ctx)))
 }
 
-/// Translate a local filter string into an ADS search query — port of
-/// to_ads_query: drops is:/key:/negations, quotes field values, maps kw:
-/// to keyword:, parenthesizes multi-term OR-groups.
+/// Translate a local filter string into an ADS search query: drops
+/// is:/key:/negations, quotes field values, maps kw: to keyword:,
+/// parenthesizes multi-term OR-groups.
 pub fn to_ads_query(text: &str) -> String {
     let mut groups: Vec<Vec<String>> = vec![];
     for group in tokenize(text) {

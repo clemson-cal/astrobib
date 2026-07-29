@@ -193,7 +193,7 @@ fn main() -> anyhow::Result<()> {
     }
 }
 
-/// astrobib update — port of the v0.4.0 update command. Checks each
+/// astrobib update — publication-status refresh. Checks each
 /// preprint-form entry (bibcode like 2024arXiv…) against ADS; when the
 /// record has gained publication metadata, rewrites the entry in place
 /// with canonical BibTeX. Cite keys never change; each copy's
@@ -406,8 +406,8 @@ fn tidy_bib_dir(
     run_refs(lib, root, None, None, false, false)
 }
 
-/// astrobib refs — port of the v0.4.0 manuscript sync flow, extended to
-/// markdown manuscripts. Cited keys missing from the manuscript db are
+/// astrobib refs — the manuscript sync flow, for TeX and markdown
+/// manuscripts alike. Cited keys missing from the manuscript db are
 /// copied in from the personal library; keys found nowhere are reported;
 /// refs.bib is generated from the manuscript db (each entry keyed by the
 /// string actually cited); a markdown manuscript also gets its rendered
@@ -576,7 +576,7 @@ fn run_refs(
     Ok(())
 }
 
-/// Import a .bib file — port of the v0.4.0 import command. Entries whose
+/// astrobib import — bring a foreign .bib file in. Entries whose
 /// cite key is reproducible from their own data are canonical astrobib
 /// bibdata and import directly; everything else resolves against ADS
 /// (arXiv ID → DOI → exact title+author+year, which must be unique).

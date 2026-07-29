@@ -1,5 +1,5 @@
 """A TeX manuscript's refs.bib is regenerated silently on scan, keyed by
-the strings actually cited (the Python app's regenerate-on-change)."""
+the strings actually cited."""
 
 import os
 
@@ -26,5 +26,5 @@ def run(t):
     require("@article{Andersson2021," in content, "cited-string key missing", t)
     require("Andersson2021pombz" not in content, "hash suffix leaked into refs.bib", t)
     # cited but only in the personal library: not a manuscript-db member,
-    # so (as in Python) it stays out of refs.bib until added with m
+    # so it stays out of refs.bib until added with m
     require("Baxter2019" not in content, "library-only cite leaked into refs.bib", t)
