@@ -61,5 +61,4 @@ maturin publish --release          # builds for the host platform and uploads
 
 ## Notes
 
-- The retired Python package (`astrobib/`) still sits in the tree; `[tool.maturin] exclude = ["astrobib/**"]` in pyproject.toml keeps maturin from auto-detecting it as a mixed python/rust project and bundling the `.py` files into the wheel. If the directory is ever deleted, the exclude becomes a harmless no-op.
-- `setup.py` and `MANIFEST.in` are leftovers of the Python build; the build backend is maturin, so they are inert.
+- `[tool.maturin] exclude = ["astrobib/**"]` in pyproject.toml guards against maturin treating the tree as a mixed python/rust project if a top-level `astrobib/` Python package ever reappears; with none present it is a harmless no-op.

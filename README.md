@@ -63,7 +63,7 @@ A half-typed query never errors. With a filter active, `S` pre-fills the equival
 
 ---
 ## ADS queries
-`S` passes your query to the [ADS API](https://ui.adsabs.harvard.edu/help/search/search-syntax) unmodified, so the full Solr language works (`bibstem:ApJL`, `citations(...)`, boolean grouping, …). Each query becomes a scope capsule, persisted per manuscript context and shared with the Python implementation via `tabs.json`.
+`S` passes your query to the [ADS API](https://ui.adsabs.harvard.edu/help/search/search-syntax) unmodified, so the full Solr language works (`bibstem:ApJL`, `citations(...)`, boolean grouping, …). Each query becomes a scope capsule, persisted per library context in `tabs.json`.
 
 ---
 ## CLI

@@ -1687,7 +1687,7 @@ impl App {
             return;
         }
         let pos = self.table.offset() + (y - a.y - 2) as usize;
-        if pos >= self.filtered.len() {
+        if pos >= self.row_count() {
             return;
         }
         self.table.select(Some(pos));
