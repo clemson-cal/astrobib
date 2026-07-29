@@ -1,6 +1,6 @@
-# astrobib Rust port
+# Implementation status — internal development notes
 
-Status doc for the `rust` branch. The crate lives at the repo root alongside the Python package, which stays checked in as the reference implementation during porting.
+Historical/developer notes; user-facing documentation lives in the README. Feature descriptions below accumulated during the Rust implementation effort and reference the retired Python implementation (tag v0.4.0) where parity was verified.
 
 ## Run it
 

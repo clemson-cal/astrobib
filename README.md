@@ -1,9 +1,9 @@
 # astrobib
 *A terminal-based literature manager for astrophysics research*
 
-astrobib connects to the [NASA/Harvard ADS](https://ui.adsabs.harvard.edu) to search, fetch, and organize papers as plain BibTeX files, with a fast terminal UI. It is written in Rust and ships as a single binary — installs via pip-style tools involve no Python runtime.
+astrobib connects to the [NASA/Harvard ADS](https://ui.adsabs.harvard.edu) to search, fetch, and organize papers as plain BibTeX files, with a fast terminal UI. It ships as a single native binary: instant startup, instant quit, no runtime dependencies.
 
-The earlier Python implementation is preserved at tag [`v0.4.0`](https://github.com/clemson-cal/astrobib/tree/v0.4.0). Libraries and cite keys are fully compatible between the two: keys derive from each paper's stable identity (arXiv ID or bibcode), so any two copies of a paper agree on its key forever.
+Your library is just a directory of `.bib` files, indistinguishable from hand-written BibTeX, and cite keys derive from each paper's stable identity (arXiv ID or bibcode) — so any two copies of a paper, fetched by anyone at any time, agree on the key forever. Libraries from all earlier astrobib versions work unchanged.
 
 ---
 ## Installation
@@ -71,4 +71,4 @@ A half-typed query never errors. With a filter active, `S` pre-fills the equival
 `import` resolves each entry against ADS (arXiv ID → DOI → exact title+author+year) unless its cite key is already reproducible from its own data — canonical astrobib entries import byte-identically — and prints copy-pasteable key replacements for your `.tex` files.
 
 ---
-See [docs/DESIGN.md](docs/DESIGN.md) for the data-format contract and [docs/STATUS.md](docs/STATUS.md) for implementation status.
+See [docs/DESIGN.md](docs/DESIGN.md) for the data-format contract.

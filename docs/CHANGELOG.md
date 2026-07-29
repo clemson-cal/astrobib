@@ -2,7 +2,7 @@
 
 ## 0.5.0 — 2026-07-28
 
-Complete rewrite in Rust (ratatui). This is the first release of the Rust implementation, distributed as a compiled binary in platform wheels — `pipx install astrobib` / `uv tool install astrobib` work as before, with no Python runtime involved. The Python implementation is retired and remains available at the v0.4.0 tag and release.
+astrobib is now a single native binary, distributed in platform wheels — `pipx install astrobib` / `uv tool install astrobib` work as before, with no runtime dependencies. Startup and quit are instantaneous. Existing libraries, manuscript databases, and cite keys carry over unchanged.
 
 ### Added
 - Instant startup and quit; the whole library parses in milliseconds with no cache.
@@ -16,11 +16,11 @@ Complete rewrite in Rust (ratatui). This is the first release of the Rust implem
 - `astrobib import <file.bib>`: canonical astrobib entries (reproducible cite key) import directly; foreign entries resolve against ADS by arXiv ID, DOI, or exact title+author+year, with bibcode-level dedup and copy-pasteable cite-key replacement commands.
 
 ### Changed
-- Cite keys, short keys, and on-disk `.bib` serialization are byte-identical to 0.4.0 (golden-tested against it); libraries and manuscript dbs need no migration.
+- Cite keys, short keys, and on-disk `.bib` serialization are byte-identical to 0.4.0; libraries and manuscript dbs need no migration.
 - The key panel is a transient `?` cheat-sheet; actions live where their objects are (card buttons, chips, badges).
 
 ### Removed
-- Starring (`astrobib_starred` is ignored on read and still stripped from manuscript copies), the `M` ms-only view, and the Python implementation itself.
+- Starring (`astrobib_starred` is ignored on read and still stripped from manuscript copies) and the `M` ms-only view. (The 0.4.x Python-based implementation remains installable by version pin.)
 
 ## 0.4.0 — 2026-07-28
 
