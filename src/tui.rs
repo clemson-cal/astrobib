@@ -2996,7 +2996,7 @@ impl App {
             foot.push(Span::styled("  ● in library", Style::default().fg(Color::Magenta)));
         } else {
             foot.push(Span::styled(
-                "  (key on import)",
+                "  → import",
                 Style::default().fg(Color::DarkGray),
             ));
         }
