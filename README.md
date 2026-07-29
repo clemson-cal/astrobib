@@ -88,4 +88,4 @@ Co-authors don't need astrobib. They add a reference by pasting BibTeX from the 
 See [docs/DESIGN.md](docs/DESIGN.md) for the data-format contract. Bugs and feature requests: [github.com/clemson-cal/astrobib/issues](https://github.com/clemson-cal/astrobib/issues).
 
 © 2026 Jonathan Zrake · MIT license · Clemson University Physics and Astronomy · Supported by NSF award number 2408034
-Built with [ratatui](https://ratatui.rs); development assisted by Claude (Fable 5).
+Development assisted by Claude (Fable 5).
