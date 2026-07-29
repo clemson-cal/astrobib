@@ -443,6 +443,33 @@ impl MergedLibrary {
         Ok(true)
     }
 
+    /// Refresh an entry's metadata under the same key in every tier that
+    /// holds it — port of MergedLibrary.update_entry (star preservation
+    /// dropped with the starring feature). The cite key and filename
+    /// never change; each copy keeps its own user-curated keywords; the
+    /// legacy personal star field never enters the manuscript copy. Not
+    /// gated by global_on: a refresh rewrites existing copies wherever
+    /// they live, so the tiers stay in agreement.
+    pub fn update_entry(&mut self, key: &str, data: &Data) -> std::io::Result<bool> {
+        let mut any = false;
+        if let Some(old) = self.personal.get(key).map(|e| e.data.clone()) {
+            let mut d = refreshed_data(data, &old);
+            d.insert("ID".to_string(), key.to_string());
+            self.personal.write_entry(key, d)?;
+            any = true;
+        }
+        if let Some(ms) = &mut self.manuscript {
+            if let Some(old) = ms.get(key).map(|e| e.data.clone()) {
+                let mut d = refreshed_data(data, &old);
+                d.shift_remove("astrobib_starred");
+                d.insert("ID".to_string(), key.to_string());
+                ms.write_entry(key, d)?;
+                any = true;
+            }
+        }
+        Ok(any)
+    }
+
     /// Remove an entry from the manuscript db, first rescuing it into the
     /// personal library when the manuscript holds the only copy — port of
     /// remove_from_manuscript. Removal never destroys bibdata.
@@ -460,6 +487,19 @@ impl MergedLibrary {
         self.manuscript.as_mut().unwrap().remove_entry(key)?;
         Ok(true)
     }
+}
+
+/// Field-merge for a metadata refresh: the new ADS record wins every
+/// field, except the old copy's user-curated keywords survive when
+/// non-empty — port of the merge inside MergedLibrary.update_entry.
+pub fn refreshed_data(new: &Data, old: &Data) -> Data {
+    let mut d = new.clone();
+    if let Some(kw) = old.get("keywords") {
+        if !kw.is_empty() {
+            d.insert("keywords".to_string(), kw.clone());
+        }
+    }
+    d
 }
 
 /// How a cite string from a manuscript resolves — port of
@@ -552,4 +592,102 @@ fn shellexpand_home(p: &str) -> String {
         return format!("{}/{}", home_dir().display(), rest);
     }
     p.to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn data(pairs: &[(&str, &str)]) -> Data {
+        pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+    }
+
+    #[test]
+    fn refresh_merge_keeps_user_keywords() {
+        let new = data(&[("title", "New"), ("keywords", "ads-supplied"), ("ID", "K")]);
+        let old = data(&[("title", "Old"), ("keywords", "my-topic, other"), ("ID", "K")]);
+        let merged = refreshed_data(&new, &old);
+        assert_eq!(merged["title"], "New");
+        assert_eq!(merged["keywords"], "my-topic, other");
+        // empty old keywords: the new record's win
+        let bare = data(&[("title", "Old"), ("ID", "K")]);
+        assert_eq!(refreshed_data(&new, &bare)["keywords"], "ads-supplied");
+        let empty = data(&[("title", "Old"), ("keywords", ""), ("ID", "K")]);
+        assert_eq!(refreshed_data(&new, &empty)["keywords"], "ads-supplied");
+    }
+
+    fn temp_root(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("astrobib-update-test-{}-{tag}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("bib")).unwrap();
+        dir
+    }
+
+    fn seed(root: &Path, key: &str, d: &Data) {
+        let path = root.join("bib").join(format!("{key}.bib"));
+        std::fs::write(path, crate::bib::format_entry(d)).unwrap();
+    }
+
+    #[test]
+    fn update_entry_rewrites_both_tiers_under_same_key() {
+        let key = "Zrake2024abcde";
+        let preprint = data(&[
+            ("adsurl", "https://ui.adsabs.harvard.edu/abs/2024arXiv240512345Z"),
+            ("eprint", "2405.12345"),
+            ("year", "2024"),
+            ("title", "Old preprint title"),
+            ("keywords", "curated-personal"),
+            ("ENTRYTYPE", "article"),
+            ("ID", key),
+        ]);
+        let p_root = temp_root("personal");
+        let m_root = temp_root("manuscript");
+        seed(&p_root, key, &preprint);
+        let mut ms_copy = preprint.clone();
+        ms_copy.insert("keywords".to_string(), "curated-manuscript".to_string());
+        seed(&m_root, key, &ms_copy);
+        let mut lib = MergedLibrary {
+            personal: Library::load(&p_root).unwrap(),
+            manuscript: Some(Library::load(&m_root).unwrap()),
+            global_on: true,
+        };
+        // the refreshed record ADS would return for the published paper
+        let published = data(&[
+            ("adsurl", "https://ui.adsabs.harvard.edu/abs/2025ApJ...999...1Z"),
+            ("eprint", "2405.12345"),
+            ("doi", "10.3847/xyz"),
+            ("journal", "\\apj"),
+            ("year", "2025"),
+            ("title", "Published title"),
+            ("keywords", "ads-keyword"),
+            ("astrobib_starred", "true"),
+            ("ENTRYTYPE", "article"),
+            ("ID", "WrongKey2025zzzzz"),
+        ]);
+        assert!(lib.update_entry(key, &published).unwrap());
+        // key and filename survive in both tiers; metadata is the new record's
+        let pe = lib.personal.get(key).unwrap();
+        assert_eq!(pe.key(), key);
+        assert_eq!(pe.title(), "Published title");
+        assert_eq!(pe.data["keywords"], "curated-personal");
+        assert!(pe.path.ends_with(format!("bib/{key}.bib")));
+        let me = lib.manuscript.as_ref().unwrap().get(key).unwrap();
+        assert_eq!(me.key(), key);
+        assert_eq!(me.title(), "Published title");
+        assert_eq!(me.data["keywords"], "curated-manuscript");
+        // the legacy star field never enters the manuscript copy
+        assert!(me.data.get("astrobib_starred").is_none());
+        assert!(lib.personal.get(key).unwrap().data.get("astrobib_starred").is_some());
+        // bibcode index follows the new adsurl in each tier
+        assert!(lib.personal.get_by_bibcode("2025ApJ...999...1Z").is_some());
+        assert!(lib.personal.get_by_bibcode("2024arXiv240512345Z").is_none());
+        // files on disk really rewrote under the old names
+        let on_disk = std::fs::read_to_string(p_root.join("bib").join(format!("{key}.bib"))).unwrap();
+        assert!(on_disk.contains("Published title"));
+        assert!(!p_root.join("bib").join("WrongKey2025zzzzz.bib").exists());
+        // unknown key: no-op
+        assert!(!lib.update_entry("Nobody2020aaaaa", &published).unwrap());
+        let _ = std::fs::remove_dir_all(&p_root);
+        let _ = std::fs::remove_dir_all(&m_root);
+    }
 }

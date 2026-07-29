@@ -44,6 +44,12 @@ enum Command {
     },
     /// Print the BibTeX entry for a cite key (full or shortened)
     Show { key: String },
+    /// Refresh entries whose arXiv preprint has since been published
+    Update {
+        /// Re-fetch every entry with an ADS record, not just preprints
+        #[arg(long)]
+        all: bool,
+    },
     /// Import papers from a .bib file, resolving each against ADS
     Import {
         file: std::path::PathBuf,
@@ -165,6 +171,7 @@ fn main() -> anyhow::Result<()> {
             };
             run_refs(&mut lib, &root, file.as_deref(), output.as_deref(), prune, dry_run)
         }
+        Some(Command::Update { all }) => run_update(&mut lib, all),
         Some(Command::Show { key }) => match lib.resolve(&key) {
             Some(e) => {
                 print!("{}", std::fs::read_to_string(&e.path)?);
@@ -184,6 +191,99 @@ fn main() -> anyhow::Result<()> {
             }
         },
     }
+}
+
+/// astrobib update — port of the v0.4.0 update command. Checks each
+/// preprint-form entry (bibcode like 2024arXiv…) against ADS; when the
+/// record has gained publication metadata, rewrites the entry in place
+/// with canonical BibTeX. Cite keys never change; each copy's
+/// user-curated keywords are preserved; every tier holding the entry is
+/// refreshed. `--all` re-fetches every entry with an ADS record.
+fn run_update(lib: &mut MergedLibrary, all: bool) -> anyhow::Result<()> {
+    use astrobib::ads;
+    struct Candidate {
+        key: String,
+        display: String,
+        bibcode: String,
+        eprint: String,
+    }
+    let candidates: Vec<Candidate> = lib
+        .entries()
+        .into_iter()
+        .filter_map(|e| {
+            let bibcode = ads::update_candidate(e.adsurl(), e.eprint(), all)?;
+            Some(Candidate {
+                key: e.key().to_string(),
+                display: if e.short_key.is_empty() { e.key().to_string() } else { e.short_key.clone() },
+                bibcode,
+                eprint: e.eprint().to_string(),
+            })
+        })
+        .collect();
+    if candidates.is_empty() {
+        println!("No preprint-form entries to check.");
+        return Ok(());
+    }
+    println!(
+        "Checking {} entr{} against ADS…",
+        candidates.len(),
+        if candidates.len() == 1 { "y" } else { "ies" }
+    );
+    let mut updated: Vec<String> = vec![];
+    let (mut still, mut failed) = (0usize, 0usize);
+    for c in &candidates {
+        let results = match ads::search(&ads::refresh_query(&c.eprint, &c.bibcode), 1) {
+            Ok(r) => r,
+            Err(e) => {
+                failed += 1;
+                println!("  {}: {e}", c.key);
+                continue;
+            }
+        };
+        let Some(hit) = results.first() else {
+            still += 1;
+            continue;
+        };
+        if hit.bibcode == c.bibcode && !all {
+            still += 1;
+            continue;
+        }
+        let data = match ads::fetch_bibtex(&hit.bibcode) {
+            Ok(Some(d)) => d,
+            Ok(None) => {
+                failed += 1;
+                continue;
+            }
+            Err(e) => {
+                failed += 1;
+                println!("  {}: {e}", c.key);
+                continue;
+            }
+        };
+        lib.update_entry(&c.key, &data)?;
+        if hit.bibcode != c.bibcode {
+            let venue = ads::published_where(&data);
+            updated.push(format!("{}  →  {venue}", c.display).trim_end().to_string());
+        } else {
+            updated.push(c.display.clone());
+        }
+    }
+    for line in &updated {
+        println!("  {line}");
+    }
+    let mut summary = format!(
+        "\n{} checked · {} updated · {still} still preprint",
+        candidates.len(),
+        updated.len()
+    );
+    if failed > 0 {
+        summary.push_str(&format!(" · {failed} failed"));
+    }
+    if let Some(q) = ads::get_quota() {
+        summary.push_str(&format!("  · ADS quota {}/{}", q.remaining, q.limit));
+    }
+    println!("{summary}");
+    Ok(())
 }
 
 /// astrobib tidy — co-author interop. Colleagues without astrobib add
