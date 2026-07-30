@@ -4430,14 +4430,6 @@ impl App {
             // leading portion's color
             Span::styled(suffix, Style::default().fg(Color::Cyan).add_modifier(Modifier::DIM)),
         ];
-        let preprint = e
-            .adsurl()
-            .rsplit('/')
-            .next()
-            .is_some_and(|bc| bc.len() > 9 && bc[..4].chars().all(|c| c.is_ascii_digit()) && &bc[4..9] == "arXiv");
-        if preprint {
-            spans.push(Span::styled("  (preprint)", Style::default().fg(Color::DarkGray)));
-        }
         let used: u16 = spans.iter().map(|s| s.content.chars().count() as u16).sum();
         yanks.push((Rect { x: x0, y, width: used.max(1), height: 1 }, CopyItem::Key));
         if hov_region == Some(CopyItem::Key) {
