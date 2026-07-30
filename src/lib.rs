@@ -3,6 +3,7 @@ pub mod bib;
 pub mod keys;
 pub mod export;
 pub mod library;
+pub mod metrics;
 pub mod pdf;
 pub mod query;
 pub mod tabs;

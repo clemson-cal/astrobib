@@ -45,7 +45,7 @@ Scope capsules at the top switch between your library, saved ADS query tabs, and
 - `i` — import ADS result(s); `m` — toggle manuscript/local membership; `⌫` — remove (with confirmation)
 - `p` — download PDFs (ADS open-access, then arXiv); `B` — browser download (watches ~/Downloads); `o` — open PDF; `X` — clear PDF; double-click a row — open its PDF
 - `y` — copy chord: `yy` cite key, `yY` full key, `yb` bibcode, `ya`/`yx`/`yd` ADS/arXiv/DOI URL, `yp` PDF path, `yt` title, `yA` abstract; card title/abstract/key are click-to-copy
-- `t` — show/hide the global tier; `T` — pending-tasks overlay (also: click `⧗N`); `D` — pub card; `L` — event log; `?` — keys; `q` — quit
+- `M` — metric swatch column (age/citations, distinct colormaps); `.` — touch: reset a paper's age; `t` — show/hide the global tier; `D` — pub card; `L` — event log; `?` — keys; `q` — quit
 
 ---
 ## Filtering the library

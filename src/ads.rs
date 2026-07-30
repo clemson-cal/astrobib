@@ -74,6 +74,13 @@ pub fn save_state_field(key: &str, value: &str) -> std::io::Result<()> {
     std::fs::write(&path, serde_json::to_string_pretty(&v)? + "\n")
 }
 
+/// Any string field from state.json.
+pub fn get_state_field(key: &str) -> Option<String> {
+    let raw = std::fs::read_to_string(state_file()).ok()?;
+    let v: serde_json::Value = serde_json::from_str(&raw).ok()?;
+    v.get(key)?.as_str().filter(|s| !s.is_empty()).map(str::to_string)
+}
+
 /// Saved email from state.json (a courtesy identifier for API use).
 pub fn get_email() -> Option<String> {
     let raw = std::fs::read_to_string(state_file()).ok()?;

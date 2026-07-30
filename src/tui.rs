@@ -188,7 +188,7 @@ struct Task {
 /// Sortable table columns; clicking a header toggles direction.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum SortCol {
-    Added,
+    Metric,
     Pdf,
     InLib,
     Year,
@@ -210,6 +210,66 @@ fn divider() -> Style {
 /// modestly dimmer than the terminal foreground.
 const TABLE_TEXT: Color = Color::Rgb(150, 155, 163);
 const ABSTRACT_TEXT: Color = Color::Rgb(170, 174, 182);
+
+/// The one-cell metric swatch column: one scalar per paper, colored
+/// by a per-metric colormap so the hue family names the metric.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum MetricCol {
+    Off,
+    Age,       // viridis — time since the manual `.` touch
+    Citations, // magma — ADS citation count, log-scaled
+}
+
+impl MetricCol {
+    fn next(self) -> Self {
+        match self {
+            MetricCol::Off => MetricCol::Age,
+            MetricCol::Age => MetricCol::Citations,
+            MetricCol::Citations => MetricCol::Off,
+        }
+    }
+    fn name(self) -> &'static str {
+        match self {
+            MetricCol::Off => "off",
+            MetricCol::Age => "age (viridis)",
+            MetricCol::Citations => "citations (magma)",
+        }
+    }
+    fn state_tag(self) -> &'static str {
+        match self {
+            MetricCol::Off => "off",
+            MetricCol::Age => "age",
+            MetricCol::Citations => "citations",
+        }
+    }
+    fn from_tag(s: &str) -> Self {
+        match s {
+            "age" => MetricCol::Age,
+            "citations" => MetricCol::Citations,
+            _ => MetricCol::Off,
+        }
+    }
+}
+
+/// Map a normalized [0,1] value through the metric's colormap.
+fn metric_color(metric: MetricCol, t: f64) -> Color {
+    let g = match metric {
+        MetricCol::Age => colorous::VIRIDIS,
+        _ => colorous::MAGMA,
+    };
+    let c = g.eval_continuous(t.clamp(0.0, 1.0));
+    Color::Rgb(c.r, c.g, c.b)
+}
+
+/// Rank-normalize a row's value against the visible set: robust to
+/// outliers, and every colormap stop gets used.
+fn rank_norm(vals: &[f64], v: f64) -> f64 {
+    if vals.len() < 2 {
+        return 0.5;
+    }
+    let below = vals.iter().filter(|x| **x < v).count();
+    below as f64 / (vals.len() - 1) as f64
+}
 
 /// Sentinel scope-strip index for the active-filter chip ("+ new" is
 /// usize::MAX).
@@ -237,6 +297,8 @@ const HELP_ENTRIES: &[(&str, &str, Option<Action>, KeyCode)] = &[
     ("t", "global tier", Some(Action::GlobalTier), KeyCode::Char('t')),
     ("v", "bib source", None, KeyCode::Char('v')),
     ("e", "export selection…", None, KeyCode::Char('e')),
+    ("M", "metric column (age/citations)", None, KeyCode::Char('M')),
+    (".", "touch: reset age", None, KeyCode::Char('.')),
     ("@", "about", None, KeyCode::Char('@')),
     ("C", "citations", None, KeyCode::Char('C')),
     ("R", "references", None, KeyCode::Char('R')),
@@ -460,6 +522,9 @@ struct App {
     card_scroll: usize,
     card_area: Rect,
     card_shown: Option<String>,
+    metrics: crate::metrics::Metrics,
+    metric_col: MetricCol,
+    cit_rx: Option<std::sync::mpsc::Receiver<Vec<(String, i64)>>>,
     // copy-chord modal region and its clickable rows
     // last known mouse position, for roll-over styling of clickables
     hover: (u16, u16),
@@ -645,6 +710,11 @@ impl App {
             card_scroll: 0,
             card_area: Rect::default(),
             card_shown: None,
+            metrics: crate::metrics::Metrics::load(),
+            metric_col: MetricCol::from_tag(
+                &crate::ads::get_state_field("metric").unwrap_or_default(),
+            ),
+            cit_rx: None,
             hover: (u16::MAX, u16::MAX),
             hover_hint: None,
             log: vec![],
@@ -1020,7 +1090,9 @@ impl App {
                 self.rescan_manuscript();
                 self.note(MsgCat::Info, "manuscript rescanned".to_string());
             }
-            _ => {}
+            // library scope: one batched query refreshes the visible
+            // entries' citation counts
+            _ => self.refresh_citation_counts(),
         }
     }
 
@@ -1124,6 +1196,15 @@ impl App {
                     }
                     match result {
                         Ok(articles) => {
+                            for a in &articles {
+                                if let (Some(e), Some(c)) =
+                                    (self.lib.get_by_bibcode(&a.bibcode), a.citation_count)
+                                {
+                                    let key = e.key().to_string();
+                                    self.metrics.set_citations(&key, c);
+                                }
+                            }
+                            self.metrics.save();
                             let n = articles.len();
                             tab.refreshed = Some(crate::tabs::now_secs());
                             tab.bibcodes = articles.iter().map(|a| a.bibcode.clone()).collect();
@@ -1427,6 +1508,109 @@ impl App {
         }
     }
 
+    /// `.` — reset the age metric to now for the selection (or the
+    /// cursor entry; in a query scope, the imported twin).
+    fn touch_selection(&mut self) {
+        let mut keys = self.action_keys();
+        if keys.is_empty() {
+            if let Some(k) = self.card_entry_key() {
+                keys.push(k);
+            }
+        }
+        if keys.is_empty() {
+            self.note(MsgCat::Warn, "nothing to touch".to_string());
+            return;
+        }
+        for k in &keys {
+            self.metrics.touch(k);
+        }
+        self.metrics.save();
+        self.note(
+            MsgCat::Ok,
+            if keys.len() == 1 {
+                format!("touched {}", keys[0])
+            } else {
+                format!("touched {} papers", keys.len())
+            },
+        );
+    }
+
+    /// Seed ages from file creation times so history predating the
+    /// metrics store (and future clones) stays meaningful.
+    fn seed_metric_ages(&mut self) {
+        let seeds: Vec<(String, i64)> = self
+            .lib
+            .entries()
+            .iter()
+            .map(|e| (e.key().to_string(), e.added_ts()))
+            .collect();
+        for (k, ts) in seeds {
+            self.metrics.seed_touched(&k, ts);
+        }
+        self.metrics.save();
+    }
+
+    /// r in the library scope: one batched ADS query refreshes the
+    /// citation counts of every visible entry.
+    fn refresh_citation_counts(&mut self) {
+        if self.cit_rx.is_some() {
+            return;
+        }
+        let bibs: Vec<(String, String)> = self
+            .filtered
+            .iter()
+            .filter_map(|&i| self.lib.get(&self.order[i]))
+            .filter_map(|e| e.bibcode().map(|b| (b.to_string(), e.key().to_string())))
+            .collect();
+        if bibs.is_empty() || crate::ads::get_token().is_none() {
+            return;
+        }
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.cit_rx = Some(rx);
+        let id = self.add_task(TaskKind::Query, "⌕ citation counts".to_string(), vec![]);
+        let _ = id;
+        std::thread::spawn(move || {
+            let q = format!(
+                "bibcode:({})",
+                bibs.iter().map(|(b, _)| b.as_str()).collect::<Vec<_>>().join(" OR ")
+            );
+            let n = bibs.len();
+            let out: Vec<(String, i64)> = match crate::ads::search(&q, n) {
+                Ok(arts) => arts
+                    .into_iter()
+                    .filter_map(|a| {
+                        let key = bibs.iter().find(|(b, _)| *b == a.bibcode)?.1.clone();
+                        Some((key, a.citation_count?))
+                    })
+                    .collect(),
+                Err(_) => vec![],
+            };
+            let _ = tx.send(out);
+        });
+        self.note(MsgCat::Info, "refreshing citation counts…".to_string());
+    }
+
+    fn drain_citations(&mut self) {
+        let Some(rx) = &self.cit_rx else { return };
+        match rx.try_recv() {
+            Ok(counts) => {
+                let n = counts.len();
+                for (k, c) in counts {
+                    self.metrics.set_citations(&k, c);
+                }
+                self.metrics.save();
+                if let Some(t) = self.tasks.iter().find(|t| t.label == "⌕ citation counts") {
+                    let id = t.id;
+                    self.finish_task(id);
+                }
+                self.note(MsgCat::Ok, format!("citation counts refreshed ({n})"));
+                self.cit_rx = None;
+            }
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => self.cit_rx = None,
+            Err(std::sync::mpsc::TryRecvError::Empty) => {}
+        }
+    }
+
     fn action_keys(&self) -> Vec<String> {
         if self.select_mode && !self.selected.is_empty() {
             return self
@@ -1441,6 +1625,7 @@ impl App {
 
     fn run(mut self, terminal: &mut ratatui::DefaultTerminal) -> anyhow::Result<()> {
         let t0 = std::time::Instant::now();
+        self.seed_metric_ages();
         self.rescan_manuscript();
         self.restore_tabs();
         // Hold the first paint until the pty size settles. Some terminals
@@ -1479,6 +1664,7 @@ impl App {
             self.drain_ads();
             self.drain_update();
             self.drain_bib_preview();
+            self.drain_citations();
             self.poll_manuscript();
             terminal.draw(|f| self.draw(f))?;
             if let Some(ev) = pending.take() {
@@ -1765,7 +1951,21 @@ impl App {
         self.order.sort_by(|a, b| {
             let (ea, eb) = (lib.get(a).unwrap(), lib.get(b).unwrap());
             let ord = match col {
-                SortCol::Added => ea.added_ts().cmp(&eb.added_ts()),
+                SortCol::Metric => match self.metric_col {
+                    MetricCol::Age => {
+                        let ta = self.metrics.get(ea.key()).and_then(|m| m.touched).unwrap_or(0);
+                        let tb = self.metrics.get(eb.key()).and_then(|m| m.touched).unwrap_or(0);
+                        ta.cmp(&tb)
+                    }
+                    MetricCol::Citations => {
+                        let ca =
+                            self.metrics.get(ea.key()).and_then(|m| m.citations).unwrap_or(-1);
+                        let cb =
+                            self.metrics.get(eb.key()).and_then(|m| m.citations).unwrap_or(-1);
+                        ca.cmp(&cb)
+                    }
+                    MetricCol::Off => std::cmp::Ordering::Equal,
+                },
                 SortCol::Pdf => has_cached_pdf(ea.key()).cmp(&has_cached_pdf(eb.key())),
                 SortCol::InLib => lib
                     .in_manuscript(ea.key())
@@ -1806,7 +2006,7 @@ impl App {
                 col,
                 !matches!(
                     col,
-                    SortCol::Year | SortCol::Pdf | SortCol::InLib | SortCol::Added
+                    SortCol::Year | SortCol::Pdf | SortCol::InLib | SortCol::Metric
                 ),
             )
         };
@@ -1830,6 +2030,7 @@ impl App {
             .map(|a| {
                 let key = match col {
                     SortCol::Key => String::new(), // filled below with lib access
+                    SortCol::Metric => format!("{:012}", a.citation_count.unwrap_or(0)),
                     SortCol::Year => a.year.clone(),
                     SortCol::Author => a
                         .author
@@ -2846,6 +3047,19 @@ impl App {
                 KeyCode::Char('t') => self.run_action(Action::GlobalTier),
                 KeyCode::Char('v') => self.show_bib_source = !self.show_bib_source,
                 KeyCode::Char('e') => self.open_export_prompt(),
+                KeyCode::Char('M') => {
+                    self.metric_col = self.metric_col.next();
+                    if self.metric_col == MetricCol::Off && self.sort.0 == SortCol::Metric {
+                        self.sort = (SortCol::Year, false);
+                        self.rebuild_order();
+                    }
+                    let _ = crate::ads::save_state_field("metric", self.metric_col.state_tag());
+                    self.note(
+                        MsgCat::Info,
+                        format!("metric column: {}", self.metric_col.name()),
+                    );
+                }
+                KeyCode::Char('.') => self.touch_selection(),
                 KeyCode::Char('@') => self.show_about = true,
                 KeyCode::Char('C') => self.spawn_citation_query(false),
                 KeyCode::Char('R') => self.spawn_citation_query(true),
@@ -2972,7 +3186,19 @@ impl App {
             (s, t)
         };
         self.draw_scope_strip(f, strip_area);
-        self.draw_table(f, table_area);
+        let table_area = if self.metric_col != MetricCol::Off
+            && !matches!(self.scopes.get(self.active_scope), Some(Scope::Manuscript { .. }))
+        {
+            let [swatch, rest] =
+                Layout::horizontal([Constraint::Length(1), Constraint::Min(1)]).areas(table_area);
+            self.draw_table(f, rest);
+            self.draw_metric_strip(f, swatch);
+            rest
+        } else {
+            self.draw_table(f, table_area);
+            table_area
+        };
+        let _ = table_area;
         if let Some(area) = detail_area {
             self.draw_detail(f, area);
         } else {
@@ -3446,6 +3672,72 @@ impl App {
         );
     }
 
+    /// The one-cell metric swatch strip beside the table: each row's
+    /// scalar rank-normalized over the visible set and mapped through
+    /// the active metric's colormap. Its header cell shows the
+    /// colormap midpoint and sorts by the metric.
+    fn draw_metric_strip(&mut self, f: &mut Frame, area: Rect) {
+        let metric = self.metric_col;
+        // header swatch: legend + sort target
+        let hr = Rect { x: area.x, y: area.y, width: 1, height: 1 };
+        self.sort_headers.push((hr, SortCol::Metric));
+        if hit(hr, self.hover.0, self.hover.1) {
+            self.hover_hint = Some(format!("sort by metric: {}", metric.name()));
+        }
+        let hdr = if self.sort.0 == SortCol::Metric {
+            Span::styled(
+                if self.sort.1 { "▲" } else { "▼" },
+                Style::default().fg(metric_color(metric, 0.7)),
+            )
+        } else {
+            Span::styled(" ", Style::default().bg(metric_color(metric, 0.5)))
+        };
+        f.render_widget(Paragraph::new(Line::from(hdr)), hr);
+
+        // per-row values over the visible window
+        let offset = self.table.offset();
+        let rows = area.height.saturating_sub(2) as usize;
+        let values: Vec<Option<f64>> = match self.scopes.get(self.active_scope) {
+            Some(Scope::Ads { articles, .. }) => articles
+                .iter()
+                .map(|a| match metric {
+                    MetricCol::Citations => a.citation_count.map(|c| c as f64),
+                    _ => None, // age has no meaning off-library
+                })
+                .collect(),
+            _ => self
+                .filtered
+                .iter()
+                .filter_map(|&i| self.lib.get(&self.order[i]))
+                .map(|e| {
+                    let m = self.metrics.get(e.key());
+                    match metric {
+                        MetricCol::Age => m.and_then(|m| m.touched).map(|t| t as f64),
+                        MetricCol::Citations => m.and_then(|m| m.citations).map(|c| c as f64),
+                        MetricCol::Off => None,
+                    }
+                })
+                .collect(),
+        };
+        let known: Vec<f64> = values.iter().flatten().copied().collect();
+        for (row, v) in values.iter().skip(offset).take(rows).enumerate() {
+            let y = area.y + 2 + row as u16;
+            let cell = match v {
+                Some(v) => Span::styled(
+                    " ",
+                    Style::default().bg(metric_color(metric, rank_norm(&known, *v))),
+                ),
+                None => Span::raw(" "),
+            };
+            f.render_widget(Paragraph::new(Line::from(cell)), Rect {
+                x: area.x,
+                y,
+                width: 1,
+                height: 1,
+            });
+        }
+    }
+
     fn draw_table(&mut self, f: &mut Frame, area: Rect) {
         use ratatui::widgets::Cell;
         self.table_area = area;
@@ -3793,7 +4085,7 @@ impl App {
             .width
             .saturating_sub(widths.iter().sum::<u16>() + ncols);
         let ms_header = if show_membership { "●" } else { "" };
-        let mut headers: Vec<&str> = vec!["+", "↓", ms_header, "Year", "Author", "Title"];
+        let mut headers: Vec<&str> = vec!["", "↓", ms_header, "Year", "Author", "Title"];
         if show_key {
             headers.push("Key");
         }
@@ -3801,7 +4093,6 @@ impl App {
         for (ci, base) in headers.iter().enumerate() {
             let cw = if ci == 5 { title_w } else { widths[ci] };
             let col = match ci {
-                0 => Some(SortCol::Added), // when the paper joined the library
                 1 => Some(SortCol::Pdf),
                 2 if show_membership => Some(SortCol::InLib),
                 3 => Some(SortCol::Year),
@@ -3821,10 +4112,6 @@ impl App {
                     label = if cw <= 2 { format!("{base}{arrow}") } else { format!("{base} {arrow}") };
                 }
                 if hit(r, self.hover.0, self.hover.1) {
-                    if col == SortCol::Added {
-                        self.hover_hint =
-                            Some("sort by date added to the library".to_string());
-                    }
                     style = style.fg(Color::Cyan).add_modifier(Modifier::UNDERLINED);
                 }
             }
