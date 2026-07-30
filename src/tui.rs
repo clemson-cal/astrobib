@@ -1275,6 +1275,10 @@ impl App {
                     match result {
                         Ok(data) => match self.lib.save_entry(&data) {
                             Ok(key) => {
+                                if self.lib.in_manuscript(&key) {
+                                    // entering via a manuscript: priority 1.0
+                                    self.metrics.set_priority(&key, 1.0);
+                                }
                                 self.rebuild_order();
                                 self.note(MsgCat::Ok, format!("Added {key}"));
                             }
@@ -2188,6 +2192,8 @@ impl App {
             let mut n = 0;
             for k in &missing {
                 if matches!(self.lib.add_to_manuscript(k), Ok(true)) {
+                    // entering the manuscript signals top priority
+                    self.metrics.set_priority(k, 1.0);
                     n += 1;
                 }
             }
@@ -2658,7 +2664,10 @@ impl App {
                             }
                         } else {
                             match self.lib.add_to_manuscript(&key) {
-                                Ok(true) => Some(format!("◆ Added {key} to manuscript db")),
+                                Ok(true) => {
+                                    self.metrics.set_priority(&key, 1.0);
+                                    Some(format!("◆ Added {key} to manuscript db"))
+                                }
                                 _ => None,
                             }
                         };
@@ -3855,7 +3864,7 @@ impl App {
                     };
                     Span::styled(" ", Style::default().bg(metric_color(metric, t)))
                 }
-                None => Span::raw(" "),
+                None => Span::styled("·", divider()),
             };
             f.render_widget(Paragraph::new(Line::from(cell)), Rect {
                 x: area.x,
