@@ -1348,7 +1348,10 @@ impl App {
                     })
             }
             Action::Remove => !keys.is_empty(),
-            Action::Copy => !keys.is_empty(),
+            Action::Copy => {
+                !keys.is_empty()
+                    || matches!(self.scopes.get(self.active_scope), Some(Scope::Ads { .. }))
+            }
         }
     }
 
@@ -2242,6 +2245,11 @@ impl App {
         // copy-regions: the card text copies its own entry's datum; in
         // ADS scopes values come from the shown article itself
         if let Some(&(_, item)) = self.card_yanks.iter().find(|(r, _)| hit(*r, x, y)) {
+            // several rows selected: the row copies across the selection
+            if self.select_mode && self.selected.len() > 1 {
+                self.do_copy(item);
+                return;
+            }
             if matches!(self.scopes.get(self.active_scope), Some(Scope::Ads { .. })) {
                 match self.article_copy_value(item) {
                     Some(text) => self.finish_copy(&text),
@@ -4138,6 +4146,9 @@ impl App {
             ("citations".into(), LinkTarget::Query(CardBtn::Citations), true),
             ("references".into(), LinkTarget::Query(CardBtn::Refs), true),
         ];
+        // prose has no multi-item form: those rows dim while several
+        // rows are selected (the others copy across the selection)
+        let multi = self.select_mode && self.selected.len() > 1;
         let copies: Vec<(String, LinkTarget, bool)> = vec![
             ("cite key".into(), LinkTarget::Copy(CopyItem::Key), true),
             ("bibcode".into(), LinkTarget::Copy(CopyItem::Bibcode), true),
@@ -4149,8 +4160,12 @@ impl App {
                 LinkTarget::Copy(CopyItem::PdfPath),
                 lib_key.as_deref().is_some_and(pdf::is_cached),
             ),
-            ("title".into(), LinkTarget::Copy(CopyItem::Title), true),
-            ("abstract".into(), LinkTarget::Copy(CopyItem::Abstract), !abstract_.is_empty()),
+            ("title".into(), LinkTarget::Copy(CopyItem::Title), !multi),
+            (
+                "abstract".into(),
+                LinkTarget::Copy(CopyItem::Abstract),
+                !multi && !abstract_.is_empty(),
+            ),
         ];
         // action block + footer, plus PDF buttons + status once imported
         let rest = 2 + stack.len().max(copies.len()) as u16 + 2 + if in_lib { 2 } else { 0 };
@@ -4412,6 +4427,7 @@ impl App {
             e.adsurl().to_string(),
             e.doi().to_string(),
         );
+        let multi_sel = self.select_mode && self.selected.len() > 1;
         // the vertical link stack: browser links plus the citation-graph
         // pair — "citations" / "references" spawn ADS query scopes
         // rather than opening the browser, so they register as card
@@ -4441,11 +4457,15 @@ impl App {
             ("arXiv URL".into(), LinkTarget::Copy(CopyItem::ArxivUrl), !eprint.is_empty()),
             ("DOI URL".into(), LinkTarget::Copy(CopyItem::DoiUrl), !doi.is_empty()),
             ("PDF path".into(), LinkTarget::Copy(CopyItem::PdfPath), pdf::is_cached(&key)),
-            ("title".into(), LinkTarget::Copy(CopyItem::Title), !e.title().is_empty()),
+            (
+                "title".into(),
+                LinkTarget::Copy(CopyItem::Title),
+                !multi_sel && !e.title().is_empty(),
+            ),
             (
                 "abstract".into(),
                 LinkTarget::Copy(CopyItem::Abstract),
-                !e.abstract_().is_empty(),
+                !multi_sel && !e.abstract_().is_empty(),
             ),
         ];
         let link_lines = links_row.len().max(copies.len()) as u16;
