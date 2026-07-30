@@ -1,23 +1,26 @@
-"""M cycles the metric swatch column (off → age → citations → off);
-the strip appears only while a metric is active, and . touches the
-cursor entry."""
+"""M cycles the metric swatch column (off → priority → citations → off);
+priority keys (. 0 < >) act with footer feedback."""
 
 from driver import require
 
-DESCRIPTION = "metric column cycles with M; . touches"
+DESCRIPTION = "metric column cycles; priority keys act"
 
 
 def run(t):
-    base = t.text()
-    require("metric" not in base, "metric note should not show yet", t)
     t.send("M")
-    t.wait_for(lambda: "metric column: age (viridis)" in t.text(), what="age metric note")
+    t.wait_for(lambda: "metric column: priority (viridis)" in t.text(), what="priority note")
     t.send("M")
     t.wait_for(
         lambda: "metric column: citations (magma)" in t.text(), what="citations metric note"
     )
     t.send("M")
     t.wait_for(lambda: "metric column: off" in t.text(), what="metric off note")
-    # touch the cursor entry
+    # . sets the cursor entry's priority to 1.0
     t.send(".")
-    t.wait_for(lambda: "touched " in t.text(), what="touch confirmation")
+    t.wait_for(lambda: "priority 1.00" in t.text(), what="set-to-one feedback")
+    # < nudges the effective level down
+    t.send("<")
+    t.wait_for(lambda: "priority 0.90" in t.text(), what="nudge-down feedback")
+    # 0 clears
+    t.send("0")
+    t.wait_for(lambda: "priority 0.00" in t.text(), what="clear feedback")

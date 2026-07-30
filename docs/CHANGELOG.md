@@ -4,8 +4,9 @@
 
 ### Added
 - Saved queries restore from a local cache: their last results land instantly at startup — offline included — from `query_cache.json` beside tabs.json, refreshed whenever a query runs and dropped when its scope closes. Startup no longer re-runs every saved query against ADS (which also stops burning API quota on launch); `r` refreshes on demand.
-- Per-paper metrics with a color swatch column: `M` cycles the one-cell strip at the table's left edge through off → age (viridis) → citations (magma) — one metric at a time, hidden when off, rank-normalized over the visible rows so the whole colormap is always in play. The strip's header cell shows the colormap midpoint, sorts by the active metric, and names it on rollover. Metrics live user-local in `~/.local/share/astrobib/metrics.json`, never in any bib database.
-- `.` touches the selection (or cursor entry): the age metric is a manually-resettable freshness — seeded from each file's creation time on first sight, so existing history migrates in and survives clones.
+- Per-paper metrics with a color swatch column: `M` cycles the one-cell strip at the table's left edge through off → priority (viridis) → citations (magma) — one metric at a time, hidden when off. Priority colors by its absolute 0–1 level (edits recolor in place); citations rank-normalize over the visible rows. The strip's header cell shows the colormap midpoint, sorts by the active metric, and names it on rollover. Metrics live user-local in `~/.local/share/astrobib/metrics.json`, never in any bib database.
+- Priority — a user-curated 0.0–1.0 level that halves every 30 days untouched: `.` sets 1.0, `0` clears, `<`/`>` nudge the *effective* level by ∓0.1 and restart the decay clock. All four act on the selection (or the cursor entry), with the resulting level in the footer.
+- The pub card shows "cited by N ⟳" when a count is known (from the metrics store on the library card, from the results on a query card); tapping it refreshes that paper's count from ADS, updating the store and any open query rows for the same paper.
 - Citation counts refresh two ways: opportunistically (any query result matching a library paper updates its stored count for free) and in one batched ADS query with `r` in the library scope; query scopes color citations directly from their results.
 
 ## 0.7.1 — 2026-07-30

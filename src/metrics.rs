@@ -1,16 +1,30 @@
 //! Per-paper scalar metrics, user-local in metrics.json beside
-//! state.json — never in any bib database. `touched` is curated user
-//! data (the manually-resettable "age"); `citations` is cache-like,
-//! refreshable from ADS.
+//! state.json — never in any bib database. `priority` is curated user
+//! data — a 0..1 level that decays over time; `citations` is
+//! cache-like, refreshable from ADS.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
 
 #[derive(Default, Clone)]
 pub struct PaperMetrics {
-    pub touched: Option<i64>,
+    pub priority: Option<f64>,
+    pub priority_at: Option<i64>,
     pub citations: Option<i64>,
     pub citations_at: Option<i64>,
+}
+
+/// Priority half-life: a level halves every 30 days untouched.
+pub const HALF_LIFE_SECS: f64 = 30.0 * 24.0 * 3600.0;
+
+impl PaperMetrics {
+    /// The decayed, displayed priority.
+    pub fn effective_priority(&self, now: i64) -> Option<f64> {
+        let p = self.priority?;
+        let at = self.priority_at.unwrap_or(now);
+        let dt = (now - at).max(0) as f64;
+        Some((p * 0.5f64.powf(dt / HALF_LIFE_SECS)).clamp(0.0, 1.0))
+    }
 }
 
 #[derive(Default)]
@@ -49,7 +63,8 @@ impl Metrics {
                 m.papers.insert(
                     key.clone(),
                     PaperMetrics {
-                        touched: pm.get("touched").and_then(|x| x.as_i64()),
+                        priority: pm.get("priority").and_then(|x| x.as_f64()),
+                        priority_at: pm.get("priority_at").and_then(|x| x.as_i64()),
                         citations: pm.get("citations").and_then(|x| x.as_i64()),
                         citations_at: pm.get("citations_at").and_then(|x| x.as_i64()),
                     },
@@ -69,8 +84,11 @@ impl Metrics {
             .iter()
             .map(|(k, p)| {
                 let mut o = serde_json::Map::new();
-                if let Some(t) = p.touched {
-                    o.insert("touched".into(), t.into());
+                if let Some(v) = p.priority {
+                    o.insert("priority".into(), serde_json::json!(v));
+                }
+                if let Some(t) = p.priority_at {
+                    o.insert("priority_at".into(), t.into());
                 }
                 if let Some(c) = p.citations {
                     o.insert("citations".into(), c.into());
@@ -93,20 +111,27 @@ impl Metrics {
         }
     }
 
-    /// Seed a paper's age from its file's creation time the first time
-    /// it is seen — existing history migrates in and survives clones.
-    pub fn seed_touched(&mut self, key: &str, ts: i64) {
+    /// Set the priority level outright (`.` → 1.0, `0` → 0.0); the
+    /// decay clock restarts from now.
+    pub fn set_priority(&mut self, key: &str, level: f64) -> f64 {
+        let level = level.clamp(0.0, 1.0);
         let p = self.papers.entry(key.to_string()).or_default();
-        if p.touched.is_none() {
-            p.touched = Some(ts);
-            self.dirty = true;
-        }
+        p.priority = Some(level);
+        p.priority_at = Some(now());
+        self.dirty = true;
+        level
     }
 
-    /// `.` — reset the age to now.
-    pub fn touch(&mut self, key: &str) {
-        self.papers.entry(key.to_string()).or_default().touched = Some(now());
-        self.dirty = true;
+    /// Nudge the *effective* priority by delta and restart decay from
+    /// the result — what `<` / `>` do. Returns the new level.
+    pub fn nudge_priority(&mut self, key: &str, delta: f64) -> f64 {
+        let n = now();
+        let cur = self
+            .papers
+            .get(key)
+            .and_then(|p| p.effective_priority(n))
+            .unwrap_or(0.0);
+        self.set_priority(key, cur + delta)
     }
 
     pub fn set_citations(&mut self, key: &str, n: i64) {

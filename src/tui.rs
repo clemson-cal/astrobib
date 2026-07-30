@@ -216,45 +216,86 @@ const ABSTRACT_TEXT: Color = Color::Rgb(170, 174, 182);
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum MetricCol {
     Off,
-    Age,       // viridis — time since the manual `.` touch
-    Citations, // magma — ADS citation count, log-scaled
+    Priority,  // viridis — user-curated 0..1 level, decaying over time
+    Citations, // magma — ADS citation count
 }
 
 impl MetricCol {
     fn next(self) -> Self {
         match self {
-            MetricCol::Off => MetricCol::Age,
-            MetricCol::Age => MetricCol::Citations,
+            MetricCol::Off => MetricCol::Priority,
+            MetricCol::Priority => MetricCol::Citations,
             MetricCol::Citations => MetricCol::Off,
         }
     }
     fn name(self) -> &'static str {
         match self {
             MetricCol::Off => "off",
-            MetricCol::Age => "age (viridis)",
+            MetricCol::Priority => "priority (viridis)",
             MetricCol::Citations => "citations (magma)",
         }
     }
     fn state_tag(self) -> &'static str {
         match self {
             MetricCol::Off => "off",
-            MetricCol::Age => "age",
+            MetricCol::Priority => "priority",
             MetricCol::Citations => "citations",
         }
     }
     fn from_tag(s: &str) -> Self {
         match s {
-            "age" => MetricCol::Age,
+            "priority" => MetricCol::Priority,
             "citations" => MetricCol::Citations,
             _ => MetricCol::Off,
         }
     }
 }
 
+/// The clickable "cited by N" card line: tapping refreshes the count
+/// from ADS.
+#[allow(clippy::too_many_arguments)]
+fn draw_cited_line(
+    f: &mut Frame,
+    x0: u16,
+    y: u16,
+    w: u16,
+    n: i64,
+    hover: (u16, u16),
+    card_buttons: &mut Vec<(Rect, CardBtn)>,
+    hint: &mut Option<String>,
+) {
+    let label = format!("cited by {n}");
+    let r = Rect { x: x0, y, width: label.chars().count() as u16 + 2, height: 1 };
+    card_buttons.push((r, CardBtn::RefreshCites));
+    let hov = hit(r, hover.0, hover.1);
+    if hov {
+        *hint = Some(card_hint(CardBtn::RefreshCites).to_string());
+    }
+    let style = if hov {
+        Style::default().fg(Color::Cyan).add_modifier(Modifier::UNDERLINED)
+    } else {
+        Style::default().fg(Color::DarkGray)
+    };
+    f.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled(label, style),
+            Span::styled(" ⟳", Style::default().fg(Color::DarkGray)),
+        ])),
+        Rect { x: x0, y, width: w, height: 1 },
+    );
+}
+
+/// A priority edit: set outright or nudge the effective level.
+#[derive(Clone, Copy)]
+enum PriorityOp {
+    Set(f64),
+    Nudge(f64),
+}
+
 /// Map a normalized [0,1] value through the metric's colormap.
 fn metric_color(metric: MetricCol, t: f64) -> Color {
     let g = match metric {
-        MetricCol::Age => colorous::VIRIDIS,
+        MetricCol::Priority => colorous::VIRIDIS,
         _ => colorous::MAGMA,
     };
     let c = g.eval_continuous(t.clamp(0.0, 1.0));
@@ -297,8 +338,10 @@ const HELP_ENTRIES: &[(&str, &str, Option<Action>, KeyCode)] = &[
     ("t", "global tier", Some(Action::GlobalTier), KeyCode::Char('t')),
     ("v", "bib source", None, KeyCode::Char('v')),
     ("e", "export selection…", None, KeyCode::Char('e')),
-    ("M", "metric column (age/citations)", None, KeyCode::Char('M')),
-    (".", "touch: reset age", None, KeyCode::Char('.')),
+    ("M", "metric column (priority/citations)", None, KeyCode::Char('M')),
+    (".", "priority → 1.0", None, KeyCode::Char('.')),
+    ("0", "priority → 0", None, KeyCode::Char('0')),
+    ("< >", "priority down / up", None, KeyCode::Char('>')),
     ("@", "about", None, KeyCode::Char('@')),
     ("C", "citations", None, KeyCode::Char('C')),
     ("R", "references", None, KeyCode::Char('R')),
@@ -342,6 +385,7 @@ fn card_hint(btn: CardBtn) -> &'static str {
         CardBtn::MsToggle => "◆ add to / remove from the manuscript db  ·  m",
         CardBtn::Import => "→ import into the library  ·  i",
         CardBtn::BibView => "@ show the .bib entry verbatim  ·  v",
+        CardBtn::RefreshCites => "⟳ refresh the citation count from ADS",
         CardBtn::Citations => "⌕ new query: papers citing this one  ·  C",
         CardBtn::Refs => "⌕ new query: papers this one cites  ·  R",
     }
@@ -482,6 +526,8 @@ enum CardBtn {
     Import,
     // show the .bib file verbatim in the card
     BibView,
+    // refresh the shown paper's citation count from ADS
+    RefreshCites,
     // citation-graph navigation: spawn citations(...)/references(...)
     // query scopes for the card's bibcode (resolved at dispatch time)
     Citations,
@@ -1502,46 +1548,41 @@ impl App {
         }
     }
 
-    /// `.` — reset the age metric to now for the selection (or the
-    /// cursor entry; in a query scope, the imported twin).
-    fn touch_selection(&mut self) {
+    /// Priority targets: the selection, else the cursor entry (in a
+    /// query scope, the imported twin).
+    fn priority_targets(&mut self) -> Vec<String> {
         let mut keys = self.action_keys();
         if keys.is_empty() {
             if let Some(k) = self.card_entry_key() {
                 keys.push(k);
             }
         }
-        if keys.is_empty() {
-            self.note(MsgCat::Warn, "nothing to touch".to_string());
-            return;
-        }
-        for k in &keys {
-            self.metrics.touch(k);
-        }
-        self.metrics.save();
-        self.note(
-            MsgCat::Ok,
-            if keys.len() == 1 {
-                format!("touched {}", keys[0])
-            } else {
-                format!("touched {} papers", keys.len())
-            },
-        );
+        keys
     }
 
-    /// Seed ages from file creation times so history predating the
-    /// metrics store (and future clones) stays meaningful.
-    fn seed_metric_ages(&mut self) {
-        let seeds: Vec<(String, i64)> = self
-            .lib
-            .entries()
-            .iter()
-            .map(|e| (e.key().to_string(), e.added_ts()))
-            .collect();
-        for (k, ts) in seeds {
-            self.metrics.seed_touched(&k, ts);
+    /// `.` → 1.0, `0` → 0.0, `<`/`>` nudge by ±0.1 — multi-select
+    /// aware, with the resulting level in the footer and the swatch
+    /// recoloring on the next frame.
+    fn adjust_priority(&mut self, op: PriorityOp) {
+        let keys = self.priority_targets();
+        if keys.is_empty() {
+            self.note(MsgCat::Warn, "no paper to prioritize".to_string());
+            return;
+        }
+        let mut last = 0.0;
+        for k in &keys {
+            last = match op {
+                PriorityOp::Set(v) => self.metrics.set_priority(k, v),
+                PriorityOp::Nudge(d) => self.metrics.nudge_priority(k, d),
+            };
         }
         self.metrics.save();
+        let what = if keys.len() == 1 {
+            keys[0].clone()
+        } else {
+            format!("{} papers", keys.len())
+        };
+        self.note(MsgCat::Ok, format!("priority {last:.2} — {what}"));
     }
 
     /// r in the library scope: one batched ADS query refreshes the
@@ -1584,13 +1625,59 @@ impl App {
         self.note(MsgCat::Info, "refreshing citation counts…".to_string());
     }
 
+    /// ⟳ on the card — refresh one paper's citation count.
+    fn refresh_citation_count_for(&mut self, key: &str) {
+        if self.cit_rx.is_some() {
+            self.note(MsgCat::Warn, "a citation refresh is already running".to_string());
+            return;
+        }
+        let Some(bc) = self.lib.get(key).and_then(|e| e.bibcode().map(str::to_string)) else {
+            self.note(MsgCat::Warn, "no bibcode for that entry".to_string());
+            return;
+        };
+        if crate::ads::get_token().is_none() {
+            self.note(MsgCat::Warn, "no ADS token — press S to set one".to_string());
+            return;
+        }
+        let key = key.to_string();
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.cit_rx = Some(rx);
+        self.add_task(TaskKind::Query, "⌕ citation counts".to_string(), vec![]);
+        std::thread::spawn(move || {
+            let out: Vec<(String, i64)> =
+                match crate::ads::search(&format!("identifier:{bc}"), 1) {
+                    Ok(arts) => arts
+                        .into_iter()
+                        .filter_map(|a| Some((key.clone(), a.citation_count?)))
+                        .collect(),
+                    Err(_) => vec![],
+                };
+            let _ = tx.send(out);
+        });
+    }
+
     fn drain_citations(&mut self) {
         let Some(rx) = &self.cit_rx else { return };
         match rx.try_recv() {
             Ok(counts) => {
                 let n = counts.len();
+                let bcs: Vec<(String, i64)> = counts
+                    .iter()
+                    .filter_map(|(k, c)| {
+                        self.lib.get(k).and_then(|e| e.bibcode()).map(|b| (b.to_string(), *c))
+                    })
+                    .collect();
                 for (k, c) in counts {
                     self.metrics.set_citations(&k, c);
+                }
+                for s in &mut self.scopes {
+                    if let Scope::Ads { articles, .. } = s {
+                        for a in articles.iter_mut() {
+                            if let Some((_, c)) = bcs.iter().find(|(b, _)| *b == a.bibcode) {
+                                a.citation_count = Some(*c);
+                            }
+                        }
+                    }
                 }
                 self.metrics.save();
                 if let Some(t) = self.tasks.iter().find(|t| t.label == "⌕ citation counts") {
@@ -1619,7 +1706,6 @@ impl App {
 
     fn run(mut self, terminal: &mut ratatui::DefaultTerminal) -> anyhow::Result<()> {
         let t0 = std::time::Instant::now();
-        self.seed_metric_ages();
         self.rescan_manuscript();
         self.restore_tabs();
         // Hold the first paint until the pty size settles. Some terminals
@@ -1946,10 +2032,22 @@ impl App {
             let (ea, eb) = (lib.get(a).unwrap(), lib.get(b).unwrap());
             let ord = match col {
                 SortCol::Metric => match self.metric_col {
-                    MetricCol::Age => {
-                        let ta = self.metrics.get(ea.key()).and_then(|m| m.touched).unwrap_or(0);
-                        let tb = self.metrics.get(eb.key()).and_then(|m| m.touched).unwrap_or(0);
-                        ta.cmp(&tb)
+                    MetricCol::Priority => {
+                        let n = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .map(|d| d.as_secs() as i64)
+                            .unwrap_or(0);
+                        let pa = self
+                            .metrics
+                            .get(ea.key())
+                            .and_then(|m| m.effective_priority(n))
+                            .unwrap_or(-1.0);
+                        let pb = self
+                            .metrics
+                            .get(eb.key())
+                            .and_then(|m| m.effective_priority(n))
+                            .unwrap_or(-1.0);
+                        pa.partial_cmp(&pb).unwrap_or(std::cmp::Ordering::Equal)
                     }
                     MetricCol::Citations => {
                         let ca =
@@ -2497,6 +2595,12 @@ impl App {
         }
         // pub card buttons (act on the card's entry)
         if let Some(&(_, btn)) = self.card_buttons.iter().find(|(r, _)| hit(*r, x, y)) {
+            if btn == CardBtn::RefreshCites {
+                if let Some(key) = self.card_entry_key() {
+                    self.refresh_citation_count_for(&key);
+                }
+                return;
+            }
             if btn == CardBtn::BibView {
                 self.show_bib_source = !self.show_bib_source;
                 return;
@@ -2530,7 +2634,11 @@ impl App {
                     CardBtn::Clear | CardBtn::Cancel => self.clear_card_pdf(&key),
                     // handled above (Import for ADS scopes; the
                     // citation-graph pair for every scope)
-                    CardBtn::Import | CardBtn::Citations | CardBtn::Refs | CardBtn::BibView => {}
+                    CardBtn::Import
+                    | CardBtn::Citations
+                    | CardBtn::Refs
+                    | CardBtn::BibView
+                    | CardBtn::RefreshCites => {}
                     CardBtn::MsToggle => {
                         let res = if self.lib.in_manuscript(&key) {
                             let rescued = !self.lib.in_personal(&key);
@@ -3053,7 +3161,10 @@ impl App {
                         format!("metric column: {}", self.metric_col.name()),
                     );
                 }
-                KeyCode::Char('.') => self.touch_selection(),
+                KeyCode::Char('.') => self.adjust_priority(PriorityOp::Set(1.0)),
+                KeyCode::Char('0') => self.adjust_priority(PriorityOp::Set(0.0)),
+                KeyCode::Char('>') => self.adjust_priority(PriorityOp::Nudge(0.1)),
+                KeyCode::Char('<') => self.adjust_priority(PriorityOp::Nudge(-0.1)),
                 KeyCode::Char('@') => self.show_about = true,
                 KeyCode::Char('C') => self.spawn_citation_query(false),
                 KeyCode::Char('R') => self.spawn_citation_query(true),
@@ -3689,6 +3800,10 @@ impl App {
         f.render_widget(Paragraph::new(Line::from(hdr)), hr);
 
         // per-row values over the visible window
+        let now_ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
         let offset = self.table.offset();
         let rows = area.height.saturating_sub(2) as usize;
         let values: Vec<Option<f64>> = match self.scopes.get(self.active_scope) {
@@ -3696,7 +3811,12 @@ impl App {
                 .iter()
                 .map(|a| match metric {
                     MetricCol::Citations => a.citation_count.map(|c| c as f64),
-                    _ => None, // age has no meaning off-library
+                    MetricCol::Priority => self
+                        .lib
+                        .get_by_bibcode(&a.bibcode)
+                        .and_then(|e| self.metrics.get(e.key()))
+                        .and_then(|m| m.effective_priority(now_ts)),
+                    MetricCol::Off => None,
                 })
                 .collect(),
             _ => self
@@ -3706,7 +3826,9 @@ impl App {
                 .map(|e| {
                     let m = self.metrics.get(e.key());
                     match metric {
-                        MetricCol::Age => m.and_then(|m| m.touched).map(|t| t as f64),
+                        MetricCol::Priority => {
+                            m.and_then(|m| m.effective_priority(now_ts))
+                        }
                         MetricCol::Citations => m.and_then(|m| m.citations).map(|c| c as f64),
                         MetricCol::Off => None,
                     }
@@ -3717,10 +3839,15 @@ impl App {
         for (row, v) in values.iter().skip(offset).take(rows).enumerate() {
             let y = area.y + 2 + row as u16;
             let cell = match v {
-                Some(v) => Span::styled(
-                    " ",
-                    Style::default().bg(metric_color(metric, rank_norm(&known, *v))),
-                ),
+                Some(v) => {
+                    // priority IS a 0..1 level — color it absolutely so
+                    // edits recolor in place; citations rank-normalize
+                    let t = match metric {
+                        MetricCol::Priority => *v,
+                        _ => rank_norm(&known, *v),
+                    };
+                    Span::styled(" ", Style::default().bg(metric_color(metric, t)))
+                }
                 None => Span::raw(" "),
             };
             f.render_widget(Paragraph::new(Line::from(cell)), Rect {
@@ -4405,10 +4532,7 @@ impl App {
             y += 1;
         }
         y += 1;
-        let mut byline = format!("{}   ·   {year}", format_authors(&authors));
-        if let Some(n) = cites {
-            byline.push_str(&format!("   ·   cited by {n}"));
-        }
+        let byline = format!("{}   ·   {year}", format_authors(&authors));
         let dim = Style::default().fg(Color::DarkGray);
         for l in wrap_text(&byline, w) {
             line_at(f, y, Line::from(Span::styled(l, dim)));
@@ -4429,6 +4553,15 @@ impl App {
                 line_at(f, y, Line::from(Span::styled(l, dim)));
                 y += 1;
             }
+        }
+        if let Some(n) = cites {
+            if y < bottom {
+                draw_cited_line(
+                    f, x0, y, w as u16, n, self.hover,
+                    &mut self.card_buttons, &mut self.hover_hint,
+                );
+            }
+            y += 1;
         }
         // the vertical link stack: browser links plus the citation-graph
         // queries (the ⌕ rows act inside astrobib)
@@ -4726,6 +4859,16 @@ impl App {
                 line_at(f, y, Line::from(Span::styled(l, Style::default().fg(Color::DarkGray))));
                 y += 1;
             }
+        }
+        let cite_n = self.metrics.get(&key).and_then(|m| m.citations);
+        if let Some(n) = cite_n {
+            if y < bottom {
+                draw_cited_line(
+                    f, x0, y, w as u16, n, self.hover,
+                    &mut self.card_buttons, &mut self.hover_hint,
+                );
+            }
+            y += 1;
         }
         let (eprint, adsurl, doi) = (
             e.eprint().to_string(),
