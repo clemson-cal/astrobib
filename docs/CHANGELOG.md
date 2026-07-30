@@ -18,7 +18,7 @@
 - The pub card in a query scope grows the library card's PDF buttons (and download status) the moment the shown article is imported, acting on the imported entry.
 - The manuscript rescans itself: source and bib/ mtimes are polled every ~1.5 s, so editing main.tex/main.md in an external editor (or a git pull) refreshes the Manuscript view and refs.bib with no keypress; externally added or removed bib/ entries reload the tier.
 - `astrobib update [--all]`: refreshes entries whose arXiv preprint has since been published — canonical ADS BibTeX rewritten in place under the same cite key and filename, per-tier user-curated keywords preserved, manuscript copies updated, ADS quota reported.
-- Citation-graph navigation from the pub card: the ⌕ citations / ⌕ references rows (and `c` / `C` from the keyboard) spawn `citations(bibcode:…)` / `references(bibcode:…)` query scopes for the shown paper — persisted like any saved query.
+- Citation-graph navigation from the pub card: the ⌕ citations / ⌕ references rows (and `C` / `R` from the keyboard) spawn citations/references query scopes for the shown paper — persisted like any saved query.
 - A `⧗N` footer indicator counts in-flight work (downloads, queries, imports, browser watches), each result keyed to its task.
 - Option/alt+arrow (and emacs alt+b/f) word motions in the filter and query inputs.
 - View the .bib entry verbatim: `v`, or the `@ bib` toggler pinned to the card's bottom-right corner, flips the pub card to the raw file, soft-wrapped to the card (`◂ card` — same corner — flips back). On query results too: an imported article shows its real file, an un-imported one previews the exact canonical BibTeX an import would write (fetched once, cached by bibcode).
