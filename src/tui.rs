@@ -2429,6 +2429,53 @@ impl App {
         self.mode = Mode::Copy;
     }
 
+    /// The selected articles of the active ADS scope, in row order.
+    fn selected_articles(&self) -> Vec<&crate::ads::Article> {
+        let Some(Scope::Ads { articles, .. }) = self.scopes.get(self.active_scope) else {
+            return vec![];
+        };
+        if !self.select_mode || self.selected.is_empty() {
+            return vec![];
+        }
+        articles.iter().filter(|a| self.selected.contains(&a.bibcode)).collect()
+    }
+
+    /// A copy value spanning several selected query results: list-like
+    /// items join with commas (keys, bibcodes) or newlines (URLs,
+    /// paths); prose (title, abstract) has no sensible multi form.
+    fn articles_copy_value(&self, items: &[&crate::ads::Article], item: CopyItem) -> Option<String> {
+        let vals: Vec<String> = items
+            .iter()
+            .filter_map(|a| match item {
+                CopyItem::Key | CopyItem::FullKey => Some(self.hypothetical_key(a)),
+                CopyItem::Bibcode => Some(a.bibcode.clone()),
+                CopyItem::AdsUrl => Some(format!(
+                    "https://ui.adsabs.harvard.edu/abs/{}/abstract",
+                    a.bibcode
+                )),
+                CopyItem::ArxivUrl => {
+                    crate::ads::arxiv_id(a).map(|id| format!("https://arxiv.org/abs/{id}"))
+                }
+                CopyItem::DoiUrl => a.doi.first().map(|d| format!("https://doi.org/{d}")),
+                CopyItem::PdfPath => self
+                    .lib
+                    .get_by_bibcode(&a.bibcode)
+                    .map(|e| e.key().to_string())
+                    .filter(|k| pdf::is_cached(k))
+                    .map(|k| pdf::cache_path(&k).to_string_lossy().into_owned()),
+                CopyItem::Title | CopyItem::Abstract => None, // no multi form
+            })
+            .collect();
+        if vals.is_empty() {
+            return None;
+        }
+        let sep = match item {
+            CopyItem::Key | CopyItem::FullKey | CopyItem::Bibcode => ", ",
+            _ => "\n",
+        };
+        Some(vals.join(sep))
+    }
+
     /// The chord/click copy value for the shown ADS article — the same
     /// items the card's ⧉ rows offer, from the article itself.
     fn article_copy_value(&self, item: CopyItem) -> Option<String> {
@@ -2436,6 +2483,11 @@ impl App {
             return None;
         };
         let a = self.card_article_pos().and_then(|p| articles.get(p))?;
+        self.article_value(a, item)
+    }
+
+    /// Every copyable datum of one query-result article.
+    fn article_value(&self, a: &crate::ads::Article, item: CopyItem) -> Option<String> {
         match item {
             CopyItem::Title => Some(a.title.clone()),
             CopyItem::Abstract => {
@@ -2451,7 +2503,9 @@ impl App {
             }
             CopyItem::DoiUrl => a.doi.first().map(|d| format!("https://doi.org/{d}")),
             CopyItem::PdfPath => self
-                .card_entry_key()
+                .lib
+                .get_by_bibcode(&a.bibcode)
+                .map(|e| e.key().to_string())
                 .filter(|k| pdf::is_cached(k))
                 .map(|k| pdf::cache_path(&k).to_string_lossy().into_owned()),
             CopyItem::Key | CopyItem::FullKey => Some(self.hypothetical_key(a)),
@@ -2522,9 +2576,31 @@ impl App {
 
     fn do_copy(&mut self, item: CopyItem) {
         self.exit_copy_mode();
+        let multi_prose = matches!(item, CopyItem::Title | CopyItem::Abstract);
         let text = if matches!(self.scopes.get(self.active_scope), Some(Scope::Ads { .. })) {
-            self.article_copy_value(item)
+            let sel = self.selected_articles();
+            if sel.len() > 1 {
+                if multi_prose {
+                    self.note(
+                        MsgCat::Warn,
+                        format!("no multi-item form for that ({} selected)", sel.len()),
+                    );
+                    return;
+                }
+                self.articles_copy_value(&sel, item)
+            } else if sel.len() == 1 {
+                self.article_value(sel[0], item)
+            } else {
+                self.article_copy_value(item)
+            }
         } else {
+            if multi_prose && self.select_mode && self.selected.len() > 1 {
+                self.note(
+                    MsgCat::Warn,
+                    format!("no multi-item form for that ({} selected)", self.selected.len()),
+                );
+                return;
+            }
             self.copy_value(item)
         };
         let Some(text) = text else {

@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+- Copying with several rows selected joins values across the selection — commas for cite keys and bibcodes, newlines for URLs and PDF paths — in query scopes as in the library; prose (title, abstract) has no multi-item form and says so instead of concatenating.
+
 ## 0.7.0 — 2026-07-30
 
 ### Added
