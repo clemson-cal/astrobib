@@ -289,7 +289,7 @@ fn draw_cited_line(
 #[derive(Clone, Copy)]
 enum PriorityOp {
     Set(f64),
-    Nudge(f64),
+    Scale(f64),
 }
 
 /// Map a normalized [0,1] value through the metric's colormap.
@@ -1560,7 +1560,7 @@ impl App {
         keys
     }
 
-    /// `.` → 1.0, `0` → 0.0, `<`/`>` nudge by ±0.1 — multi-select
+    /// `.` → 1.0, `0` → 0.0, `<`/`>` scale by ×0.8/×1.25 — multi-select
     /// aware, with the resulting level in the footer and the swatch
     /// recoloring on the next frame.
     fn adjust_priority(&mut self, op: PriorityOp) {
@@ -1573,7 +1573,7 @@ impl App {
         for k in &keys {
             last = match op {
                 PriorityOp::Set(v) => self.metrics.set_priority(k, v),
-                PriorityOp::Nudge(d) => self.metrics.nudge_priority(k, d),
+                PriorityOp::Scale(f) => self.metrics.scale_priority(k, f),
             };
         }
         self.metrics.save();
@@ -3163,8 +3163,8 @@ impl App {
                 }
                 KeyCode::Char('.') => self.adjust_priority(PriorityOp::Set(1.0)),
                 KeyCode::Char('0') => self.adjust_priority(PriorityOp::Set(0.0)),
-                KeyCode::Char('>') => self.adjust_priority(PriorityOp::Nudge(0.1)),
-                KeyCode::Char('<') => self.adjust_priority(PriorityOp::Nudge(-0.1)),
+                KeyCode::Char('>') => self.adjust_priority(PriorityOp::Scale(1.25)),
+                KeyCode::Char('<') => self.adjust_priority(PriorityOp::Scale(0.8)),
                 KeyCode::Char('@') => self.show_about = true,
                 KeyCode::Char('C') => self.spawn_citation_query(false),
                 KeyCode::Char('R') => self.spawn_citation_query(true),

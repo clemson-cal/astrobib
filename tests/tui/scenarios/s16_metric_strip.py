@@ -18,9 +18,9 @@ def run(t):
     # . sets the cursor entry's priority to 1.0
     t.send(".")
     t.wait_for(lambda: "priority 1.00" in t.text(), what="set-to-one feedback")
-    # < nudges the effective level down
+    # < scales the effective level down (×0.8)
     t.send("<")
-    t.wait_for(lambda: "priority 0.90" in t.text(), what="nudge-down feedback")
+    t.wait_for(lambda: "priority 0.80" in t.text(), what="scale-down feedback")
     # 0 clears
     t.send("0")
     t.wait_for(lambda: "priority 0.00" in t.text(), what="clear feedback")

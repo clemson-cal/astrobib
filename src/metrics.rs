@@ -14,8 +14,8 @@ pub struct PaperMetrics {
     pub citations_at: Option<i64>,
 }
 
-/// Priority half-life: a level halves every 30 days untouched.
-pub const HALF_LIFE_SECS: f64 = 30.0 * 24.0 * 3600.0;
+/// Priority half-life: a level halves every week untouched.
+pub const HALF_LIFE_SECS: f64 = 7.0 * 24.0 * 3600.0;
 
 impl PaperMetrics {
     /// The decayed, displayed priority.
@@ -122,16 +122,23 @@ impl Metrics {
         level
     }
 
-    /// Nudge the *effective* priority by delta and restart decay from
-    /// the result — what `<` / `>` do. Returns the new level.
-    pub fn nudge_priority(&mut self, key: &str, delta: f64) -> f64 {
+    /// Scale the *effective* priority multiplicatively and restart
+    /// decay from the result — what `<` / `>` do. Growing from zero
+    /// starts at a small floor so the gesture always does something.
+    /// Returns the new level.
+    pub fn scale_priority(&mut self, key: &str, factor: f64) -> f64 {
         let n = now();
         let cur = self
             .papers
             .get(key)
             .and_then(|p| p.effective_priority(n))
             .unwrap_or(0.0);
-        self.set_priority(key, cur + delta)
+        let new = if factor > 1.0 {
+            (cur.max(0.05) * factor).min(1.0)
+        } else {
+            cur * factor
+        };
+        self.set_priority(key, new)
     }
 
     pub fn set_citations(&mut self, key: &str, n: i64) {
