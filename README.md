@@ -81,7 +81,7 @@ Co-authors don't need astrobib. They add a reference by pasting BibTeX from the 
 
 ---
 ## CLI
-`list`, `search [--ads]`, `add <bibcode|ADS URL>`, `show <key>`, `import <file.bib> [--global-only|--local-only]`, `refs [FILE] [--prune] [--dry-run]`, `tidy [--dry-run]`, `update [--all]` (arXiv → published refresh, same key forever), plus `--library PATH` (relocate the global tier) and `--no-global`.
+`list`, `search [--ads]`, `add <bibcode|ADS URL>`, `show <key>`, `rm <key> [--local-only]` (sole copies rescued), `import <file.bib> [--global-only|--local-only]`, `refs [FILE] [--prune] [--dry-run]`, `tidy [--dry-run]`, `update [--all]` (arXiv → published refresh, same key forever), plus `--library PATH` (relocate the global tier) and `--no-global`.
 `import` resolves each entry against ADS (arXiv ID → DOI → exact title+author+year) unless its cite key is already reproducible from its own data — canonical astrobib entries import byte-identically — and prints copy-pasteable key replacements for your `.tex` files.
 
 ---

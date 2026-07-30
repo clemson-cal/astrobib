@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+### Added
+- `astrobib rm <key> [--local-only]`: remove an entry by cite key (unambiguous prefix or bibcode); `--local-only` removes just the tier-2 copy, rescuing a sole copy into the global library first.
+
+### Fixed
+- A positional argument that is neither a command nor an existing directory (e.g. a typo'd subcommand) exits with a clear error instead of opening the TUI on a nonexistent library root.
+
 ## 0.6.1 — 2026-07-29
 
 ### Added

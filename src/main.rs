@@ -44,6 +44,14 @@ enum Command {
     },
     /// Print the BibTeX entry for a cite key (full or shortened)
     Show { key: String },
+    /// Remove an entry by cite key (unambiguous prefix or bibcode)
+    Rm {
+        key: String,
+        /// Remove only the local (tier-2) copy; a sole copy is rescued
+        /// into the global library first
+        #[arg(long)]
+        local_only: bool,
+    },
     /// Refresh entries whose arXiv preprint has since been published
     Update {
         /// Re-fetch every entry with an ADS record, not just preprints
@@ -94,8 +102,19 @@ fn main() -> anyhow::Result<()> {
     }
     let ms_root = match &cli.path {
         Some(p) => {
+            // an explicit tier-2 root must at least be a directory
+            // (bib/ inside it is created lazily on first write) — a
+            // typo'd command lands here otherwise
+            if !p.is_dir() {
+                eprintln!(
+                    "'{}' is neither an astrobib command nor a directory.\n\
+                     Run astrobib --help for the command list.",
+                    p.display()
+                );
+                std::process::exit(2);
+            }
             let p = p.canonicalize().unwrap_or_else(|_| p.clone());
-            Some(p) // explicit tier-2 root; bib/ is created lazily on write
+            Some(p)
         }
         None => find_manuscript_db(),
     };
@@ -172,6 +191,43 @@ fn main() -> anyhow::Result<()> {
             run_refs(&mut lib, &root, file.as_deref(), output.as_deref(), prune, dry_run)
         }
         Some(Command::Update { all }) => run_update(&mut lib, all),
+        Some(Command::Rm { key, local_only }) => {
+            let Some(e) = lib.resolve(&key) else {
+                let matches = lib.possible_matches(&key);
+                if matches.len() > 1 {
+                    eprintln!("Ambiguous key '{key}' — did you mean:");
+                    for m in matches.iter().take(6) {
+                        eprintln!("  {}  {}", m.short_key, truncate(m.title(), 55));
+                    }
+                } else {
+                    eprintln!("{key} not found.");
+                }
+                std::process::exit(1);
+            };
+            let full = e.key().to_string();
+            let title = truncate(e.title().trim_matches(['{', '}']), 55).to_string();
+            if local_only {
+                if lib.manuscript.is_none() {
+                    eprintln!("--local-only needs a local (tier-2) library.");
+                    std::process::exit(1);
+                }
+                let rescued = !lib.in_personal(&full);
+                match lib.remove_from_manuscript(&full)? {
+                    true => println!(
+                        "Removed {full} from the local library{}  — {title}",
+                        if rescued { "  (sole copy rescued into the global library)" } else { "" }
+                    ),
+                    false => {
+                        eprintln!("{full} is not in the local library.");
+                        std::process::exit(1);
+                    }
+                }
+            } else {
+                lib.remove_entry(&full)?;
+                println!("Removed {full}  — {title}");
+            }
+            Ok(())
+        }
         Some(Command::Show { key }) => match lib.resolve(&key) {
             Some(e) => {
                 print!("{}", std::fs::read_to_string(&e.path)?);
