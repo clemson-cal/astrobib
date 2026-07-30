@@ -249,15 +249,3 @@ pub fn cached_tab_entries() -> Vec<(String, usize)> {
         .map(|(k, v)| (k.clone(), v.to_string().len()))
         .collect()
 }
-
-/// Every bibcode held in the query cache. Un-imported query results
-/// cache their PDFs under the bibcode, so these keys are reachable
-/// even though no library entry bears them.
-pub fn cached_bibcodes() -> std::collections::HashSet<String> {
-    read_cache()
-        .values()
-        .filter_map(|v| v.as_array())
-        .flatten()
-        .filter_map(|a| a.get("bibcode").and_then(|b| b.as_str()).map(str::to_string))
-        .collect()
-}

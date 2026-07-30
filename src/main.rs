@@ -433,13 +433,11 @@ fn run_gc(lib: &MergedLibrary, clean: bool, with_metrics: bool) {
         lib.personal.root.display()
     );
 
-    // a PDF is reachable under a cite key OR under the bibcode of any
-    // article still in the query cache (un-imported results cache that
-    // way) — deleting those would silently orphan working downloads
-    let reachable_pdf = astrobib::tabs::cached_bibcodes();
+    // PDFs are cached under library cite keys only, so anything else
+    // is unreachable by construction
     let pdfs: Vec<(String, u64)> = astrobib::pdf::cached_entries()
         .into_iter()
-        .filter(|(k, _)| !live.contains(k) && !reachable_pdf.contains(k))
+        .filter(|(k, _)| !live.contains(k))
         .collect();
     let pdf_bytes: u64 = pdfs.iter().map(|(_, b)| b).sum();
     println!("cached PDFs      {} orphaned ({})", pdfs.len(), human_bytes(pdf_bytes));

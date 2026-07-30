@@ -800,14 +800,15 @@ impl App {
 
     /// The PDF-cache key for a table row, per scope (cite key when the
     /// paper is in the library, bibcode for unimported ADS rows).
+    /// The cache key of a row — always a library cite key. An
+    /// un-imported query result has none: PDFs are never cached under
+    /// a bibcode, so there is nothing to open or store for it.
     fn row_cache_key(&self, pos: usize) -> Option<String> {
         match self.scopes.get(self.active_scope) {
-            Some(Scope::Ads { articles, .. }) => articles.get(pos).map(|a| {
-                self.lib
-                    .get_by_bibcode(&a.bibcode)
-                    .map(|e| e.key().to_string())
-                    .unwrap_or_else(|| a.bibcode.clone())
-            }),
+            Some(Scope::Ads { articles, .. }) => articles
+                .get(pos)
+                .and_then(|a| self.lib.get_by_bibcode(&a.bibcode))
+                .map(|e| e.key().to_string()),
             Some(Scope::Manuscript { rows }) => rows.get(pos).and_then(|r| r.key.clone()),
             _ => self.filtered.get(pos).map(|&i| self.order[i].clone()),
         }
@@ -1495,6 +1496,16 @@ impl App {
     /// and pub card buttons.
     fn run_action(&mut self, a: Action) {
         if !self.available(a) {
+            // a PDF key is a library cite key, so these are unavailable
+            // on a query page — say why rather than doing nothing
+            if matches!(a, Action::Download | Action::BrowserDl | Action::OpenPdf)
+                && matches!(self.scopes.get(self.active_scope), Some(Scope::Ads { .. }))
+            {
+                self.note(
+                    MsgCat::Warn,
+                    "import the paper first (i) — PDFs are cached under its cite key".to_string(),
+                );
+            }
             return;
         }
         match a {
@@ -2381,6 +2392,20 @@ impl App {
 
     /// Fetch one entry's PDF from a specific source (pub card buttons),
     /// on the download worker channel.
+    /// The cache is keyed by library cite key, full stop. Every path
+    /// that writes a PDF passes through here, so no bibcode-named file
+    /// can be created even if a caller is careless.
+    fn pdf_key(&mut self, key: String) -> Option<String> {
+        if self.lib.get(&key).is_some() {
+            return Some(key);
+        }
+        self.note(
+            MsgCat::Warn,
+            "import the paper first — PDFs are cached under its cite key".to_string(),
+        );
+        None
+    }
+
     fn download_single(&mut self, key: String, source: pdf::Source) {
         if self.dl_rx.is_some() {
             self.note(MsgCat::Warn, "a download is already running".to_string());
@@ -2464,6 +2489,7 @@ impl App {
 
     /// pick … — open the modal ~/Downloads PDF picker for one entry.
     fn open_picker_for(&mut self, key: String) {
+        let Some(key) = self.pdf_key(key) else { return };
         let files = pdf::downloads_pdfs();
         if files.is_empty() {
             self.note(MsgCat::Info, "no PDFs in ~/Downloads".to_string());
@@ -2492,7 +2518,14 @@ impl App {
             })
             .collect();
         if items.is_empty() {
-            self.note(MsgCat::Warn, "nothing to download (cached, or no arXiv ID / ADS URL)".to_string());
+            // on a query page there are no library keys at all — say the
+            // useful thing rather than the generic one
+            let msg = if matches!(self.scopes.get(self.active_scope), Some(Scope::Ads { .. })) {
+                "import the paper first (i) — PDFs are cached under its cite key"
+            } else {
+                "nothing to download (cached, or no arXiv ID / ADS URL)"
+            };
+            self.note(MsgCat::Warn, msg.to_string());
             return;
         }
         let total = items.len();

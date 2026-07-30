@@ -3,6 +3,7 @@
 ## Unreleased
 
 ### Fixed
+- PDFs are cached under a library cite key and nothing else. An un-imported query result previously fell back to caching under its bibcode, leaving files no library entry could claim; that fallback is gone, every cache-writing path is gated on library membership, and `p`/`B`/`o` over an un-imported result now explain that the paper must be imported first instead of silently doing nothing. Existing bibcode-named files are pure orphans and `astrobib gc` offers to reclaim them.
 - Startup paints the library immediately: the manuscript scan and saved-query restore now run just after the first frame, so a slow disk read (e.g. cloud-evicted manuscript files) can no longer hold the UI hostage; the Manuscript capsule and query tabs appear a beat later. Startup phases also log timings under `ASTROBIB_DEBUG_LAYOUT`.
 
 ### Added
