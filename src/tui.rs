@@ -386,6 +386,7 @@ fn card_hint(btn: CardBtn) -> &'static str {
         CardBtn::Import => "→ import into the library  ·  i",
         CardBtn::BibView => "@ show the .bib entry verbatim  ·  v",
         CardBtn::RefreshCites => "⟳ refresh the citation count from ADS",
+        CardBtn::RemoveFromLib => "✕ remove from the library  ·  ⌫",
         CardBtn::Citations => "⌕ new query: papers citing this one  ·  C",
         CardBtn::Refs => "⌕ new query: papers this one cites  ·  R",
     }
@@ -528,6 +529,8 @@ enum CardBtn {
     BibView,
     // refresh the shown paper's citation count from ADS
     RefreshCites,
+    // query card: remove the imported twin from the library
+    RemoveFromLib,
     // citation-graph navigation: spawn citations(...)/references(...)
     // query scopes for the card's bibcode (resolved at dispatch time)
     Citations,
@@ -1473,7 +1476,9 @@ impl App {
                         !e.doi().is_empty() || !e.adsurl().is_empty() || !e.eprint().is_empty()
                     })
             }
-            Action::Remove => !keys.is_empty(),
+            Action::Remove => {
+                !keys.is_empty() || !self.query_removal_targets().is_empty()
+            }
             Action::Copy => {
                 !keys.is_empty()
                     || matches!(self.scopes.get(self.active_scope), Some(Scope::Ads { .. }))
@@ -2221,10 +2226,44 @@ impl App {
 
     /// Delete — ask for confirmation before removing.
     fn remove_papers(&mut self) {
-        let keys = self.action_keys();
+        let mut keys = self.action_keys();
+        if keys.is_empty() {
+            keys = self.query_removal_targets();
+        }
         if !keys.is_empty() {
             self.mode = Mode::Confirm { keys };
         }
+    }
+
+    /// On a query page, ⌫ (or the card's "● in library") targets the
+    /// imported twins of the selection, else of the shown article.
+    fn query_removal_targets(&self) -> Vec<String> {
+        let Some(Scope::Ads { articles, .. }) = self.scopes.get(self.active_scope) else {
+            return vec![];
+        };
+        let sel = self.selected_articles();
+        let pool: Vec<&crate::ads::Article> = if !sel.is_empty() {
+            sel
+        } else {
+            self.card_article_pos().and_then(|p| articles.get(p)).into_iter().collect()
+        };
+        pool.iter()
+            .filter_map(|a| self.lib.get_by_bibcode(&a.bibcode))
+            .map(|e| e.key().to_string())
+            .collect()
+    }
+
+    /// Keys cited by the active manuscript's sources (not merely db
+    /// members): removing these keeps the tier-2 copy the paper needs.
+    fn cited_keys(&self) -> std::collections::HashSet<String> {
+        if self.lib.manuscript.is_none() {
+            return Default::default();
+        }
+        self.ms_rows()
+            .into_iter()
+            .filter(|r| !r.uncited)
+            .filter_map(|r| r.key)
+            .collect()
     }
 
     /// Confirmed removal: both tiers normally; with the global tier
@@ -2232,9 +2271,17 @@ impl App {
     /// global tier rather than being destroyed.
     fn remove_confirmed(&mut self, keys: &[String]) {
         let local_only = self.lib.manuscript.is_some() && !self.lib.global_on;
+        // query pages: a paper the active manuscript cites keeps its
+        // tier-2 copy — only the global (tier-1) copy is removed
+        let on_query = matches!(self.scopes.get(self.active_scope), Some(Scope::Ads { .. }));
+        let cited = if on_query { self.cited_keys() } else { Default::default() };
         let mut n = 0;
+        let mut kept = 0;
         for k in keys {
-            let ok = if local_only {
+            let ok = if on_query && cited.contains(k) {
+                kept += 1;
+                self.lib.personal.remove_entry(k).is_ok()
+            } else if local_only {
                 matches!(self.lib.remove_from_manuscript(k), Ok(true))
             } else {
                 self.lib.remove_entry(k).is_ok()
@@ -2242,6 +2289,12 @@ impl App {
             if ok {
                 n += 1;
             }
+        }
+        if kept > 0 {
+            self.note(
+                MsgCat::Info,
+                format!("{kept} cited paper(s) kept their manuscript copy"),
+            );
         }
         if self.select_mode {
             self.select_mode = false;
@@ -2608,6 +2661,13 @@ impl App {
         }
         // pub card buttons (act on the card's entry)
         if let Some(&(_, btn)) = self.card_buttons.iter().find(|(r, _)| hit(*r, x, y)) {
+            if btn == CardBtn::RemoveFromLib {
+                let keys = self.query_removal_targets();
+                if !keys.is_empty() {
+                    self.mode = Mode::Confirm { keys };
+                }
+                return;
+            }
             if btn == CardBtn::RefreshCites {
                 if let Some(key) = self.card_entry_key() {
                     self.refresh_citation_count_for(&key);
@@ -2651,7 +2711,8 @@ impl App {
                     | CardBtn::Citations
                     | CardBtn::Refs
                     | CardBtn::BibView
-                    | CardBtn::RefreshCites => {}
+                    | CardBtn::RefreshCites
+                    | CardBtn::RemoveFromLib => {}
                     CardBtn::MsToggle => {
                         let res = if self.lib.in_manuscript(&key) {
                             let rescued = !self.lib.in_personal(&key);
@@ -4728,7 +4789,26 @@ impl App {
             CopyItem::Key,
         ));
         if in_lib {
-            foot.push(Span::styled("  ● in library", Style::default().fg(Color::Magenta)));
+            let label = "● in library";
+            let key_w = hyp_key.chars().count() as u16;
+            let r = Rect {
+                x: x0 + key_w + 2,
+                y,
+                width: label.chars().count() as u16,
+                height: 1,
+            };
+            self.card_buttons.push((r, CardBtn::RemoveFromLib));
+            let hov = hit(r, hv.0, hv.1);
+            if hov {
+                self.hover_hint = Some(card_hint(CardBtn::RemoveFromLib).to_string());
+            }
+            let style = if hov {
+                Style::default().fg(Color::Red).add_modifier(Modifier::UNDERLINED)
+            } else {
+                Style::default().fg(Color::Magenta)
+            };
+            foot.push(Span::raw("  "));
+            foot.push(Span::styled(label, style));
         } else {
             // the footer arrow IS the import affordance (i also works)
             let key_w = hyp_key.chars().count() as u16;
