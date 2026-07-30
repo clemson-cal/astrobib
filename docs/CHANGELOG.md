@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.7.0 — 2026-07-30
 
 ### Added
 - `astrobib config`: the resolved environment at a glance — global and local library roots (and where each came from), entry counts, token presence and source, email, and PDF-cache size. `astrobib config ads_token|email <value>` writes the field to state.json.
