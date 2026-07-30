@@ -3,6 +3,7 @@
 ## Unreleased
 
 ### Added
+- `e` exports the selection (or cursor entry) as one .bib file: a footer prompt asks for the destination (default `refs.bib` in the working directory; any writable path works — intermediate directories are never created, and bad paths fail with an error). Fresh notes now show through the selection-mode footer, so the export confirmation is visible mid-selection.
 - `astrobib rm <key> [--local-only]`: remove an entry by cite key (unambiguous prefix or bibcode); `--local-only` removes just the tier-2 copy, rescuing a sole copy into the global library first.
 
 ### Changed

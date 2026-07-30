@@ -46,6 +46,9 @@ enum Mode {
     // first-run setup: collect the ADS token, then the email, into
     // state.json; resume the query prompt afterwards when asked
     Setup { input: tui_input::Input, email: bool, resume: bool },
+    // export the selection (or cursor entry) as a .bib file; the input
+    // holds the destination path
+    Export { input: tui_input::Input, keys: Vec<String> },
     /// y pressed — the next key picks what to copy (the Copy panel tab
     /// shows the menu, which-key style); Esc cancels.
     Copy,
@@ -231,6 +234,7 @@ const HELP_ENTRIES: &[(&str, &str, Option<Action>)] = &[
     ("L", "event log", Some(Action::Log)),
     ("t", "global tier", Some(Action::GlobalTier)),
     ("v", "bib source", None),
+    ("e", "export selection…", None),
     ("@", "about", None),
     ("C", "citations", None),
     ("R", "references", None),
@@ -1364,6 +1368,36 @@ impl App {
     /// The entries an action applies to: the selection (in display order)
     /// when selection mode is active and non-empty, else the highlighted
     /// row — one convention for every bulk-capable action.
+    /// e — prompt for a destination path and export the selection (or
+    /// the cursor entry) as one .bib file.
+    fn open_export_prompt(&mut self) {
+        let keys = self.action_keys();
+        if keys.is_empty() {
+            self.note(MsgCat::Warn, "nothing to export — Space selects".to_string());
+            return;
+        }
+        self.mode = Mode::Export { input: tui_input::Input::from("refs.bib".to_string()), keys };
+    }
+
+    /// Write the export: entries under their own keys, refs.bib style.
+    /// Intermediate directories are never created; a bad path fails.
+    fn do_export(&mut self, path: &str, keys: &[String]) {
+        let path = std::path::PathBuf::from(crate::library::shellexpand_home(path));
+        let blocks: Vec<String> = keys
+            .iter()
+            .filter_map(|k| self.lib.get(k))
+            .map(|e| crate::bib::format_entry(&e.data))
+            .collect();
+        match std::fs::write(&path, blocks.join("\n")) {
+            Ok(()) => self.note(
+                MsgCat::Ok,
+                format!("Exported {} entr{} → {}", blocks.len(),
+                    if blocks.len() == 1 { "y" } else { "ies" }, path.display()),
+            ),
+            Err(e) => self.note(MsgCat::Err, format!("could not write {}: {e}", path.display())),
+        }
+    }
+
     fn action_keys(&self) -> Vec<String> {
         if self.select_mode && !self.selected.is_empty() {
             return self
@@ -2149,7 +2183,10 @@ impl App {
         // then performs its normal action (e.g. switching scope); the
         // filter likewise leaves entry mode, but stays applied (as ⏎) —
         // clicking a row of the filtered results must not wipe them
-        if matches!(self.mode, Mode::AdsPrompt { .. } | Mode::Filter | Mode::Setup { .. }) {
+        if matches!(
+            self.mode,
+            Mode::AdsPrompt { .. } | Mode::Filter | Mode::Setup { .. } | Mode::Export { .. }
+        ) {
             self.mode = Mode::Normal;
         }
         // confirm modal: only its two buttons act; other clicks are inert
@@ -2532,6 +2569,25 @@ impl App {
                     }
                 }
             }
+            Mode::Export { input, keys } => match code {
+                KeyCode::Esc => self.mode = Mode::Normal,
+                KeyCode::Enter => {
+                    let (path, keys) = (input.value().trim().to_string(), keys.clone());
+                    self.mode = Mode::Normal;
+                    if !path.is_empty() {
+                        self.do_export(&path, &keys);
+                    }
+                }
+                _ => {
+                    use tui_input::backend::crossterm::EventHandler;
+                    if let Some(req) = word_motion(code, mods) {
+                        input.handle(req);
+                        return;
+                    }
+                    let ev = Event::Key(ratatui::crossterm::event::KeyEvent::new(code, mods));
+                    input.handle_event(&ev);
+                }
+            },
             Mode::Setup { input, email, resume } => match code {
                 KeyCode::Esc => self.mode = Mode::Normal,
                 KeyCode::Enter => {
@@ -2642,6 +2698,7 @@ impl App {
                 KeyCode::Char('?') => self.run_action(Action::Help),
                 KeyCode::Char('t') => self.run_action(Action::GlobalTier),
                 KeyCode::Char('v') => self.show_bib_source = !self.show_bib_source,
+                KeyCode::Char('e') => self.open_export_prompt(),
                 KeyCode::Char('@') => self.show_about = true,
                 KeyCode::Char('C') => self.spawn_citation_query(false),
                 KeyCode::Char('R') => self.spawn_citation_query(true),
@@ -4521,6 +4578,25 @@ impl App {
                     Span::raw(shown),
                 ])
             }
+            Mode::Export { ref input, ref keys } => {
+                let label = format!("export {} → ", keys.len());
+                let prefix = label.chars().count() as u16;
+                let avail = area.width.saturating_sub(prefix + 24) as usize;
+                let scroll = input.visual_scroll(avail.max(10));
+                let shown: String = input.value().chars().skip(scroll).collect();
+                f.set_cursor_position((
+                    area.x + prefix + (input.visual_cursor().saturating_sub(scroll)) as u16,
+                    area.y,
+                ));
+                Line::from(vec![
+                    Span::styled(label, Style::default().fg(Color::Cyan)),
+                    Span::raw(shown),
+                    Span::styled(
+                        "   ⏎ write · Esc cancel",
+                        Style::default().fg(Color::DarkGray),
+                    ),
+                ])
+            }
             Mode::Setup { ref input, email, .. } => {
                 let label = if email { "email (optional, ⏎ skips): " } else { "ADS API token: " };
                 let prefix = label.chars().count() as u16;
@@ -4574,16 +4650,30 @@ impl App {
                     Style::default().fg(Color::DarkGray),
                 ),
             ]),
-            Mode::Normal | Mode::Pick { .. } | Mode::Confirm { .. } if self.select_mode => Line::from(vec![
-                Span::styled(
-                    format!("◉ {} selected", self.selected.len()),
-                    Style::default().fg(Color::Cyan),
-                ),
-                Span::styled(
-                    "  ·  Space/click ◯ toggle · Esc done · ? keys".to_string(),
-                    Style::default().fg(Color::DarkGray),
-                ),
-            ]),
+            Mode::Normal | Mode::Pick { .. } | Mode::Confirm { .. } if self.select_mode => {
+                // fresh notes (an export confirmation, a download
+                // result) show through instead of the static hints
+                let now = self.started.elapsed().as_secs();
+                let fresh = self
+                    .log
+                    .last()
+                    .filter(|(_, t, m)| *m == self.status && now.saturating_sub(*t) < 5);
+                let tail = if let Some((cat, _, m)) = fresh {
+                    Span::styled(format!("  ·  {m}"), Style::default().fg(cat.color()))
+                } else {
+                    Span::styled(
+                        "  ·  Space/click ◯ toggle · Esc done · ? keys".to_string(),
+                        Style::default().fg(Color::DarkGray),
+                    )
+                };
+                Line::from(vec![
+                    Span::styled(
+                        format!("◉ {} selected", self.selected.len()),
+                        Style::default().fg(Color::Cyan),
+                    ),
+                    tail,
+                ])
+            }
             Mode::Normal | Mode::Pick { .. } | Mode::Confirm { .. } => {
                 let n = self.filtered.len();
                 let total = self.order.len();

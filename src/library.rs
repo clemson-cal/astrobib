@@ -587,7 +587,7 @@ fn home_dir() -> PathBuf {
     PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| ".".to_string()))
 }
 
-fn shellexpand_home(p: &str) -> String {
+pub fn shellexpand_home(p: &str) -> String {
     if let Some(rest) = p.strip_prefix("~/") {
         return format!("{}/{}", home_dir().display(), rest);
     }
