@@ -216,30 +216,31 @@ const FILTER_CHIP: usize = usize::MAX - 1;
 
 /// The keys panel's entries and fixed column width.
 const HELP_COLW: u16 = 30;
-const HELP_ENTRIES: &[(&str, &str, Option<Action>)] = &[
-    ("␣", "select / toggle row", Some(Action::Select)),
-    ("a", "select visible", Some(Action::Select)),
-    ("A", "select all", Some(Action::Select)),
-    ("j k", "move cursor", None),
-    ("g G", "first / last row", None),
-    ("m", "manuscript ± (selection)", Some(Action::Manuscript)),
-    ("p", "download PDF", Some(Action::Download)),
-    ("B", "browser download", Some(Action::BrowserDl)),
-    ("o", "open PDF", Some(Action::OpenPdf)),
-    ("X", "clear PDF / cancel DL", Some(Action::ClearPdf)),
-    ("y", "copy…", Some(Action::Copy)),
-    ("⌫", "remove…", Some(Action::Remove)),
-    ("/", "filter", Some(Action::Filter)),
-    ("D", "pub card", Some(Action::Card)),
-    ("L", "event log", Some(Action::Log)),
-    ("t", "global tier", Some(Action::GlobalTier)),
-    ("v", "bib source", None),
-    ("e", "export selection…", None),
-    ("@", "about", None),
-    ("C", "citations", None),
-    ("R", "references", None),
-    ("?", "this cheat-sheet", Some(Action::Help)),
-    ("q", "quit", Some(Action::Quit)),
+// (shown key, label, availability probe, key a click synthesizes)
+const HELP_ENTRIES: &[(&str, &str, Option<Action>, KeyCode)] = &[
+    ("␣", "select / toggle row", Some(Action::Select), KeyCode::Char(' ')),
+    ("a", "select visible", Some(Action::Select), KeyCode::Char('a')),
+    ("A", "select all", Some(Action::Select), KeyCode::Char('A')),
+    ("j k", "move cursor", None, KeyCode::Char('j')),
+    ("g G", "first / last row", None, KeyCode::Char('g')),
+    ("m", "manuscript ± (selection)", Some(Action::Manuscript), KeyCode::Char('m')),
+    ("p", "download PDF", Some(Action::Download), KeyCode::Char('p')),
+    ("B", "browser download", Some(Action::BrowserDl), KeyCode::Char('B')),
+    ("o", "open PDF", Some(Action::OpenPdf), KeyCode::Char('o')),
+    ("X", "clear PDF / cancel DL", Some(Action::ClearPdf), KeyCode::Char('X')),
+    ("y", "copy…", Some(Action::Copy), KeyCode::Char('y')),
+    ("⌫", "remove…", Some(Action::Remove), KeyCode::Delete),
+    ("/", "filter", Some(Action::Filter), KeyCode::Char('/')),
+    ("D", "pub card", Some(Action::Card), KeyCode::Char('D')),
+    ("L", "event log", Some(Action::Log), KeyCode::Char('L')),
+    ("t", "global tier", Some(Action::GlobalTier), KeyCode::Char('t')),
+    ("v", "bib source", None, KeyCode::Char('v')),
+    ("e", "export selection…", None, KeyCode::Char('e')),
+    ("@", "about", None, KeyCode::Char('@')),
+    ("C", "citations", None, KeyCode::Char('C')),
+    ("R", "references", None, KeyCode::Char('R')),
+    ("?", "this cheat-sheet", Some(Action::Help), KeyCode::Char('?')),
+    ("q", "quit", Some(Action::Quit), KeyCode::Char('q')),
 ];
 
 /// One row of the card's link stack: ↗ rows open the browser, ⌕ rows
@@ -456,6 +457,7 @@ struct App {
     scopes: Vec<Scope>,
     active_scope: usize,
     scope_rects: Vec<(Rect, usize)>,
+    help_rects: Vec<(Rect, KeyCode)>, // keys-panel rows → synthesized key
     ads_rx: Option<std::sync::mpsc::Receiver<AdsMsg>>,
     // table sort (clickable column headers) and their header hit rects
     sort: (SortCol, bool), // (column, ascending)
@@ -629,6 +631,7 @@ impl App {
             scopes: vec![Scope::Library],
             active_scope: 0,
             scope_rects: vec![],
+            help_rects: vec![],
             ads_rx: None,
             sort: (SortCol::Year, false),
             sort_headers: vec![],
@@ -2224,6 +2227,13 @@ impl App {
             self.note(MsgCat::Info, "opened in browser".to_string());
             return;
         }
+        // keys-panel rows act as their key
+        if self.show_help {
+            if let Some(&(_, code)) = self.help_rects.iter().find(|(r, _)| hit(*r, x, y)) {
+                self.on_key(code, KeyModifiers::NONE);
+                return;
+            }
+        }
         // a click leaves an active y-chord and then acts normally —
         // the card's ⧉ rows are the visible copy menu
         if matches!(self.mode, Mode::Copy) {
@@ -2944,15 +2954,27 @@ impl App {
     /// The keys cheat-sheet, a non-modal panel above the log: keys keep
     /// working while it shows; ? (or Esc, or the footer badge) closes.
     fn draw_help(&mut self, f: &mut Frame, area: Rect) {
+        self.help_rects.clear();
         let cols = (area.width.saturating_sub(2) / HELP_COLW).max(1) as usize;
         let rows = HELP_ENTRIES.len().div_ceil(cols);
         let mut lines: Vec<Line> = vec![];
         for r in 0..rows {
             let mut spans: Vec<Span> = vec![];
             for c in 0..cols {
-                if let Some((key, label, action)) = HELP_ENTRIES.get(r + c * rows) {
+                if let Some((key, label, action, click)) = HELP_ENTRIES.get(r + c * rows) {
                     let avail = action.map_or(true, |a| self.available(a));
-                    let (ks, ls) = if avail {
+                    // every row is a click target for its own key
+                    let rect = Rect {
+                        x: area.x + 1 + (c as u16) * HELP_COLW,
+                        y: area.y + 1 + r as u16,
+                        width: HELP_COLW,
+                        height: 1,
+                    };
+                    let hov = avail && hit(rect, self.hover.0, self.hover.1);
+                    if avail {
+                        self.help_rects.push((rect, *click));
+                    }
+                    let (mut ks, mut ls) = if avail {
                         (Style::default().fg(Color::Cyan), Style::default())
                     } else {
                         (
@@ -2960,6 +2982,10 @@ impl App {
                             Style::default().fg(Color::DarkGray),
                         )
                     };
+                    if hov {
+                        ks = ks.bg(Color::Rgb(50, 54, 62));
+                        ls = ls.bg(Color::Rgb(50, 54, 62));
+                    }
                     let text = format!(" {key:>3}  {label}");
                     let pad = (HELP_COLW as usize).saturating_sub(text.chars().count());
                     spans.push(Span::styled(format!(" {key:>3}  "), ks));

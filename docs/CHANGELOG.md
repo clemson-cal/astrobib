@@ -7,6 +7,7 @@
 - `astrobib rm <key> [--local-only]`: remove an entry by cite key (unambiguous prefix or bibcode); `--local-only` removes just the tier-2 copy, rescuing a sole copy into the global library first.
 
 ### Changed
+- Every row of the ? keys panel is clickable — a click performs the row's key (hover highlights; unavailable actions stay dimmed and inert).
 - An active filter is visible state: it rides the scope strip as a yellow `/ query` chip (click to edit; Esc still clears) instead of hiding in the crowded footer.
 
 ### Fixed
