@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+### Fixed
+- The hovered-row highlight lagged the mouse on large query scopes: the event loop redrew once per queued motion event (150 events → 340 ms of stale frames), and every query-scope frame recompiled two regexes per row while computing hypothetical keys (16.8 ms per 100-row frame). Input events now coalesce into one redraw and the regexes are compiled once — sub-millisecond frames either way.
+
 ### Changed
 - Copying with several rows selected joins values across the selection — commas for cite keys and bibcodes, newlines for URLs and PDF paths — in query scopes as in the library; prose (title, abstract) has no multi-item form and says so instead of concatenating.
 

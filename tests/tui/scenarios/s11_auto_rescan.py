@@ -30,9 +30,12 @@ def _row_with(t, needle):
 
 def run(t):
     t.send("]")  # switch to the Manuscript scope
-    t.wait_for("Andersson2021", what="manuscript rows")
-    # Baxter is a db member but not yet cited
-    require("uncited" in _row_with(t, "Baxter2019"), "Baxter2019 should start uncited", t)
+    # wait on a Manuscript-scope-distinctive needle: the library screen
+    # also contains the cite keys, so keys alone race the repaint
+    t.wait_for(
+        lambda: "uncited" in _row_with(t, "Baxter2019"),
+        what="manuscript rows (Baxter uncited)",
+    )
     refs = os.path.join(t.cwd, "refs.bib")
     t.wait_for(lambda: os.path.exists(refs), what="refs.bib to appear")
     require("Baxter2019" not in open(refs).read(), "uncited member leaked into refs.bib", t)
