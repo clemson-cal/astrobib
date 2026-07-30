@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.6.1 — 2026-07-29
 
 ### Added
 - First-run setup in the TUI: with no ADS token saved, `S` prompts for the token (and then an optional email) right in the footer, persists them to state.json, and resumes the query prompt.
