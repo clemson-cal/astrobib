@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.7.1 — 2026-07-30
 
 ### Fixed
 - The hovered-row highlight lagged the mouse on large query scopes: the event loop redrew once per queued motion event (150 events → 340 ms of stale frames), and every query-scope frame recompiled two regexes per row while computing hypothetical keys (16.8 ms per 100-row frame). Input events now coalesce into one redraw and the regexes are compiled once — sub-millisecond frames either way.
