@@ -1576,7 +1576,8 @@ impl App {
                 PriorityOp::Scale(f) => self.metrics.scale_priority(k, f),
             };
         }
-        self.metrics.save();
+        // no disk write here: repeated keys must stay instant — the
+        // idle tick (and quit) flushes the dirty store
         let what = if keys.len() == 1 {
             keys[0].clone()
         } else {
@@ -1774,7 +1775,12 @@ impl App {
                 terminal.get_frame().area(),
                 self.table_area,
             ));
-            if event::poll(Duration::from_millis(tick))? {
+            let had_events = event::poll(Duration::from_millis(tick))?;
+            if !had_events {
+                // idle: flush any dirty metrics (a no-op while clean)
+                self.metrics.save();
+            }
+            if had_events {
                 // Coalesce: handle every already-pending event before the
                 // next draw. Mouse motion arrives faster than frames render
                 // (each Moved event otherwise costs a full redraw), so
@@ -1797,6 +1803,7 @@ impl App {
                 }
             }
         }
+        self.metrics.save();
         Ok(())
     }
 
