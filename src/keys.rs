@@ -6,7 +6,9 @@
 //! change here must keep them passing.
 
 use crate::bib::Data;
+use regex::Regex;
 use sha2::{Digest, Sha256};
+use std::sync::OnceLock;
 use unicode_normalization::UnicodeNormalization;
 use unicode_properties::{GeneralCategoryGroup, UnicodeGeneralCategory};
 
@@ -21,11 +23,16 @@ fn year_from_arxiv_id(eprint: &str) -> Option<String> {
     } else {
         e
     };
-    let new_re = regex::Regex::new(r"^(\d{2})\d{2}\.\d{4,5}(?:v\d+)?$").unwrap();
+    // compiled once: hypothetical_key calls this per ADS row per frame,
+    // and a fresh compile per call dominated the draw (~170µs × rows)
+    static NEW_RE: OnceLock<Regex> = OnceLock::new();
+    static OLD_RE: OnceLock<Regex> = OnceLock::new();
+    let new_re = NEW_RE.get_or_init(|| Regex::new(r"^(\d{2})\d{2}\.\d{4,5}(?:v\d+)?$").unwrap());
     if let Some(m) = new_re.captures(e) {
         return Some(format!("20{}", &m[1]));
     }
-    let old_re = regex::Regex::new(r"^(?:[A-Za-z.\-]+/)?(\d{2})\d{2}\d+(?:v\d+)?$").unwrap();
+    let old_re = OLD_RE
+        .get_or_init(|| Regex::new(r"^(?:[A-Za-z.\-]+/)?(\d{2})\d{2}\d+(?:v\d+)?$").unwrap());
     if let Some(m) = old_re.captures(e) {
         let yy: u32 = m[1].parse().unwrap();
         return Some(if yy >= 91 {

@@ -1505,14 +1505,25 @@ impl App {
                 self.table_area,
             ));
             if event::poll(Duration::from_millis(tick))? {
-                let ev = event::read()?;
-                debug_layout(&format!("{:>6}ms event {ev:?}", t0.elapsed().as_millis()));
-                match ev {
-                    Event::Key(key) if key.kind == KeyEventKind::Press => {
-                        self.on_key(key.code, key.modifiers)
+                // Coalesce: handle every already-pending event before the
+                // next draw. Mouse motion arrives faster than frames render
+                // (each Moved event otherwise costs a full redraw), so
+                // without this the hover highlight lags the pointer on
+                // large scopes. Capped so a saturating stream cannot
+                // starve drawing entirely.
+                for _ in 0..64 {
+                    let ev = event::read()?;
+                    debug_layout(&format!("{:>6}ms event {ev:?}", t0.elapsed().as_millis()));
+                    match ev {
+                        Event::Key(key) if key.kind == KeyEventKind::Press => {
+                            self.on_key(key.code, key.modifiers)
+                        }
+                        Event::Mouse(m) => self.on_mouse(m),
+                        _ => {}
                     }
-                    Event::Mouse(m) => self.on_mouse(m),
-                    _ => {}
+                    if self.quit || !event::poll(Duration::ZERO)? {
+                        break;
+                    }
                 }
             }
         }
@@ -4802,11 +4813,23 @@ impl App {
 /// Append a line to $ASTROBIB_DEBUG_LAYOUT (a file path) when set —
 /// temporary instrumentation for layout/resize investigations.
 fn debug_layout(line: &str) {
-    if let Ok(path) = std::env::var("ASTROBIB_DEBUG_LAYOUT") {
-        use std::io::Write;
-        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
-            let _ = writeln!(f, "{line}");
-        }
+    use std::io::Write;
+    use std::sync::{Mutex, OnceLock};
+    // The file opens once and stays open: a create+append+close per line
+    // costs ~5-30ms on some macOS setups, which swamps the very timings
+    // this instrumentation exists to capture.
+    static LOG: OnceLock<Option<Mutex<std::fs::File>>> = OnceLock::new();
+    let log = LOG.get_or_init(|| {
+        let path = std::env::var("ASTROBIB_DEBUG_LAYOUT").ok()?;
+        std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+            .ok()
+            .map(Mutex::new)
+    });
+    if let Some(f) = log {
+        let _ = writeln!(f.lock().unwrap(), "{line}");
     }
 }
 
