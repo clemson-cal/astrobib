@@ -44,6 +44,18 @@ enum Command {
     },
     /// Print the BibTeX entry for a cite key (full or shortened)
     Show { key: String },
+    /// Show the resolved environment: libraries, token, caches
+    Config,
+    /// Rewrite every manuscript cite key to one uniform format and
+    /// regenerate refs.bib to match
+    Convert {
+        /// Target key format
+        #[arg(value_parser = ["bibcode", "full", "short"])]
+        format: String,
+        /// Report what would change without touching anything
+        #[arg(long)]
+        dry_run: bool,
+    },
     /// Remove an entry by cite key (unambiguous prefix or bibcode)
     Rm {
         key: String,
@@ -177,11 +189,12 @@ fn main() -> anyhow::Result<()> {
             import_bib(&mut lib, &file, global_only, local_only)
         }
         Some(Command::Tidy { dry_run }) => {
-            let Some(root) = ms_root.clone() else {
-                eprintln!("No local bib root here — tidy needs a manuscript directory.");
-                std::process::exit(1);
-            };
-            tidy_bib_dir(&mut lib, &root, dry_run)
+            match ms_root.clone() {
+                Some(root) => tidy_bib_dir(&mut lib, &root, dry_run),
+                // no bib/ anywhere: a legacy manuscript (sources plus
+                // loose .bib files) can be adopted wholesale
+                None => adopt_manuscript(&mut lib, dry_run),
+            }
         }
         Some(Command::Refs { file, dry_run, prune, output }) => {
             let Some(root) = ms_root.clone() else {
@@ -191,6 +204,17 @@ fn main() -> anyhow::Result<()> {
             run_refs(&mut lib, &root, file.as_deref(), output.as_deref(), prune, dry_run)
         }
         Some(Command::Update { all }) => run_update(&mut lib, all),
+        Some(Command::Convert { format, dry_run }) => {
+            let Some(root) = ms_root.clone() else {
+                eprintln!("No local bib root here — convert needs a manuscript directory.");
+                std::process::exit(1);
+            };
+            run_convert(&mut lib, &root, &format, dry_run)
+        }
+        Some(Command::Config) => {
+            run_config(&lib, ms_root.as_deref(), cli.library.is_some());
+            Ok(())
+        }
         Some(Command::Rm { key, local_only }) => {
             let Some(e) = lib.resolve(&key) else {
                 let matches = lib.possible_matches(&key);
@@ -342,6 +366,251 @@ fn run_update(lib: &mut MergedLibrary, all: bool) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// astrobib config — the resolved environment, for humans debugging it.
+fn run_config(lib: &MergedLibrary, ms_root: Option<&std::path::Path>, via_flag: bool) {
+    let lib_src = if via_flag {
+        "--library"
+    } else if std::env::var("ASTROBIB_LIBRARY").is_ok() {
+        "$ASTROBIB_LIBRARY"
+    } else {
+        "default"
+    };
+    println!("astrobib {}", env!("CARGO_PKG_VERSION"));
+    println!(
+        "global library   {}  ({lib_src}, {} entries)",
+        lib.personal.root.display(),
+        lib.personal.entries().len()
+    );
+    match (ms_root, &lib.manuscript) {
+        (Some(root), Some(ms)) => {
+            println!(
+                "local library    {}  ({} entries)",
+                root.display(),
+                ms.entries().len()
+            );
+        }
+        _ => println!("local library    none (no bib/ found in cwd ancestors)"),
+    }
+    let token_src = if std::env::var("ADS_API_TOKEN").is_ok_and(|t| !t.is_empty()) {
+        "from $ADS_API_TOKEN"
+    } else if astrobib::ads::get_token().is_some() {
+        "from state.json"
+    } else {
+        "MISSING — press S in the TUI to set one"
+    };
+    println!("ADS token        {token_src}");
+    println!(
+        "email            {}",
+        astrobib::ads::get_email().unwrap_or_else(|| "not set".to_string())
+    );
+    if let Some(q) = astrobib::ads::get_quota() {
+        println!("ADS quota        {}/{} remaining", q.remaining, q.limit);
+    }
+    let cache = astrobib::library::pdf_cache_dir();
+    let (n, bytes) = std::fs::read_dir(&cache)
+        .map(|rd| {
+            rd.flatten()
+                .filter_map(|e| e.metadata().ok())
+                .fold((0usize, 0u64), |(n, b), m| (n + 1, b + m.len()))
+        })
+        .unwrap_or((0, 0));
+    println!(
+        "PDF cache        {}  ({n} files, {:.1} MB)",
+        cache.display(),
+        bytes as f64 / 1e6
+    );
+}
+
+/// Rewrite old→new cite keys inside every manuscript source's \cite
+/// braces, reporting per file.
+fn rewrite_citations(root: &std::path::Path, renames: &[(String, String)]) {
+    use std::collections::HashMap;
+    let map: HashMap<&str, &str> =
+        renames.iter().map(|(a, b)| (a.as_str(), b.as_str())).collect();
+    let mut total = 0usize;
+    for f in astrobib::export::manuscript_tex_files(root) {
+        match astrobib::export::convert_citations(&f, |k| map.get(k).map(|s| s.to_string())) {
+            Ok(0) => {}
+            Ok(n) => {
+                total += n;
+                println!("  rewrote {n} cite(s) in {}", f.display());
+            }
+            Err(e) => eprintln!("  could not rewrite {}: {e}", f.display()),
+        }
+    }
+    let _ = total;
+}
+
+/// astrobib convert — every cited key to one uniform format (bibcode,
+/// full key, or shortest unambiguous key), rewritten in the sources,
+/// then refs.bib regenerated to match.
+fn run_convert(
+    lib: &mut MergedLibrary,
+    root: &std::path::Path,
+    format: &str,
+    dry_run: bool,
+) -> anyhow::Result<()> {
+    let files = astrobib::export::manuscript_tex_files(root);
+    if files.is_empty() {
+        eprintln!("No .tex sources found in {}.", root.display());
+        std::process::exit(1);
+    }
+    let cited = astrobib::export::scan_tex_files(&files);
+    let mut renames: Vec<(String, String)> = vec![];
+    let mut unresolved: Vec<String> = vec![];
+    for c in &cited {
+        match lib.resolve_citation(c).1 {
+            Some(e) => {
+                let target = match format {
+                    "bibcode" => {
+                        e.bibcode().map(str::to_string).unwrap_or_else(|| e.key().to_string())
+                    }
+                    "short" => {
+                        if e.short_key.is_empty() {
+                            e.key().to_string()
+                        } else {
+                            e.short_key.clone()
+                        }
+                    }
+                    _ => e.key().to_string(),
+                };
+                if *c != target {
+                    renames.push((c.clone(), target));
+                }
+            }
+            None => unresolved.push(c.clone()),
+        }
+    }
+    if dry_run {
+        for (old, new) in &renames {
+            println!("  {old} → {new}");
+        }
+        println!("would rewrite {} cite key(s)", renames.len());
+    } else if renames.is_empty() {
+        println!("all {} cited key(s) already in {format} form", cited.len());
+    } else {
+        rewrite_citations(root, &renames);
+        println!("{} cite key(s) converted to {format} form", renames.len());
+        run_refs(lib, root, None, None, false, false)?;
+    }
+    for c in &unresolved {
+        eprintln!("unresolved (left alone): {c}");
+    }
+    Ok(())
+}
+
+/// astrobib tidy with no bib/ in sight — adopt a legacy manuscript:
+/// a directory holding .tex/.md sources and one or more loose .bib
+/// files (its own refs.bib, arbitrary cite keys). Creates bib/,
+/// resolves every entry against ADS, rewrites the old keys inside the
+/// sources' \cite braces, and regenerates refs.bib canonically.
+fn adopt_manuscript(lib: &mut MergedLibrary, dry_run: bool) -> anyhow::Result<()> {
+    let root = std::env::current_dir()?;
+    let mut loose: Vec<std::path::PathBuf> = std::fs::read_dir(&root)?
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|x| x == "bib"))
+        .collect();
+    loose.sort();
+    let has_sources = !astrobib::export::manuscript_tex_files(&root).is_empty()
+        || !astrobib::export::manuscript_md_files(&root).is_empty();
+    if loose.is_empty() || !has_sources {
+        eprintln!(
+            "Nothing to tidy here: no bib/ directory, and adoption needs manuscript\n\
+             sources (.tex/.md) plus at least one loose .bib file in {}.",
+            root.display()
+        );
+        std::process::exit(1);
+    }
+    println!(
+        "Adopting {}: {} loose .bib file(s) → bib/",
+        root.display(),
+        loose.len()
+    );
+    // the manuscript tier now points here (bib/ is created on write)
+    let global_on = lib.global_on;
+    *lib = MergedLibrary::load(Some(&root))?;
+    lib.global_on = global_on;
+    let mut renames: Vec<(String, String)> = vec![];
+    let (mut adopted, mut skipped) = (0usize, 0usize);
+    for path in &loose {
+        let fname = path.file_name().unwrap_or_default().to_string_lossy().to_string();
+        let Ok(text) = std::fs::read_to_string(path) else { continue };
+        for mut data in astrobib::bib::parse_entries(&text) {
+            let orig_key = data.get("ID").cloned().unwrap_or_else(|| "?".to_string());
+            if orig_key != astrobib::keys::generate_key(&data) {
+                if dry_run {
+                    println!("  {fname}: would resolve {orig_key} against ADS");
+                    continue;
+                }
+                match astrobib::ads::lookup_entry(&data) {
+                    Ok(r) => data = r,
+                    Err(reason) => {
+                        println!("  ⚠ {fname}: {orig_key} left alone — {reason}");
+                        skipped += 1;
+                        continue;
+                    }
+                }
+            } else if dry_run {
+                println!("  {fname}: {orig_key} is canonical — would adopt directly");
+                continue;
+            }
+            let key = astrobib::keys::generate_key(&data);
+            let existing = data
+                .get("adsurl")
+                .and_then(|u| astrobib::pdf::bibcode_from_adsurl(u))
+                .and_then(|b| lib.get_by_bibcode(b))
+                .map(|e| e.key().to_string());
+            let final_key = match existing {
+                Some(k) => k, // already present (possibly under another key)
+                None => {
+                    let mut d = data.clone();
+                    d.insert("ID".to_string(), key.clone());
+                    lib.save_entry(&d)?
+                }
+            };
+            let short = lib
+                .get(&final_key)
+                .map(|e| if e.short_key.is_empty() { final_key.clone() } else { e.short_key.clone() })
+                .unwrap_or_else(|| final_key.clone());
+            if orig_key != short && orig_key != final_key {
+                println!("  {fname}: {orig_key} → {short}");
+                renames.push((orig_key, short));
+            } else {
+                println!("  {fname}: {final_key}");
+            }
+            adopted += 1;
+        }
+    }
+    if dry_run {
+        println!("(dry run — nothing written)");
+        return Ok(());
+    }
+    // stale in-memory paths after the writes: reload before refs
+    let global_on = lib.global_on;
+    *lib = MergedLibrary::load(Some(&root))?;
+    lib.global_on = global_on;
+    if !renames.is_empty() {
+        rewrite_citations(&root, &renames);
+    }
+    println!(
+        "\n{adopted} entr{} adopted, {skipped} left alone.",
+        if adopted == 1 { "y" } else { "ies" }
+    );
+    let superseded: Vec<_> = loose
+        .iter()
+        .filter(|p| p.file_name().is_some_and(|f| f != "refs.bib"))
+        .collect();
+    if !superseded.is_empty() {
+        println!("Loose .bib file(s) now superseded by bib/ (left in place):");
+        for p in superseded {
+            println!("  {}", p.display());
+        }
+    }
+    println!();
+    run_refs(lib, &root, None, None, false, false)
+}
+
 /// astrobib tidy — co-author interop. Colleagues without astrobib add
 /// references by dropping raw ADS BibTeX into bib/ under any filename
 /// and key; this canonicalizes those files (reproducible-key fast path,
@@ -453,10 +722,11 @@ fn tidy_bib_dir(
     lib.global_on = global_on;
     println!("\n{tidied} entr{} canonicalized, {skipped} left alone.", if tidied == 1 { "y" } else { "ies" });
     if !renames.is_empty() {
-        println!("\nCite key replacements (copy/paste to update the manuscript):");
+        println!("\nRe-keyed:");
         for (old, new) in &renames {
-            println!("  perl -pi -e 's/\\b\\Q{old}\\E\\b/{new}/g' main.tex");
+            println!("  {old} → {new}");
         }
+        rewrite_citations(root, &renames);
     }
     println!();
     run_refs(lib, root, None, None, false, false)
@@ -726,9 +996,9 @@ fn import_bib(
     }
     println!("\n{added} imported → {dest}, {skipped} skipped.");
     if !renames.is_empty() {
-        println!("\nCite key replacements (copy/paste to update your TeX source):");
+        println!("\nRe-keyed (old cites resolve by prefix or bibcode; others show as missing):");
         for (old, new) in renames {
-            println!("  perl -pi -e 's/\\b\\Q{old}\\E\\b/{new}/g' main.tex");
+            println!("  {old} → {new}");
         }
     }
     Ok(())

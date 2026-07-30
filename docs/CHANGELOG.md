@@ -3,6 +3,10 @@
 ## Unreleased
 
 ### Added
+- `astrobib config`: the resolved environment at a glance — global and local library roots (and where each came from), entry counts, token presence and source, email, and PDF-cache size.
+- `astrobib convert bibcode|full|short [--dry-run]`: rewrites every cited key in the manuscript sources to one uniform format — inside `\cite` braces only — and regenerates refs.bib to match. Requires a manuscript directory.
+- `astrobib tidy` adopts legacy manuscripts: run in a directory holding `.tex`/`.md` sources and loose `.bib` files but no `bib/`, it creates `bib/`, resolves every entry against ADS, rewrites the old cite keys inside the sources, and regenerates refs.bib canonically. Re-keyed entries in ordinary tidy/import now rewrite the sources directly too — the copy-paste replacement commands are gone.
+- The pub card scrolls: the mouse wheel over the card scrolls the abstract (or the bib-source text) while the action block and footer stay put; dim ↑/↓ margin markers show when more text exists. The wheel elsewhere still moves the table cursor; scroll resets when the shown paper changes.
 - `e` exports the selection (or cursor entry) as one .bib file: a footer prompt asks for the destination (default `refs.bib` in the working directory; any writable path works — intermediate directories are never created, and bad paths fail with an error). Fresh notes now show through the selection-mode footer, so the export confirmation is visible mid-selection.
 - `astrobib rm <key> [--local-only]`: remove an entry by cite key (unambiguous prefix or bibcode); `--local-only` removes just the tier-2 copy, rescuing a sole copy into the global library first.
 

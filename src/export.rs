@@ -96,6 +96,41 @@ pub fn scan_tex_files(paths: &[PathBuf]) -> Vec<String> {
     ordered
 }
 
+/// Rewrite cite keys inside \cite… braces (only there — prose is never
+/// touched), via mapper(old) → Some(new). Preserves spacing between
+/// keys. Returns the number of keys changed; writes only on change.
+pub fn convert_citations<F: Fn(&str) -> Option<String>>(
+    path: &Path,
+    mapper: F,
+) -> std::io::Result<usize> {
+    let text = std::fs::read_to_string(path)?;
+    let mut changed = 0usize;
+    let new_text = cite_re().replace_all(&text, |caps: &regex::Captures| {
+        let whole = caps.get(0).unwrap().as_str();
+        let inner = caps.get(1).unwrap();
+        let head = &whole[..inner.start() - caps.get(0).unwrap().start()];
+        let rewritten: Vec<String> = inner
+            .as_str()
+            .split(',')
+            .map(|piece| {
+                let key = piece.trim();
+                match (!key.is_empty()).then(|| mapper(key)).flatten() {
+                    Some(new) if new != key => {
+                        changed += 1;
+                        piece.replacen(key, &new, 1)
+                    }
+                    _ => piece.to_string(),
+                }
+            })
+            .collect();
+        format!("{head}{}}}", rewritten.join(","))
+    });
+    if changed > 0 {
+        std::fs::write(path, new_text.as_ref())?;
+    }
+    Ok(changed)
+}
+
 // ── Markdown manuscripts ────────────────────────────────────────────
 //
 // Citations use pandoc syntax — bare `@Key2020abcde` or bracketed
@@ -477,6 +512,29 @@ mod tests {
         }
         hits.sort_by_key(|&(p, _, _)| p);
         hits.into_iter().map(|(_, k, w)| (k, w)).collect()
+    }
+
+    #[test]
+    fn converts_citations_in_place() {
+        let dir = std::env::temp_dir().join(format!("astrobib-conv-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("main.tex");
+        std::fs::write(
+            &p,
+            "\\citep[e.g.][]{smith_frb, Zrake2019}, \\citet{smith_frb} and prose smith_frb.\n",
+        )
+        .unwrap();
+        let n = super::convert_citations(&p, |k| {
+            (k == "smith_frb").then(|| "Smith2019abcde".to_string())
+        })
+        .unwrap();
+        assert_eq!(n, 2);
+        let out = std::fs::read_to_string(&p).unwrap();
+        assert!(out.contains("{Smith2019abcde, Zrake2019}"));
+        assert!(out.contains("\\citet{Smith2019abcde}"));
+        // prose outside cite braces is never touched
+        assert!(out.contains("prose smith_frb"));
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

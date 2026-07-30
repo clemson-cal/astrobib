@@ -77,11 +77,12 @@ Cite pandoc-style — bare `@Zrake2019` or bracketed `[@Zrake2019; @Metzger2017]
 ---
 ## refs.bib and co-authors
 For TeX manuscripts, `refs.bib` regenerates silently whenever the TUI rescans — and the TUI rescans itself when you edit sources externally (mtimes are polled, like the original app): every cited manuscript-db member, emitted under the string you actually cited (full key or unambiguous prefix), so hash suffixes never need to appear in your `.tex`. `astrobib refs [--prune]` does the same from the CLI, first copying cited-but-missing entries into the manuscript db (`--prune` also removes uncited ones, rescuing sole copies).
-Co-authors don't need astrobib. They add a reference by pasting BibTeX from the ADS website into `bib/any-name.bib` (and, if they like, appending it to `refs.bib` by hand so the paper still compiles). Next time you check out the repo, `astrobib tidy` canonicalizes those files — re-keys them through ADS when needed, renames them to `{Key}.bib`, dedupes, prints copy-pasteable cite-key replacements — and regenerates `refs.bib` for the commit.
+Co-authors don't need astrobib. They add a reference by pasting BibTeX from the ADS website into `bib/any-name.bib` (and, if they like, appending it to `refs.bib` by hand so the paper still compiles). Next time you check out the repo, `astrobib tidy` canonicalizes those files — re-keys them through ADS when needed, renames them to `{Key}.bib`, dedupes, rewrites the old keys inside your sources — and regenerates `refs.bib` for the commit.
+Migrating a manuscript that predates astrobib works the same way: in a directory with sources and its own loose `.bib` files but no `bib/`, `astrobib tidy` adopts it wholesale — builds `bib/`, resolves everything against ADS, rewrites your `\cite` keys in place, and regenerates `refs.bib`.
 
 ---
 ## CLI
-`list`, `search [--ads]`, `add <bibcode|ADS URL>`, `show <key>`, `rm <key> [--local-only]` (sole copies rescued), `import <file.bib> [--global-only|--local-only]`, `refs [FILE] [--prune] [--dry-run]`, `tidy [--dry-run]`, `update [--all]` (arXiv → published refresh, same key forever), plus `--library PATH` (relocate the global tier) and `--no-global`.
+`list`, `search [--ads]`, `add <bibcode|ADS URL>`, `show <key>`, `rm <key> [--local-only]` (sole copies rescued), `import <file.bib> [--global-only|--local-only]`, `refs [FILE] [--prune] [--dry-run]`, `tidy [--dry-run]`, `convert bibcode|full|short` (uniform cite keys, rewritten in your sources), `update [--all]` (arXiv → published refresh, same key forever), `config` (the resolved environment), plus `--library PATH` (relocate the global tier) and `--no-global`.
 `import` resolves each entry against ADS (arXiv ID → DOI → exact title+author+year) unless its cite key is already reproducible from its own data — canonical astrobib entries import byte-identically — and prints copy-pasteable key replacements for your `.tex` files.
 
 ---

@@ -284,6 +284,20 @@ fn card_hint(btn: CardBtn) -> &'static str {
     }
 }
 
+/// Clamp-and-window text lines by the card scroll offset (stored back
+/// clamped): the visible slice plus whether more exists above/below.
+fn scroll_window(
+    lines: Vec<String>,
+    avail: usize,
+    scroll: &mut usize,
+) -> (Vec<String>, bool, bool) {
+    let max = lines.len().saturating_sub(avail);
+    *scroll = (*scroll).min(max);
+    let above = *scroll > 0;
+    let below = *scroll + avail < lines.len();
+    (lines.iter().skip(*scroll).take(avail).cloned().collect(), above, below)
+}
+
 /// Render the card's action block as two columns — links and query
 /// actions on the left, the permanent ⧉ copy menu on the right — split
 /// by a dim vertical divider (omitted when either column is empty).
@@ -440,6 +454,11 @@ struct App {
     update_status: Option<String>,
     // pub card shows the raw .bib file instead of the formatted view
     show_bib_source: bool,
+    // scroll offset for the card's abstract / bib text (wheel over the
+    // card); reset when the shown paper changes
+    card_scroll: usize,
+    card_area: Rect,
+    card_shown: Option<String>,
     // copy-chord modal region and its clickable rows
     // last known mouse position, for roll-over styling of clickables
     hover: (u16, u16),
@@ -622,6 +641,9 @@ impl App {
             bib_rx: None,
             update_status: None,
             show_bib_source: false,
+            card_scroll: 0,
+            card_area: Rect::default(),
+            card_shown: None,
             hover: (u16::MAX, u16::MAX),
             hover_hint: None,
             log: vec![],
@@ -2146,8 +2168,20 @@ impl App {
 
     fn on_mouse(&mut self, m: MouseEvent) {
         match m.kind {
-            MouseEventKind::ScrollDown => self.move_sel(3),
-            MouseEventKind::ScrollUp => self.move_sel(-3),
+            MouseEventKind::ScrollDown => {
+                if self.show_detail && hit(self.card_area, m.column, m.row) {
+                    self.card_scroll = self.card_scroll.saturating_add(3);
+                } else {
+                    self.move_sel(3);
+                }
+            }
+            MouseEventKind::ScrollUp => {
+                if self.show_detail && hit(self.card_area, m.column, m.row) {
+                    self.card_scroll = self.card_scroll.saturating_sub(3);
+                } else {
+                    self.move_sel(-3);
+                }
+            }
             MouseEventKind::Down(MouseButton::Left) => {
                 self.on_click(m.column, m.row, m.modifiers)
             }
@@ -3822,29 +3856,39 @@ impl App {
         // the copy stack sits above the toggler row; content stops there
         let stack_h = copies.len() as u16 + 2; // sep + rows + air
         let content_end = bottom.saturating_sub(stack_h + 1);
-        'outer: for line in text.lines() {
-            let rows = if line.trim().is_empty() {
-                vec![String::new()]
+        let mut rows: Vec<String> = vec![];
+        for line in text.lines() {
+            if line.trim().is_empty() {
+                rows.push(String::new());
             } else {
-                wrap_text(line, w as usize)
-            };
-            for row in rows {
-                if y + 1 >= content_end {
-                    f.render_widget(
-                        Paragraph::new(Line::from(Span::styled("…", dim))),
-                        Rect { x: x0, y, width: w, height: 1 },
-                    );
-                    break 'outer;
-                }
-                f.render_widget(
-                    Paragraph::new(Line::from(Span::raw(row))),
-                    Rect { x: x0, y, width: w, height: 1 },
-                );
-                y += 1;
+                rows.extend(wrap_text(line, w as usize));
             }
         }
-        // the stack follows the text (truncation reserved its room)
-        y += 1;
+        let avail = content_end.saturating_sub(y) as usize;
+        let (shown, above, below) = scroll_window(rows, avail, &mut self.card_scroll);
+        let (first, last) = (y, y + shown.len().saturating_sub(1) as u16);
+        for row in shown {
+            f.render_widget(
+                Paragraph::new(Line::from(Span::raw(row))),
+                Rect { x: x0, y, width: w, height: 1 },
+            );
+            y += 1;
+        }
+        if above {
+            f.render_widget(
+                Paragraph::new(Line::from(Span::styled("↑", divider()))),
+                Rect { x: x0.saturating_sub(2), y: first, width: 1, height: 1 },
+            );
+        }
+        if below {
+            f.render_widget(
+                Paragraph::new(Line::from(Span::styled("↓", divider()))),
+                Rect { x: x0.saturating_sub(2), y: last, width: 1, height: 1 },
+            );
+        }
+        // the stack follows the text (short files pull it up; long
+        // ones scroll within the reserved window)
+        let mut y = y + 1;
         f.render_widget(
             Paragraph::new(Line::from(Span::styled("─".repeat(w as usize), divider()))),
             Rect { x: x0, y, width: w, height: 1 },
@@ -4037,14 +4081,10 @@ impl App {
         if !abstract_.is_empty() && y + rest < bottom {
             y += 1;
             let avail = (bottom - y).saturating_sub(rest) as usize;
-            let mut abs_lines = wrap_text(&abstract_, w);
-            if abs_lines.len() > avail && avail > 0 {
-                abs_lines.truncate(avail);
-                if let Some(last) = abs_lines.last_mut() {
-                    last.push_str(" …");
-                }
-            }
-            for l in abs_lines {
+            let (shown, above, below) =
+                scroll_window(wrap_text(&abstract_, w), avail, &mut self.card_scroll);
+            let (first, last) = (y, y + shown.len().saturating_sub(1) as u16);
+            for l in shown {
                 let lw = l.chars().count() as u16;
                 yanks.push((
                     Rect { x: x0, y, width: lw.max(1), height: 1 },
@@ -4056,6 +4096,18 @@ impl App {
                     Line::from(Span::styled(l, region_style(Style::default().fg(ABSTRACT_TEXT), CopyItem::Abstract))),
                 );
                 y += 1;
+            }
+            let mark = |f: &mut Frame, my: u16, s: &str| {
+                f.render_widget(
+                    Paragraph::new(Line::from(Span::styled(s, divider()))),
+                    Rect { x: x0.saturating_sub(2), y: my, width: 1, height: 1 },
+                );
+            };
+            if above {
+                mark(f, first, "↑");
+            }
+            if below {
+                mark(f, last, "↓");
             }
         }
         let sep = "─".repeat(w);
@@ -4167,6 +4219,13 @@ impl App {
     /// and a footer (keywords, cite key with dim hash suffix, preprint
     /// note). Text is pre-wrapped so every row's click rect is exact.
     fn draw_detail(&mut self, f: &mut Frame, area: Rect) {
+        self.card_area = area;
+        // a different paper (or view) resets the scroll
+        let shown = self.card_key().map(str::to_string);
+        if shown != self.card_shown {
+            self.card_shown = shown;
+            self.card_scroll = 0;
+        }
         self.card_links.clear();
         f.render_widget(
             Block::default().borders(Borders::LEFT).border_style(divider()),
@@ -4330,18 +4389,10 @@ impl App {
             // truncation is height-driven only: the full abstract shows
             // whenever the card has room, and a cut ends in an ellipsis
             let avail = (bottom - y).saturating_sub(rest) as usize;
-            let mut abs_lines = wrap_text(abs, w);
-            if abs_lines.len() > avail && avail > 0 {
-                abs_lines.truncate(avail);
-                if let Some(last) = abs_lines.last_mut() {
-                    let keep = w.saturating_sub(2);
-                    if last.chars().count() > keep {
-                        *last = last.chars().take(keep).collect();
-                    }
-                    last.push_str(" …");
-                }
-            }
-            for l in abs_lines.into_iter().take(avail) {
+            let (shown, above, below) =
+                scroll_window(wrap_text(abs, w), avail, &mut self.card_scroll);
+            let (first, last) = (y, y + shown.len().saturating_sub(1) as u16);
+            for l in shown {
                 let lw = l.chars().count() as u16;
                 yanks.push((
                     Rect { x: x0, y, width: lw.max(1), height: 1 },
@@ -4356,6 +4407,19 @@ impl App {
                     )),
                 );
                 y += 1;
+            }
+            // margin markers: more text above/below (wheel scrolls)
+            let mark = |f: &mut Frame, my: u16, s: &str| {
+                f.render_widget(
+                    Paragraph::new(Line::from(Span::styled(s, divider()))),
+                    Rect { x: x0.saturating_sub(2), y: my, width: 1, height: 1 },
+                );
+            };
+            if above {
+                mark(f, first, "↑");
+            }
+            if below {
+                mark(f, last, "↓");
             }
         }
 
