@@ -5,6 +5,9 @@
 ### Added
 - `astrobib rm <key> [--local-only]`: remove an entry by cite key (unambiguous prefix or bibcode); `--local-only` removes just the tier-2 copy, rescuing a sole copy into the global library first.
 
+### Changed
+- An active filter is visible state: it rides the scope strip as a yellow `/ query` chip (click to edit; Esc still clears) instead of hiding in the crowded footer.
+
 ### Fixed
 - A positional argument that is neither a command nor an existing directory (e.g. a typo'd subcommand) exits with a clear error instead of opening the TUI on a nonexistent library root.
 

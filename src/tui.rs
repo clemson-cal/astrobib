@@ -207,6 +207,10 @@ fn divider() -> Style {
 const TABLE_TEXT: Color = Color::Rgb(150, 155, 163);
 const ABSTRACT_TEXT: Color = Color::Rgb(170, 174, 182);
 
+/// Sentinel scope-strip index for the active-filter chip ("+ new" is
+/// usize::MAX).
+const FILTER_CHIP: usize = usize::MAX - 1;
+
 /// The keys panel's entries and fixed column width.
 const HELP_COLW: u16 = 30;
 const HELP_ENTRIES: &[(&str, &str, Option<Action>)] = &[
@@ -2251,7 +2255,9 @@ impl App {
         }
         // scope strip (usize::MAX = the new-query affordance)
         if let Some(&(_, idx)) = self.scope_rects.iter().find(|(r, _)| hit(*r, x, y)) {
-            if idx == usize::MAX {
+            if idx == FILTER_CHIP {
+                self.run_action(Action::Filter);
+            } else if idx == usize::MAX {
                 self.open_ads_prompt();
             } else {
                 self.set_scope(idx);
@@ -3136,6 +3142,11 @@ impl App {
             .map(|(i, s)| (s.label().to_string(), i, true))
             .collect();
         v.push(("+ new".to_string(), usize::MAX, false));
+        // an active filter is visible state: it rides the strip as its
+        // own chip (click to edit; Esc still clears)
+        if !self.filter.value().is_empty() {
+            v.push((format!("/ {}", self.filter.value()), FILTER_CHIP, true));
+        }
         v
     }
 
@@ -3179,7 +3190,17 @@ impl App {
             let r = Rect { x, y, width: wl, height: 1 };
             self.scope_rects.push((r, idx));
             let hov = hit(r, self.hover.0, self.hover.1);
-            let (bg, fg) = if idx == self.active_scope {
+            if hov && idx == FILTER_CHIP {
+                self.hover_hint =
+                    Some("⌕ active filter — click to edit  ·  /  (Esc clears)".to_string());
+            }
+            let (bg, fg) = if idx == FILTER_CHIP {
+                if hov {
+                    (Color::Rgb(70, 62, 30), Color::Yellow)
+                } else {
+                    (Color::Rgb(52, 47, 26), Color::Yellow)
+                }
+            } else if idx == self.active_scope {
                 (Color::Cyan, Color::Black)
             } else if hov {
                 (Color::Rgb(58, 63, 72), Color::White)
@@ -4566,11 +4587,7 @@ impl App {
             Mode::Normal | Mode::Pick { .. } | Mode::Confirm { .. } => {
                 let n = self.filtered.len();
                 let total = self.order.len();
-                let filt = if self.filter.value().is_empty() {
-                    String::new()
-                } else {
-                    format!("  ·  /{}", self.filter.value())
-                };
+                let filt = String::new(); // the filter shows as a strip chip
                 // logged messages show for ~5s then clear (a fresh one
                 // outranks the hover hint); unlogged transient status —
                 // download progress, ambient counts — stays visible
