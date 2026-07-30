@@ -158,7 +158,26 @@ pub fn search(query: &str, limit: usize) -> Result<Vec<Article>> {
     Ok(docs.iter().map(article_from_doc).collect())
 }
 
-fn article_from_doc(d: &serde_json::Value) -> Article {
+/// Serialize an Article in the same shape the ADS docs use, so the
+/// query cache round-trips through article_from_doc.
+pub(crate) fn article_to_json(a: &Article) -> serde_json::Value {
+    serde_json::json!({
+        "bibcode": a.bibcode,
+        "title": [a.title],
+        "author": a.author,
+        "year": a.year,
+        "abstract": a.abstract_,
+        "doi": a.doi,
+        "identifier": a.identifier,
+        "citation_count": a.citation_count,
+        "pub": a.journal,
+        "volume": a.volume,
+        "issue": a.issue,
+        "page": [a.page],
+    })
+}
+
+pub(crate) fn article_from_doc(d: &serde_json::Value) -> Article {
     let strs = |k: &str| -> Vec<String> {
         d[k].as_array()
             .map(|a| a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect())

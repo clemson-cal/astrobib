@@ -113,6 +113,7 @@ def main():
                 rows=getattr(mod, "ROWS", 40),
                 allow_network=getattr(mod, "ALLOW_NETWORK", False),
                 manuscript=getattr(mod, "MANUSCRIPT", None),
+                pre_launch=getattr(mod, "PRE_LAUNCH", None),
             )
             sess.wait_ready()
             mod.run(sess)

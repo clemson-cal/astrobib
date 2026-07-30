@@ -54,7 +54,8 @@ class Timeout(AssertionError):
 class Session:
     """One TUI process in one pty against one scratch library."""
 
-    def __init__(self, binary, cols=140, rows=40, allow_network=False, manuscript=None):
+    def __init__(self, binary, cols=140, rows=40, allow_network=False, manuscript=None,
+                 pre_launch=None):
         self.binary = os.path.abspath(binary)
         self.cols = cols
         self.rows = rows
@@ -81,6 +82,10 @@ class Session:
                 with open(path, "w") as f:
                     f.write(content)
         self.cwd = cwd
+        # a scenario hook that seeds state files (tabs, caches) before
+        # the binary starts
+        if pre_launch:
+            pre_launch(self.state_dir)
 
         env = {
             "TERM": "xterm-256color",

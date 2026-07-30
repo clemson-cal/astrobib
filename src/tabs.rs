@@ -177,3 +177,56 @@ mod tests {
         assert_eq!(super::short_label("kilonova ejecta"), "kilonova ejecta");
     }
 }
+
+// ── cached query results ────────────────────────────────────────────
+//
+// The last results of every saved tab, in query_cache.json beside
+// tabs.json: startup restores scopes from here instantly (and offline)
+// instead of re-querying ADS; r refreshes on demand.
+
+fn cache_file() -> PathBuf {
+    state_file().with_file_name("query_cache.json")
+}
+
+fn read_cache() -> serde_json::Map<String, serde_json::Value> {
+    std::fs::read_to_string(cache_file())
+        .ok()
+        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+        .and_then(|v| v.get("tabs").and_then(|c| c.as_object()).cloned())
+        .unwrap_or_default()
+}
+
+fn write_cache(tabs: serde_json::Map<String, serde_json::Value>) {
+    let v = serde_json::json!({ "version": 1, "tabs": tabs });
+    if let Some(dir) = cache_file().parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let _ = std::fs::write(
+        cache_file(),
+        serde_json::to_string(&v).unwrap_or_default(),
+    );
+}
+
+pub fn load_cached_articles(tab_id: &str) -> Vec<crate::ads::Article> {
+    read_cache()
+        .get(tab_id)
+        .and_then(|v| v.as_array())
+        .map(|a| a.iter().map(crate::ads::article_from_doc).collect())
+        .unwrap_or_default()
+}
+
+pub fn save_cached_articles(tab_id: &str, articles: &[crate::ads::Article]) {
+    let mut tabs = read_cache();
+    tabs.insert(
+        tab_id.to_string(),
+        serde_json::Value::Array(articles.iter().map(crate::ads::article_to_json).collect()),
+    );
+    write_cache(tabs);
+}
+
+pub fn drop_cached_articles(tab_id: &str) {
+    let mut tabs = read_cache();
+    if tabs.remove(tab_id).is_some() {
+        write_cache(tabs);
+    }
+}

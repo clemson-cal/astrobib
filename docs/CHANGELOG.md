@@ -3,6 +3,7 @@
 ## Unreleased
 
 ### Added
+- Saved queries restore from a local cache: their last results land instantly at startup — offline included — from `query_cache.json` beside tabs.json, refreshed whenever a query runs and dropped when its scope closes. Startup no longer re-runs every saved query against ADS (which also stops burning API quota on launch); `r` refreshes on demand.
 - Per-paper metrics with a color swatch column: `M` cycles the one-cell strip at the table's left edge through off → age (viridis) → citations (magma) — one metric at a time, hidden when off, rank-normalized over the visible rows so the whole colormap is always in play. The strip's header cell shows the colormap midpoint, sorts by the active metric, and names it on rollover. Metrics live user-local in `~/.local/share/astrobib/metrics.json`, never in any bib database.
 - `.` touches the selection (or cursor entry): the age metric is a manually-resettable freshness — seeded from each file's creation time on first sight, so existing history migrates in and survives clones.
 - Citation counts refresh two ways: opportunistically (any query result matching a library paper updates its stored count for free) and in one batched ADS query with `r` in the library scope; query scopes color citations directly from their results.

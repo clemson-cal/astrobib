@@ -789,6 +789,9 @@ impl App {
         ) {
             return; // library and manuscript scopes are permanent
         }
+        if let Some(Scope::Ads { tab, .. }) = self.scopes.get(self.active_scope) {
+            crate::tabs::drop_cached_articles(&tab.id);
+        }
         self.scopes.remove(self.active_scope);
         // stay in place: the capsule that was to the right now holds
         // this index (set_scope clamps when we closed the last one)
@@ -1028,39 +1031,29 @@ impl App {
     }
 
     /// Restore saved query scopes and refresh them all on one worker.
+    /// Saved tabs restore with their cached results — instant and
+    /// offline-friendly; nothing re-queries ADS until r asks.
     fn restore_tabs(&mut self) {
         let saved = crate::tabs::load(self.ms_root().as_deref());
         if saved.is_empty() {
             return;
         }
-        let first_idx = self.scopes.len();
+        let mut cached = 0usize;
         for t in &saved {
-            self.scopes.push(Scope::Ads { tab: t.clone(), articles: vec![] });
-        }
-        if crate::ads::get_token().is_none() {
-            return; // scopes restore without results; refresh needs a token
-        }
-        let jobs: Vec<(usize, crate::tabs::Tab, u64)> = saved
-            .into_iter()
-            .enumerate()
-            .map(|(i, t)| {
-                let id = self.add_task(
-                    TaskKind::Query,
-                    format!("⌕ ADS query — '{}'", t.query),
-                    vec![],
-                );
-                (first_idx + i, t, id)
-            })
-            .collect();
-        let (tx, rx) = std::sync::mpsc::channel();
-        self.ads_rx = Some(rx);
-        std::thread::spawn(move || {
-            for (idx, tab, id) in jobs {
-                let result =
-                    crate::ads::search(&tab.query, tab.limit).map_err(|e| e.to_string());
-                let _ = tx.send(AdsMsg::Done { id, tab, refresh_of: Some(idx), result });
+            let articles = crate::tabs::load_cached_articles(&t.id);
+            if !articles.is_empty() {
+                cached += 1;
             }
-        });
+            self.scopes.push(Scope::Ads { tab: t.clone(), articles });
+        }
+        self.note(
+            MsgCat::Info,
+            format!(
+                "restored {} saved quer{} from cache — r refreshes",
+                cached,
+                if cached == 1 { "y" } else { "ies" }
+            ),
+        );
     }
 
     /// +/- — step the active ADS scope's result limit through the
@@ -1206,6 +1199,7 @@ impl App {
                             }
                             self.metrics.save();
                             let n = articles.len();
+                            crate::tabs::save_cached_articles(&tab.id, &articles);
                             tab.refreshed = Some(crate::tabs::now_secs());
                             tab.bibcodes = articles.iter().map(|a| a.bibcode.clone()).collect();
                             let scope = Scope::Ads { tab, articles };
