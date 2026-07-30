@@ -188,6 +188,7 @@ struct Task {
 /// Sortable table columns; clicking a header toggles direction.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum SortCol {
+    Added,
     Pdf,
     InLib,
     Year,
@@ -1764,6 +1765,7 @@ impl App {
         self.order.sort_by(|a, b| {
             let (ea, eb) = (lib.get(a).unwrap(), lib.get(b).unwrap());
             let ord = match col {
+                SortCol::Added => ea.added_ts().cmp(&eb.added_ts()),
                 SortCol::Pdf => has_cached_pdf(ea.key()).cmp(&has_cached_pdf(eb.key())),
                 SortCol::InLib => lib
                     .in_manuscript(ea.key())
@@ -1800,7 +1802,13 @@ impl App {
         } else {
             // bool-ish and recency columns start with the interesting side
             // up: cached/in-library/newest first; text columns start A→Z
-            (col, !matches!(col, SortCol::Year | SortCol::Pdf | SortCol::InLib))
+            (
+                col,
+                !matches!(
+                    col,
+                    SortCol::Year | SortCol::Pdf | SortCol::InLib | SortCol::Added
+                ),
+            )
         };
         if matches!(self.scopes.get(self.active_scope), Some(Scope::Ads { .. })) {
             self.sort_ads_articles();
@@ -3785,7 +3793,7 @@ impl App {
             .width
             .saturating_sub(widths.iter().sum::<u16>() + ncols);
         let ms_header = if show_membership { "●" } else { "" };
-        let mut headers: Vec<&str> = vec!["", "↓", ms_header, "Year", "Author", "Title"];
+        let mut headers: Vec<&str> = vec!["+", "↓", ms_header, "Year", "Author", "Title"];
         if show_key {
             headers.push("Key");
         }
@@ -3793,6 +3801,7 @@ impl App {
         for (ci, base) in headers.iter().enumerate() {
             let cw = if ci == 5 { title_w } else { widths[ci] };
             let col = match ci {
+                0 => Some(SortCol::Added), // when the paper joined the library
                 1 => Some(SortCol::Pdf),
                 2 if show_membership => Some(SortCol::InLib),
                 3 => Some(SortCol::Year),
@@ -3812,6 +3821,10 @@ impl App {
                     label = if cw <= 2 { format!("{base}{arrow}") } else { format!("{base} {arrow}") };
                 }
                 if hit(r, self.hover.0, self.hover.1) {
+                    if col == SortCol::Added {
+                        self.hover_hint =
+                            Some("sort by date added to the library".to_string());
+                    }
                     style = style.fg(Color::Cyan).add_modifier(Modifier::UNDERLINED);
                 }
             }

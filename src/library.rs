@@ -23,6 +23,7 @@ pub struct Entry {
     pub path: PathBuf,
     pub short_key: String,
     search: OnceCell<SearchDoc>,
+    added: OnceCell<i64>,
 }
 
 impl Entry {
@@ -32,6 +33,7 @@ impl Entry {
             path,
             short_key: String::new(),
             search: OnceCell::new(),
+            added: OnceCell::new(),
         }
     }
 
@@ -95,6 +97,19 @@ impl Entry {
             .next()
             .unwrap_or("")
             .trim()
+    }
+
+    /// When the paper joined the library: the .bib file's creation
+    /// time (mtime where birthtime is unavailable), unix seconds.
+    pub fn added_ts(&self) -> i64 {
+        *self.added.get_or_init(|| {
+            std::fs::metadata(&self.path)
+                .ok()
+                .and_then(|m| m.created().or_else(|_| m.modified()).ok())
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|d| d.as_secs() as i64)
+                .unwrap_or(0)
+        })
     }
 
     pub fn bibcode(&self) -> Option<&str> {

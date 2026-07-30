@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+### Added
+- Recently added papers: the library table's leftmost header (`+`) sorts by the date each paper joined the library (file creation time; newest first on the first click), with a rollover hint naming it.
+
 ## 0.7.1 — 2026-07-30
 
 ### Fixed
