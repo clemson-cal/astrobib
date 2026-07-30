@@ -153,4 +153,18 @@ impl Metrics {
     pub fn get(&self, key: &str) -> Option<&PaperMetrics> {
         self.papers.get(key)
     }
+
+    /// Drop metrics for papers that no longer exist. The caller must
+    /// pass EVERY live key across both tiers — pruning against a
+    /// partial view (a hidden global tier, a relocated library) would
+    /// destroy curated priorities, so callers guard accordingly.
+    pub fn prune(&mut self, live: &std::collections::HashSet<String>) -> usize {
+        let before = self.papers.len();
+        self.papers.retain(|k, _| live.contains(k));
+        let dropped = before - self.papers.len();
+        if dropped > 0 {
+            self.dirty = true;
+        }
+        dropped
+    }
 }

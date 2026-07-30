@@ -51,6 +51,9 @@ enum Command {
         key: Option<String>,
         /// New value for the field
         value: Option<String>,
+        /// Drop metrics for papers no longer in this library
+        #[arg(long)]
+        prune_metrics: bool,
     },
     /// Rewrite every manuscript cite key to one uniform format and
     /// regenerate refs.bib to match
@@ -223,7 +226,11 @@ fn main() -> anyhow::Result<()> {
             };
             run_convert(&mut lib, &root, &format, dry_run)
         }
-        Some(Command::Config { key: Some(key), value: Some(value) }) => {
+        Some(Command::Config { prune_metrics: true, .. }) => {
+            prune_metrics(&lib);
+            Ok(())
+        }
+        Some(Command::Config { key: Some(key), value: Some(value), .. }) => {
             astrobib::ads::save_state_field(&key, &value)?;
             println!("{key} saved.");
             Ok(())
@@ -383,6 +390,46 @@ fn run_update(lib: &mut MergedLibrary, all: bool) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Live cite keys across both tiers, regardless of which tier is
+/// currently visible.
+fn live_keys(lib: &MergedLibrary) -> std::collections::HashSet<String> {
+    let mut live: std::collections::HashSet<String> =
+        lib.personal.entries().iter().map(|e| e.key().to_string()).collect();
+    if let Some(ms) = &lib.manuscript {
+        live.extend(ms.entries().iter().map(|e| e.key().to_string()));
+    }
+    live
+}
+
+/// astrobib config --prune-metrics — drop metrics whose papers are
+/// gone. Explicit, never automatic: the metrics store is shared across
+/// libraries, so only the user knows whether an unmatched key belongs
+/// to a library that simply is not mounted right now.
+fn prune_metrics(lib: &MergedLibrary) {
+    let mut metrics = astrobib::metrics::Metrics::load();
+    let live = live_keys(lib);
+    if live.is_empty() {
+        eprintln!("This library is empty — refusing to prune (nothing to match against).");
+        std::process::exit(1);
+    }
+    let orphans: Vec<String> = metrics
+        .papers
+        .keys()
+        .filter(|k| !live.contains(*k))
+        .cloned()
+        .collect();
+    if orphans.is_empty() {
+        println!("No orphaned metrics.");
+        return;
+    }
+    for k in &orphans {
+        println!("  dropped {k}");
+    }
+    metrics.prune(&live);
+    metrics.save();
+    println!("{} orphaned metric(s) dropped.", orphans.len());
+}
+
 /// astrobib config — the resolved environment, for humans debugging it.
 fn run_config(lib: &MergedLibrary, ms_root: Option<&std::path::Path>, via_flag: bool) {
     let lib_src = if via_flag {
@@ -435,6 +482,18 @@ fn run_config(lib: &MergedLibrary, ms_root: Option<&std::path::Path>, via_flag: 
         "PDF cache        {}  ({n} files, {:.1} MB)",
         cache.display(),
         bytes as f64 / 1e6
+    );
+    let metrics = astrobib::metrics::Metrics::load();
+    let live = live_keys(lib);
+    let orphans = metrics.papers.keys().filter(|k| !live.contains(*k)).count();
+    println!(
+        "metrics          {} paper(s){}",
+        metrics.papers.len(),
+        if orphans > 0 {
+            format!("  ({orphans} not in this library — config --prune-metrics drops them)")
+        } else {
+            String::new()
+        }
     );
 }
 

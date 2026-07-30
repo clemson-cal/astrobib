@@ -24,3 +24,11 @@ def run(t):
     # 0 clears
     t.send("0")
     t.wait_for(lambda: "priority 0.00" in t.text(), what="clear feedback")
+    # the wheel over a priority swatch scales that row's level
+    t.send("M")
+    t.wait_for(lambda: "metric column: priority" in t.text(), what="priority back on")
+    header = next(i for i, l in enumerate(t.lines()) if "Year" in l[:40])
+    t.send(b"\x1b[<64;1;%dM" % (header + 3))  # wheel-up, column 0, first row
+    t.wait_for(
+        lambda: "priority 0.0" in t.lines()[-1], what="wheel-up priority feedback"
+    )

@@ -121,11 +121,18 @@ class Session:
     # -- lifecycle ---------------------------------------------------------
 
     def wait_ready(self, timeout=10.0):
-        """Block until the startup frame (scope strip + table header) is up."""
+        """Block until a COMPLETE startup frame is up.
+
+        The footer badges are drawn last, so requiring them means the
+        frame finished flushing — waiting only on the table header can
+        return mid-frame, before the card and footer exist.
+        """
         self.wait_for(
-            lambda: "Library" in self.text() and "Year" in self.text(),
+            lambda: "Library" in self.text()
+            and "Year" in self.text()
+            and "keys" in self.lines()[-1],
             timeout=timeout,
-            what="startup frame",
+            what="complete startup frame",
         )
         return self
 

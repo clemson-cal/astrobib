@@ -590,6 +590,18 @@ pub fn default_library_root() -> PathBuf {
     base.join("library")
 }
 
+/// The library location when nothing relocates it — i.e. ignoring
+/// $ASTROBIB_LIBRARY (which `--library` also sets). Used to decide
+/// whether user-local state keyed by cite key can safely be pruned:
+/// the metrics store is shared across libraries, so a relocated
+/// library must never prune it.
+pub fn unrelocated_library_root() -> PathBuf {
+    let base = std::env::var("ASTROBIB_STATE_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| home_dir().join(".local/share/astrobib"));
+    base.join("library")
+}
+
 pub fn pdf_cache_dir() -> PathBuf {
     home_dir().join(".cache/astrobib/pdfs")
 }

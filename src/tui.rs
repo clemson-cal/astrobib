@@ -259,12 +259,15 @@ fn draw_cited_line(
     x0: u16,
     y: u16,
     w: u16,
-    n: i64,
+    n: Option<i64>,
     hover: (u16, u16),
     card_buttons: &mut Vec<(Rect, CardBtn)>,
     hint: &mut Option<String>,
 ) {
-    let label = format!("cited by {n}");
+    let label = match n {
+        Some(n) => format!("cited by {n}"),
+        None => "cited by ?".to_string(),
+    };
     let r = Rect { x: x0, y, width: label.chars().count() as u16 + 2, height: 1 };
     card_buttons.push((r, CardBtn::RefreshCites));
     let hov = hit(r, hover.0, hover.1);
@@ -571,6 +574,7 @@ struct App {
     card_scroll: usize,
     card_area: Rect,
     card_shown: Option<String>,
+    metric_area: Rect,
     metrics: crate::metrics::Metrics,
     metric_col: MetricCol,
     cit_rx: Option<std::sync::mpsc::Receiver<Vec<(String, i64)>>>,
@@ -759,6 +763,7 @@ impl App {
             card_scroll: 0,
             card_area: Rect::default(),
             card_shown: None,
+            metric_area: Rect::default(),
             metrics: crate::metrics::Metrics::load(),
             metric_col: MetricCol::from_tag(
                 &crate::ads::get_state_field("metric").unwrap_or_default(),
@@ -2586,14 +2591,16 @@ impl App {
     fn on_mouse(&mut self, m: MouseEvent) {
         match m.kind {
             MouseEventKind::ScrollDown => {
-                if self.show_detail && hit(self.card_area, m.column, m.row) {
+                if self.scroll_swatch(m.column, m.row, 0.8) {
+                } else if self.show_detail && hit(self.card_area, m.column, m.row) {
                     self.card_scroll = self.card_scroll.saturating_add(3);
                 } else {
                     self.move_sel(3);
                 }
             }
             MouseEventKind::ScrollUp => {
-                if self.show_detail && hit(self.card_area, m.column, m.row) {
+                if self.scroll_swatch(m.column, m.row, 1.25) {
+                } else if self.show_detail && hit(self.card_area, m.column, m.row) {
                     self.card_scroll = self.card_scroll.saturating_sub(3);
                 } else {
                     self.move_sel(-3);
@@ -2604,6 +2611,36 @@ impl App {
             }
             MouseEventKind::Moved => self.hover = (m.column, m.row),
             _ => {}
+        }
+    }
+
+    /// The wheel over a priority swatch scales THAT row's priority —
+    /// the mouse-native form of < / >. Returns whether it acted.
+    fn scroll_swatch(&mut self, x: u16, y: u16, factor: f64) -> bool {
+        if self.metric_col != MetricCol::Priority || !hit(self.metric_area, x, y) {
+            return false;
+        }
+        // the strip's rows start two lines below its top (header + rule)
+        if y < self.metric_area.y + 2 {
+            return false;
+        }
+        let pos = self.table.offset() + (y - self.metric_area.y - 2) as usize;
+        let Some(key) = self.row_key_at(pos) else { return false };
+        let level = self.metrics.scale_priority(&key, factor);
+        self.note(MsgCat::Ok, format!("priority {level:.2} — {key}"));
+        true
+    }
+
+    /// The library key of a row position in the active scope (query
+    /// scopes resolve through the imported twin).
+    fn row_key_at(&self, pos: usize) -> Option<String> {
+        match self.scopes.get(self.active_scope) {
+            Some(Scope::Ads { articles, .. }) => articles
+                .get(pos)
+                .and_then(|a| self.lib.get_by_bibcode(&a.bibcode))
+                .map(|e| e.key().to_string()),
+            Some(Scope::Manuscript { rows }) => rows.get(pos).and_then(|r| r.key.clone()),
+            _ => self.filtered.get(pos).map(|&i| self.order[i].clone()),
         }
     }
 
@@ -2705,8 +2742,12 @@ impl App {
                 return;
             }
             if btn == CardBtn::RefreshCites {
-                if let Some(key) = self.card_entry_key() {
-                    self.refresh_citation_count_for(&key);
+                match self.card_entry_key() {
+                    Some(key) => self.refresh_citation_count_for(&key),
+                    None => self.note(
+                        MsgCat::Warn,
+                        "import the paper first to track its citation count".to_string(),
+                    ),
                 }
                 return;
             }
@@ -3895,6 +3936,7 @@ impl App {
     /// the active metric's colormap. Its header cell shows the
     /// colormap midpoint and sorts by the metric.
     fn draw_metric_strip(&mut self, f: &mut Frame, area: Rect) {
+        self.metric_area = area;
         let metric = self.metric_col;
         // header swatch: legend + sort target
         let hr = Rect { x: area.x, y: area.y, width: 1, height: 1 };
@@ -4667,10 +4709,12 @@ impl App {
                 y += 1;
             }
         }
-        if let Some(n) = cites {
+        // "?" invites a refresh only when there is an imported entry to
+        // refresh into; otherwise the line appears only with a count
+        if cites.is_some() || lib_key.is_some() {
             if y < bottom {
                 draw_cited_line(
-                    f, x0, y, w as u16, n, self.hover,
+                    f, x0, y, w as u16, cites, self.hover,
                     &mut self.card_buttons, &mut self.hover_hint,
                 );
             }
@@ -4993,15 +5037,13 @@ impl App {
             }
         }
         let cite_n = self.metrics.get(&key).and_then(|m| m.citations);
-        if let Some(n) = cite_n {
-            if y < bottom {
-                draw_cited_line(
-                    f, x0, y, w as u16, n, self.hover,
-                    &mut self.card_buttons, &mut self.hover_hint,
-                );
-            }
-            y += 1;
+        if y < bottom {
+            draw_cited_line(
+                f, x0, y, w as u16, cite_n, self.hover,
+                &mut self.card_buttons, &mut self.hover_hint,
+            );
         }
+        y += 1;
         let (eprint, adsurl, doi) = (
             e.eprint().to_string(),
             e.adsurl().to_string(),
