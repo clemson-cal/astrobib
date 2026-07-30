@@ -230,3 +230,34 @@ pub fn drop_cached_articles(tab_id: &str) {
         write_cache(tabs);
     }
 }
+
+/// Every tab id across every context — what the query cache may
+/// legitimately hold.
+pub fn all_tab_ids() -> std::collections::HashSet<String> {
+    read_contexts()
+        .values()
+        .filter_map(|v| v.as_array())
+        .flatten()
+        .filter_map(|t| t.get("id").and_then(|i| i.as_str()).map(str::to_string))
+        .collect()
+}
+
+/// The tab ids the query cache currently holds, with their byte sizes.
+pub fn cached_tab_entries() -> Vec<(String, usize)> {
+    read_cache()
+        .iter()
+        .map(|(k, v)| (k.clone(), v.to_string().len()))
+        .collect()
+}
+
+/// Every bibcode held in the query cache. Un-imported query results
+/// cache their PDFs under the bibcode, so these keys are reachable
+/// even though no library entry bears them.
+pub fn cached_bibcodes() -> std::collections::HashSet<String> {
+    read_cache()
+        .values()
+        .filter_map(|v| v.as_array())
+        .flatten()
+        .filter_map(|a| a.get("bibcode").and_then(|b| b.as_str()).map(str::to_string))
+        .collect()
+}

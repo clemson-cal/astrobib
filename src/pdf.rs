@@ -245,3 +245,21 @@ pub fn open_paths(paths: &[PathBuf]) {
             .spawn();
     }
 }
+
+/// Cached PDFs as (cite key, bytes).
+pub fn cached_entries() -> Vec<(String, u64)> {
+    std::fs::read_dir(cache_dir())
+        .map(|rd| {
+            rd.flatten()
+                .filter_map(|e| {
+                    let path = e.path();
+                    let key = path.file_stem()?.to_string_lossy().into_owned();
+                    if path.extension()? != "pdf" {
+                        return None;
+                    }
+                    Some((key, e.metadata().ok().map(|m| m.len()).unwrap_or(0)))
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}

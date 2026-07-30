@@ -51,9 +51,16 @@ enum Command {
         key: Option<String>,
         /// New value for the field
         value: Option<String>,
-        /// Drop metrics for papers no longer in this library
+    },
+    /// Reclaim machine-local caches; never touches your .bib files
+    Gc {
+        /// Actually reclaim the disposable caches (PDFs, query results)
         #[arg(long)]
-        prune_metrics: bool,
+        clean: bool,
+        /// With --clean, also drop metrics for papers outside this
+        /// library — priorities are hand-curated and unrecoverable
+        #[arg(long)]
+        metrics: bool,
     },
     /// Rewrite every manuscript cite key to one uniform format and
     /// regenerate refs.bib to match
@@ -226,11 +233,11 @@ fn main() -> anyhow::Result<()> {
             };
             run_convert(&mut lib, &root, &format, dry_run)
         }
-        Some(Command::Config { prune_metrics: true, .. }) => {
-            prune_metrics(&lib);
+        Some(Command::Gc { clean, metrics }) => {
+            run_gc(&lib, clean, metrics);
             Ok(())
         }
-        Some(Command::Config { key: Some(key), value: Some(value), .. }) => {
+        Some(Command::Config { key: Some(key), value: Some(value) }) => {
             astrobib::ads::save_state_field(&key, &value)?;
             println!("{key} saved.");
             Ok(())
@@ -401,33 +408,122 @@ fn live_keys(lib: &MergedLibrary) -> std::collections::HashSet<String> {
     live
 }
 
-/// astrobib config --prune-metrics — drop metrics whose papers are
-/// gone. Explicit, never automatic: the metrics store is shared across
-/// libraries, so only the user knows whether an unmatched key belongs
-/// to a library that simply is not mounted right now.
-fn prune_metrics(lib: &MergedLibrary) {
-    let mut metrics = astrobib::metrics::Metrics::load();
+/// Byte counts humans can read: KB below a megabyte, else MB.
+fn human_bytes(n: u64) -> String {
+    if n < 1_000_000 {
+        format!("{:.0} KB", n as f64 / 1e3)
+    } else {
+        format!("{:.1} MB", n as f64 / 1e6)
+    }
+}
+
+/// astrobib gc — report (and with --clean, reclaim) machine-local
+/// derived state. Orphans are judged against THIS library, and the
+/// caches are shared across libraries, so nothing is reclaimed
+/// without asking; curated metrics need their own flag on top.
+fn run_gc(lib: &MergedLibrary, clean: bool, with_metrics: bool) {
     let live = live_keys(lib);
     if live.is_empty() {
-        eprintln!("This library is empty — refusing to prune (nothing to match against).");
+        eprintln!("This library is empty — refusing to judge orphans against it.");
         std::process::exit(1);
     }
-    let orphans: Vec<String> = metrics
+    println!(
+        "Orphans are relative to this library ({} entries at {}).\n",
+        live.len(),
+        lib.personal.root.display()
+    );
+
+    // a PDF is reachable under a cite key OR under the bibcode of any
+    // article still in the query cache (un-imported results cache that
+    // way) — deleting those would silently orphan working downloads
+    let reachable_pdf = astrobib::tabs::cached_bibcodes();
+    let pdfs: Vec<(String, u64)> = astrobib::pdf::cached_entries()
+        .into_iter()
+        .filter(|(k, _)| !live.contains(k) && !reachable_pdf.contains(k))
+        .collect();
+    let pdf_bytes: u64 = pdfs.iter().map(|(_, b)| b).sum();
+    println!("cached PDFs      {} orphaned ({})", pdfs.len(), human_bytes(pdf_bytes));
+    // name them: the PDF cache is shared across every library you open,
+    // so "orphan" means "not in the library resolved right now" — and
+    // browser-fetched publisher PDFs can be laborious to re-acquire
+    let mut named: Vec<&(String, u64)> = pdfs.iter().collect();
+    named.sort_by(|a, b| b.1.cmp(&a.1));
+    for (key, bytes) in named.iter().take(20) {
+        println!("                   {key}  ({})", human_bytes(*bytes));
+    }
+    if named.len() > 20 {
+        println!("                   … and {} more", named.len() - 20);
+    }
+
+    let tab_ids = astrobib::tabs::all_tab_ids();
+    let stale: Vec<(String, usize)> = astrobib::tabs::cached_tab_entries()
+        .into_iter()
+        .filter(|(id, _)| !tab_ids.contains(id))
+        .collect();
+    let stale_bytes: usize = stale.iter().map(|(_, b)| b).sum();
+    println!(
+        "query cache      {} stale ({})",
+        stale.len(),
+        human_bytes(stale_bytes as u64)
+    );
+
+    let mut metrics = astrobib::metrics::Metrics::load();
+    let orphan_keys: Vec<String> = metrics
         .papers
         .keys()
         .filter(|k| !live.contains(*k))
         .cloned()
         .collect();
-    if orphans.is_empty() {
-        println!("No orphaned metrics.");
+    println!("metrics          {} outside this library", orphan_keys.len());
+    for k in orphan_keys.iter().take(20) {
+        println!("                   {k}");
+    }
+    if orphan_keys.len() > 20 {
+        println!("                   … and {} more", orphan_keys.len() - 20);
+    }
+
+    if !clean {
+        println!("\nNothing reclaimed. --clean frees the PDFs and query cache;");
+        println!("--clean --metrics additionally drops the metrics above.");
+        println!(
+            "\nNote: these caches are shared across every library you open, so a\n\
+             paper living in another library counts as an orphan here."
+        );
         return;
     }
-    for k in &orphans {
-        println!("  dropped {k}");
+
+    let mut freed = 0u64;
+    for (key, bytes) in &pdfs {
+        if std::fs::remove_file(astrobib::pdf::cache_path(key)).is_ok() {
+            freed += bytes;
+        }
+    }
+    for (id, _) in &stale {
+        astrobib::tabs::drop_cached_articles(id);
+    }
+    println!(
+        "\nReclaimed {} PDF(s) ({}) and {} stale query result set(s).",
+        pdfs.len(),
+        human_bytes(freed),
+        stale.len()
+    );
+
+    if !with_metrics {
+        if !orphan_keys.is_empty() {
+            println!(
+                "Kept {} metric(s) — hand-curated priorities are unrecoverable; \
+                 add --metrics to drop them.",
+                orphan_keys.len()
+            );
+        }
+        return;
+    }
+    for k in &orphan_keys {
+        println!("  dropped metrics for {k}");
     }
     metrics.prune(&live);
     metrics.save();
-    println!("{} orphaned metric(s) dropped.", orphans.len());
+    println!("{} orphaned metric(s) dropped.", orphan_keys.len());
 }
 
 /// astrobib config — the resolved environment, for humans debugging it.
@@ -490,7 +586,7 @@ fn run_config(lib: &MergedLibrary, ms_root: Option<&std::path::Path>, via_flag: 
         "metrics          {} paper(s){}",
         metrics.papers.len(),
         if orphans > 0 {
-            format!("  ({orphans} not in this library — config --prune-metrics drops them)")
+            format!("  ({orphans} not in this library — see astrobib gc)")
         } else {
             String::new()
         }
