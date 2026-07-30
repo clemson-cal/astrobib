@@ -7,7 +7,8 @@ DESCRIPTION = "v shows the verbatim .bib in the card"
 
 
 def run(t):
-    require("@ bib" in t.text(), "@ bib affordance missing from card footer", t)
+    # the card can land a frame after the table's startup paint
+    t.wait_for("@ bib", what="card toggler")
     t.send("v")
     t.wait_for(lambda: "bib/Cabrera2024txuze.bib" in t.text(), what="bib source header")
     txt = t.text()
