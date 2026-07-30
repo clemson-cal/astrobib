@@ -26,6 +26,8 @@ pub enum Field {
     Kw,
     Year,
     Is,
+    Pri,
+    Cit,
 }
 
 fn canon_field(name: &str) -> Option<Field> {
@@ -37,6 +39,8 @@ fn canon_field(name: &str) -> Option<Field> {
         "kw" | "keyword" | "keywords" => Field::Kw,
         "year" => Field::Year,
         "is" => Field::Is,
+        "pri" | "priority" => Field::Pri,
+        "cit" | "cites" | "citations" => Field::Cit,
         _ => return None,
     })
 }
@@ -114,6 +118,27 @@ fn year_matches(value: &str, entry_year: &str) -> bool {
 pub struct QueryContext {
     pub in_manuscript: Option<Box<dyn Fn(&str) -> bool>>,
     pub has_pdf: Option<Box<dyn Fn(&str) -> bool>>,
+    pub priority: Option<Box<dyn Fn(&str) -> Option<f64>>>,
+    pub citations: Option<Box<dyn Fn(&str) -> Option<f64>>>,
+}
+
+/// pri:>0.5 / cit:<100 — a comparison against a metric; a missing
+/// metric never matches. Bare pri:0.5 means >=.
+fn metric_matches(spec: &str, actual: Option<f64>) -> bool {
+    let Some(actual) = actual else { return false };
+    let (op, num) = match spec.as_bytes().first() {
+        Some(b'>') => ('>', &spec[1..]),
+        Some(b'<') => ('<', &spec[1..]),
+        _ => ('.', spec),
+    };
+    let Ok(threshold) = num.trim_start_matches('=').parse::<f64>() else {
+        return false;
+    };
+    match op {
+        '>' => actual > threshold,
+        '<' => actual < threshold,
+        _ => actual >= threshold,
+    }
 }
 
 fn term_matches(term: &Term, e: &Entry, ctx: &QueryContext) -> bool {
@@ -137,6 +162,12 @@ fn term_matches(term: &Term, e: &Entry, ctx: &QueryContext) -> bool {
             "pdf" => ctx.has_pdf.as_ref().is_some_and(|f| f(e.key())),
             _ => false,
         },
+        Some(Field::Pri) => {
+            metric_matches(&term.value, ctx.priority.as_ref().and_then(|f| f(e.key())))
+        }
+        Some(Field::Cit) => {
+            metric_matches(&term.value, ctx.citations.as_ref().and_then(|f| f(e.key())))
+        }
         None => doc.all.contains(&v),
     };
     hit != term.neg
@@ -160,7 +191,12 @@ pub fn to_ads_query(text: &str) -> String {
     for group in tokenize(text) {
         let mut parts = vec![];
         for t in group {
-            if t.neg || matches!(t.field, Some(Field::Is) | Some(Field::Key)) || t.value.is_empty()
+            if t.neg
+                || matches!(
+                    t.field,
+                    Some(Field::Is) | Some(Field::Key) | Some(Field::Pri) | Some(Field::Cit)
+                )
+                || t.value.is_empty()
             {
                 continue;
             }
@@ -223,6 +259,16 @@ mod tests {
             .filter(|(_, e)| matches(&g, e, &ctx))
             .map(|(n, _)| n)
             .collect()
+    }
+
+    #[test]
+    fn metric_tokens() {
+        assert!(super::metric_matches(">0.5", Some(0.7)));
+        assert!(!super::metric_matches(">0.5", Some(0.5)));
+        assert!(super::metric_matches("<100", Some(42.0)));
+        assert!(!super::metric_matches("<100", None));
+        assert!(super::metric_matches("0.5", Some(0.5)));
+        assert!(!super::metric_matches("junk", Some(1.0)));
     }
 
     #[test]

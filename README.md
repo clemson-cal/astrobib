@@ -58,6 +58,7 @@ abs:"fast radio burst" phrase in abstract
 kw:"compact objects"   keyword
 year:2015-2020         ranges; year:2020- open-ended
 is:ms                  local/manuscript members;  is:pdf  cached PDFs
+pri:>0.5  cit:>100    metric comparisons (> < or bare for ≥); no metric never matches
 -abs:neutrino          leading - negates (NOT works too)
 ^zrake OR ^metzger     uppercase OR separates alternatives; AND binds tighter
 ```

@@ -1970,9 +1970,38 @@ impl App {
             .as_ref()
             .map(|m| m.entries().iter().map(|e| e.key().to_string()).collect())
             .unwrap_or_default();
+        // metric snapshots only when the filter asks for them: pri:/cit:
+        // are rare, and refilter runs on every keystroke
+        let wants = |f: query::Field| {
+            groups.iter().flatten().any(|t| t.field == Some(f))
+        };
+        let now_ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+        let pri: std::collections::HashMap<String, f64> = if wants(query::Field::Pri) {
+            self.metrics
+                .papers
+                .iter()
+                .filter_map(|(k, m)| m.effective_priority(now_ts).map(|v| (k.clone(), v)))
+                .collect()
+        } else {
+            Default::default()
+        };
+        let cit: std::collections::HashMap<String, f64> = if wants(query::Field::Cit) {
+            self.metrics
+                .papers
+                .iter()
+                .filter_map(|(k, m)| m.citations.map(|v| (k.clone(), v as f64)))
+                .collect()
+        } else {
+            Default::default()
+        };
         let ctx = QueryContext {
             in_manuscript: Some(Box::new(move |k: &str| in_ms.iter().any(|x| x == k))),
             has_pdf: Some(Box::new(|k: &str| has_cached_pdf(k))),
+            priority: Some(Box::new(move |k: &str| pri.get(k).copied())),
+            citations: Some(Box::new(move |k: &str| cit.get(k).copied())),
         };
         self.filtered = self
             .order
