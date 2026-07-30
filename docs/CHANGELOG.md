@@ -3,7 +3,7 @@
 ## Unreleased
 
 ### Added
-- `astrobib config`: the resolved environment at a glance — global and local library roots (and where each came from), entry counts, token presence and source, email, and PDF-cache size.
+- `astrobib config`: the resolved environment at a glance — global and local library roots (and where each came from), entry counts, token presence and source, email, and PDF-cache size. `astrobib config ads_token|email <value>` writes the field to state.json.
 - `astrobib convert bibcode|full|short [--dry-run]`: rewrites every cited key in the manuscript sources to one uniform format — inside `\cite` braces only — and regenerates refs.bib to match. Requires a manuscript directory.
 - `astrobib tidy` adopts legacy manuscripts: run in a directory holding `.tex`/`.md` sources and loose `.bib` files but no `bib/`, it creates `bib/`, resolves every entry against ADS, rewrites the old cite keys inside the sources, and regenerates refs.bib canonically. Re-keyed entries in ordinary tidy/import now rewrite the sources directly too — the copy-paste replacement commands are gone.
 - The pub card scrolls: the mouse wheel over the card scrolls the abstract (or the bib-source text) while the action block and footer stay put; dim ↑/↓ margin markers show when more text exists. The wheel elsewhere still moves the table cursor; scroll resets when the shown paper changes.

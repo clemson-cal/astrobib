@@ -44,8 +44,14 @@ enum Command {
     },
     /// Print the BibTeX entry for a cite key (full or shortened)
     Show { key: String },
-    /// Show the resolved environment: libraries, token, caches
-    Config,
+    /// Show the resolved environment, or set a value (token, email)
+    Config {
+        /// Field to set: ads_token | email
+        #[arg(value_parser = ["ads_token", "email"], requires = "value")]
+        key: Option<String>,
+        /// New value for the field
+        value: Option<String>,
+    },
     /// Rewrite every manuscript cite key to one uniform format and
     /// regenerate refs.bib to match
     Convert {
@@ -211,7 +217,12 @@ fn main() -> anyhow::Result<()> {
             };
             run_convert(&mut lib, &root, &format, dry_run)
         }
-        Some(Command::Config) => {
+        Some(Command::Config { key: Some(key), value: Some(value) }) => {
+            astrobib::ads::save_state_field(&key, &value)?;
+            println!("{key} saved.");
+            Ok(())
+        }
+        Some(Command::Config { .. }) => {
             run_config(&lib, ms_root.as_deref(), cli.library.is_some());
             Ok(())
         }
