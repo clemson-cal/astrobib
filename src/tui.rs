@@ -1716,8 +1716,6 @@ impl App {
 
     fn run(mut self, terminal: &mut ratatui::DefaultTerminal) -> anyhow::Result<()> {
         let t0 = std::time::Instant::now();
-        self.rescan_manuscript();
-        self.restore_tabs();
         // Hold the first paint until the pty size settles. Some terminals
         // (Warp) resize the pty in reaction to alt-screen entry — often
         // before crossterm's SIGWINCH handler exists, so no Resize event
@@ -1749,6 +1747,15 @@ impl App {
             "{:>6}ms settled at {size:?}",
             t0.elapsed().as_millis()
         ));
+        // paint the library before any potentially blocking work: a
+        // manuscript scan (cloud-evicted files can stall on read) or a
+        // big query cache must never hold up the first frame
+        terminal.draw(|f| self.draw(f))?;
+        debug_layout(&format!("{:>6}ms first paint", t0.elapsed().as_millis()));
+        self.rescan_manuscript();
+        debug_layout(&format!("{:>6}ms rescan_manuscript done", t0.elapsed().as_millis()));
+        self.restore_tabs();
+        debug_layout(&format!("{:>6}ms restore_tabs done", t0.elapsed().as_millis()));
         while !self.quit {
             self.drain_downloads();
             self.drain_ads();
@@ -5441,6 +5448,11 @@ impl App {
 
 /// Append a line to $ASTROBIB_DEBUG_LAYOUT (a file path) when set —
 /// temporary instrumentation for layout/resize investigations.
+/// Startup-phase timing, same sink as the layout log.
+pub fn debug_startup(line: &str) {
+    debug_layout(line);
+}
+
 fn debug_layout(line: &str) {
     use std::io::Write;
     use std::sync::{Mutex, OnceLock};

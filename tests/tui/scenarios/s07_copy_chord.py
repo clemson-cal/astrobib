@@ -7,9 +7,11 @@ DESCRIPTION = "permanent copy column + y chord"
 
 
 def run(t):
+    # the card's right column always shows the copy menu (wait: the
+    # card can land a frame after the table's first paint)
+    t.wait_for("ADS URL", what="copy column")
     txt = t.text()
-    # the card's right column always shows the copy menu
-    for label in ("cite key", "full key", "bibcode", "ADS URL"):
+    for label in ("cite key", "full key", "bibcode"):
         require(label in txt, f"copy row {label!r} missing from card", t)
     require("│" in txt, "vertical column divider missing", t)
     # y arms the chord: the footer shows the which-key line

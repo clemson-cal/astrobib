@@ -17,7 +17,8 @@ MANUSCRIPT = {
 
 
 def run(t):
-    require("Manuscript" in t.text(), "Manuscript scope pill missing", t)
+    # the manuscript scan runs just after the first paint
+    t.wait_for("Manuscript", what="manuscript capsule")
     t.send("]")  # Library is scope 0; the manuscript scope sits at 1
     t.wait_for(lambda: "missing" in t.text(), what="manuscript rows")
     txt = t.text()

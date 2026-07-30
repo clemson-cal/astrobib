@@ -19,7 +19,8 @@ MANUSCRIPT = {
 
 
 def run(t):
-    require("Manuscript" in t.text(), "Manuscript scope pill missing", t)
+    # the manuscript scan runs just after the first paint
+    t.wait_for("Manuscript", what="manuscript capsule")
     refs = os.path.join(t.cwd, "refs.bib")
     t.wait_for(lambda: os.path.exists(refs), what="refs.bib to appear")
     content = open(refs).read()

@@ -136,7 +136,13 @@ fn main() -> anyhow::Result<()> {
         }
         None => find_manuscript_db(),
     };
+    let t_load = std::time::Instant::now();
     let mut lib = MergedLibrary::load(ms_root.as_deref())?;
+    astrobib::tui::debug_startup(&format!(
+        "library load {:?} ms={}",
+        t_load.elapsed(),
+        ms_root.is_some()
+    ));
     if cli.no_global && lib.manuscript.is_some() {
         lib.global_on = false;
     }

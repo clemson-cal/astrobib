@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+### Fixed
+- Startup paints the library immediately: the manuscript scan and saved-query restore now run just after the first frame, so a slow disk read (e.g. cloud-evicted manuscript files) can no longer hold the UI hostage; the Manuscript capsule and query tabs appear a beat later. Startup phases also log timings under `ASTROBIB_DEBUG_LAYOUT`.
+
 ### Added
 - Saved queries restore from a local cache: their last results land instantly at startup — offline included — from `query_cache.json` beside tabs.json, refreshed whenever a query runs and dropped when its scope closes. Startup no longer re-runs every saved query against ADS (which also stops burning API quota on launch); `r` refreshes on demand.
 - Per-paper metrics with a color swatch column: `M` cycles the one-cell strip at the table's left edge through off → priority (viridis) → citations (magma) — one metric at a time, hidden when off. Priority colors by its absolute 0–1 level (edits recolor in place); citations rank-normalize over the visible rows. The strip's header cell shows the colormap midpoint, sorts by the active metric, and names it on rollover. Metrics live user-local in `~/.local/share/astrobib/metrics.json`, never in any bib database.
