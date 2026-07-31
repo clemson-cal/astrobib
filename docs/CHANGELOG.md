@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+- Query results are matched to your library by paper identity rather than by bibcode. A paper imported as a preprint carries the arXiv bibcode while a later search returns the published record (or vice versa), so an exact-bibcode comparison called them two different papers: the row showed neither the in-library `●` nor the cached-PDF `↓`, the card offered to import a paper you already had, and its PDF buttons and priority went missing. Cite keys derive from the stable identifier, so they are the same on both sides of publication — every article→entry lookup now goes through them.
+
 ## 0.8.1 — 2026-07-31
 
 ### Changed

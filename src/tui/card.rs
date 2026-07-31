@@ -194,7 +194,7 @@ impl App {
         let eprint = crate::ads::arxiv_id(a).map(str::to_string).unwrap_or_default();
         let bibcode = a.bibcode.clone();
         let hyp_key = self.hypothetical_key(a);
-        let lib_key = self.lib.get_by_bibcode(&bibcode).map(|e| e.key().to_string());
+        let lib_key = self.article_entry(a).map(|e| e.key().to_string());
         let in_lib = lib_key.is_some();
         let mut publine = String::new();
         if !a.journal.is_empty() {
@@ -621,7 +621,7 @@ impl App {
             let bibcode = a.bibcode.clone();
             let eprint = crate::ads::arxiv_id(a).map(str::to_string).unwrap_or_default();
             let doi = a.doi.first().cloned().unwrap_or_default();
-            if let Some(k) = self.lib.get_by_bibcode(&bibcode).map(|e| e.key().to_string()) {
+            if let Some(k) = self.article_entry(a).map(|e| e.key().to_string()) {
                 self.draw_bib_source(f, area, &k);
                 return;
             }

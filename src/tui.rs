@@ -899,7 +899,7 @@ impl App {
         match self.scopes.get(self.active_scope) {
             Some(Scope::Ads { articles, .. }) => articles
                 .get(pos)
-                .and_then(|a| self.lib.get_by_bibcode(&a.bibcode))
+                .and_then(|a| self.article_entry(a))
                 .map(|e| e.key().to_string()),
             Some(Scope::Manuscript { rows }) => rows.get(pos).and_then(|r| r.key.clone()),
             _ => self.filtered.get(pos).and_then(|&i| self.order.get(i).cloned()),
@@ -1256,12 +1256,12 @@ impl App {
             articles
                 .iter()
                 .filter(|a| self.selected.contains(&a.bibcode))
-                .filter(|a| self.lib.get_by_bibcode(&a.bibcode).is_none())
+                .filter(|a| self.article_entry(a).is_none())
                 .map(|a| a.bibcode.clone())
                 .collect()
         } else {
             match self.table.selected().and_then(|p| articles.get(p)) {
-                Some(a) if self.lib.get_by_bibcode(&a.bibcode).is_none() => {
+                Some(a) if self.article_entry(a).is_none() => {
                     vec![a.bibcode.clone()]
                 }
                 Some(a) => {
@@ -1347,7 +1347,7 @@ impl App {
                         Ok(articles) => {
                             for a in &articles {
                                 if let (Some(e), Some(c)) =
-                                    (self.lib.get_by_bibcode(&a.bibcode), a.citation_count)
+                                    (self.article_entry(a), a.citation_count)
                                 {
                                     let key = e.key().to_string();
                                     self.metrics.set_citations(&key, c);
@@ -1906,7 +1906,7 @@ impl App {
             };
             return pool
                 .iter()
-                .filter_map(|a| self.lib.get_by_bibcode(&a.bibcode))
+                .filter_map(|a| self.article_entry(a))
                 .map(|e| e.key().to_string())
                 .collect();
         }
@@ -2105,6 +2105,19 @@ impl App {
     /// The cite key an article WOULD get on import — computable locally
     /// because keys derive from stable identity (arXiv ID / bibcode,
     /// first-author surname, identity year), all present in the article.
+    /// The library entry a query result refers to, matched by paper
+    /// identity rather than by bibcode.
+    ///
+    /// A paper imported as a preprint carries the arXiv bibcode, while
+    /// a later search returns the published one — comparing bibcodes
+    /// calls those two different papers, so an imported preprint shows
+    /// as un-imported the moment it is published. Cite keys derive from
+    /// the stable identifier (arXiv ID before bibcode), so the key is
+    /// the same on both sides of that transition.
+    fn article_entry(&self, a: &crate::ads::Article) -> Option<&crate::library::Entry> {
+        self.lib.get(&self.hypothetical_key(a))
+    }
+
     fn hypothetical_key(&self, a: &crate::ads::Article) -> String {
         if let Some(e) = self.lib.get_by_bibcode(&a.bibcode) {
             return e.key().to_string();
@@ -2147,7 +2160,7 @@ impl App {
     fn card_entry_key(&self) -> Option<String> {
         if let Some(Scope::Ads { articles, .. }) = self.scopes.get(self.active_scope) {
             let a = self.card_article_pos().and_then(|p| articles.get(p))?;
-            return self.lib.get_by_bibcode(&a.bibcode).map(|e| e.key().to_string());
+            return self.article_entry(a).map(|e| e.key().to_string());
         }
         self.selected_key().map(str::to_string)
     }
@@ -2434,7 +2447,7 @@ impl App {
             .collect();
         if matches!(col, SortCol::Pdf | SortCol::InLib | SortCol::Key) {
             for (k, a) in decorated.iter_mut() {
-                let entry = self.lib.get_by_bibcode(&a.bibcode);
+                let entry = self.article_entry(a);
                 *k = match col {
                     SortCol::Pdf => {
                         let ck = entry
@@ -2907,7 +2920,7 @@ impl App {
         match self.scopes.get(self.active_scope) {
             Some(Scope::Ads { articles, .. }) => articles
                 .get(pos)
-                .and_then(|a| self.lib.get_by_bibcode(&a.bibcode))
+                .and_then(|a| self.article_entry(a))
                 .map(|e| e.key().to_string()),
             Some(Scope::Manuscript { rows }) => rows.get(pos).and_then(|r| r.key.clone()),
             _ => self.filtered.get(pos).and_then(|&i| self.order.get(i).cloned()),
@@ -3205,8 +3218,7 @@ impl App {
                 }
                 CopyItem::DoiUrl => a.doi.first().map(|d| format!("https://doi.org/{d}")),
                 CopyItem::PdfPath => self
-                    .lib
-                    .get_by_bibcode(&a.bibcode)
+                    .article_entry(a)
                     .map(|e| e.key().to_string())
                     .filter(|k| pdf::is_cached(k))
                     .map(|k| pdf::cache_path(&k).to_string_lossy().into_owned()),
@@ -3250,8 +3262,7 @@ impl App {
             }
             CopyItem::DoiUrl => a.doi.first().map(|d| format!("https://doi.org/{d}")),
             CopyItem::PdfPath => self
-                .lib
-                .get_by_bibcode(&a.bibcode)
+                .article_entry(a)
                 .map(|e| e.key().to_string())
                 .filter(|k| pdf::is_cached(k))
                 .map(|k| pdf::cache_path(&k).to_string_lossy().into_owned()),
@@ -4257,8 +4268,7 @@ impl App {
                 .map(|a| match metric {
                     MetricCol::Citations => a.citation_count.map(|c| c as f64),
                     MetricCol::Priority => self
-                        .lib
-                        .get_by_bibcode(&a.bibcode)
+                        .article_entry(a)
                         .and_then(|e| self.metrics.get(e.key()))
                         .and_then(|m| m.effective_priority(now_ts)),
                     MetricCol::Off => None,
@@ -4430,7 +4440,7 @@ impl App {
                 .iter()
                 .enumerate()
                 .map(|(pos, a)| {
-                    let entry = self.lib.get_by_bibcode(&a.bibcode);
+                    let entry = self.article_entry(a);
                     let cache_key = entry.map(|e| e.key()).unwrap_or(&a.bibcode);
                     let author = a.author.join(" and ");
                     let lit = hov_row == Some(pos);
