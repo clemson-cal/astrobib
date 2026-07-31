@@ -36,6 +36,11 @@ impl PaperMetrics {
 pub struct Metrics {
     pub papers: HashMap<String, PaperMetrics>,
     dirty: bool,
+    /// Why the last write failed, cleared by the next success. `save`
+    /// reports through this rather than returning a Result: priorities
+    /// are flushed from idle ticks and from fire-and-forget CLI paths,
+    /// and a must_use return would force noise on every one of them.
+    error: Option<String>,
 }
 
 pub fn metrics_file() -> PathBuf {
@@ -79,10 +84,18 @@ impl Metrics {
         m
     }
 
-    /// Write-on-change; a no-op while clean.
-    pub fn save(&mut self) {
+    /// The last write failure, if the store is still carrying one.
+    pub fn error(&self) -> Option<&str> {
+        self.error.as_deref()
+    }
+
+    /// Write-on-change; a no-op while clean. False means the write
+    /// failed: the store stays dirty (so the next flush retries) and
+    /// `error()` says why — curated priorities are user data, and losing
+    /// them silently is the one outcome worth reporting.
+    pub fn save(&mut self) -> bool {
         if !self.dirty {
-            return;
+            return true;
         }
         let papers: serde_json::Map<String, serde_json::Value> = self
             .papers
@@ -107,12 +120,21 @@ impl Metrics {
         let v = serde_json::json!({ "version": 1, "papers": papers });
         let path = metrics_file();
         if let Some(dir) = path.parent() {
-            let _ = std::fs::create_dir_all(dir);
+            if let Err(e) = std::fs::create_dir_all(dir) {
+                self.error = Some(e.to_string());
+                return false;
+            }
         }
-        if std::fs::write(&path, serde_json::to_string_pretty(&v).unwrap_or_default() + "\n")
-            .is_ok()
-        {
-            self.dirty = false;
+        match std::fs::write(&path, serde_json::to_string_pretty(&v).unwrap_or_default() + "\n") {
+            Ok(()) => {
+                self.dirty = false;
+                self.error = None;
+                true
+            }
+            Err(e) => {
+                self.error = Some(e.to_string());
+                false
+            }
         }
     }
 

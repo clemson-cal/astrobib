@@ -39,8 +39,10 @@ enum Mode {
         files: Vec<std::path::PathBuf>,
         sel: usize,
     },
-    /// Confirm modal for removing papers (Delete key).
-    Confirm { keys: Vec<String> },
+    /// Confirm modal for removing papers (Delete key). It carries the
+    /// decided plan, not just the keys: the modal states that plan in
+    /// plain words and remove_confirmed executes exactly it.
+    Confirm { plan: Vec<(String, RemovalKind)> },
     /// S — compose an ADS query; ↑/↓ steps the result limit, ⏎ runs it.
     AdsPrompt { input: tui_input::Input, limit: usize },
     // first-run setup: collect the ADS token, then the email, into
@@ -52,6 +54,46 @@ enum Mode {
     /// y pressed — the next key picks what to copy (the Copy panel tab
     /// shows the menu, which-key style); Esc cancels.
     Copy,
+}
+
+/// What removing one paper will actually do. Delete means three
+/// different things depending on context, each defensible on its own
+/// but unpredictable from the keystroke — so the decision is made once,
+/// stated by the confirm modal, and executed from the same value.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum RemovalKind {
+    /// the ordinary case: gone from every tier that holds it
+    BothTiers,
+    /// global tier hidden: only the local tier's copy goes, and a sole
+    /// copy is rescued into the global tier first
+    ManuscriptOnly,
+    /// a query page, and the active manuscript cites this paper: its
+    /// manuscript copy stays, only the global one goes
+    GlobalOnly,
+}
+
+impl RemovalKind {
+    /// The consequence in plain words. `n` is how many targets share
+    /// this outcome; `ms` whether a local (tier-2) db exists at all.
+    fn sentence(self, n: usize, ms: bool) -> String {
+        match self {
+            RemovalKind::BothTiers if ms => {
+                "removes from both tiers — the global library's copy and this manuscript's"
+                    .to_string()
+            }
+            RemovalKind::BothTiers => {
+                let f = if n == 1 { "file is" } else { "files are" };
+                format!("removes from the library — the .bib {f} deleted")
+            }
+            RemovalKind::ManuscriptOnly => {
+                "removes from this manuscript; sole copies are rescued to the global library"
+                    .to_string()
+            }
+            RemovalKind::GlobalOnly => {
+                format!("removes from the global library (kept in the manuscript: {n} cited)")
+            }
+        }
+    }
 }
 
 /// Every user action; the panel lists them all, dimming the unavailable.
@@ -622,6 +664,9 @@ struct App {
     // sources and bib/, compared every ~1.5 s
     ms_watch: MsWatch,
     ms_watch_at: std::time::Instant,
+    // user-state stores whose last write failed: the latch behind
+    // state_write, so an unwritable state dir reports once per store
+    write_failed: HashSet<&'static str>,
 }
 
 /// option/alt+arrow (and emacs alt+b/f) word motions for text inputs.
@@ -714,12 +759,30 @@ enum DlMsg {
     Done { id: u64, done: usize, failed: Vec<String> },
 }
 
+/// Sort fallback for a key the library no longer holds. `self.order`
+/// and the library are kept in step by rebuild_order — every mutation
+/// path calls it — but nothing in the type system enforces that, and a
+/// future path that forgets must not take the running TUI down with it.
+/// Orphans sort to the end in either direction (the sort direction is
+/// applied to real entries only), keyed by cite key so the order stays
+/// total, stable, and identical to before whenever the two agree.
+fn orphan_order(a_live: bool, b_live: bool, a: &str, b: &str) -> std::cmp::Ordering {
+    match (a_live, b_live) {
+        (true, false) => std::cmp::Ordering::Less,
+        (false, true) => std::cmp::Ordering::Greater,
+        _ => a.cmp(b),
+    }
+}
+
 impl App {
     fn new(lib: MergedLibrary) -> Self {
         let mut order: Vec<String> = lib.entries().iter().map(|e| e.key().to_string()).collect();
-        order.sort_by(|a, b| {
-            let (ea, eb) = (lib.get(a).unwrap(), lib.get(b).unwrap());
-            eb.year().cmp(&ea.year()).then(a.cmp(b))
+        order.sort_by(|a, b| match (lib.get(a), lib.get(b)) {
+            (Some(ea), Some(eb)) => eb.year().cmp(&ea.year()).then(a.cmp(b)),
+            // orphans cannot exist here (the order was just derived from
+            // the library), but comparators never panic on principle —
+            // see orphan_order
+            (x, y) => orphan_order(x.is_some(), y.is_some(), a, b),
         });
         let filtered = (0..order.len()).collect::<Vec<_>>();
         let mut table = TableState::default();
@@ -795,7 +858,34 @@ impl App {
             last_click: None,
             ms_watch: (vec![], None),
             ms_watch_at: std::time::Instant::now(),
+            write_failed: HashSet::new(),
         }
+    }
+
+    /// Report a failed user-state write — once. Saved queries, curated
+    /// priorities, state.json fields, and refs.bib are written on
+    /// changes and on idle ticks, so the choice is not "log it or not"
+    /// but "log it once or every tick": the first failure per store is
+    /// logged, the rest are latched until that store writes again.
+    fn state_write(&mut self, what: &'static str, err: Option<String>) {
+        match err {
+            None => {
+                self.write_failed.remove(what);
+            }
+            Some(e) => {
+                if self.write_failed.insert(what) {
+                    self.note(MsgCat::Err, format!("could not save {what}: {e}"));
+                }
+            }
+        }
+    }
+
+    /// Flush the metrics store — priorities are hand-curated user data,
+    /// so a write that quietly stops working gets said out loud.
+    fn save_metrics(&mut self) {
+        let err = (!self.metrics.save())
+            .then(|| self.metrics.error().unwrap_or("write failed").to_string());
+        self.state_write("metrics.json", err);
     }
 
     /// The PDF-cache key for a table row, per scope (cite key when the
@@ -810,8 +900,15 @@ impl App {
                 .and_then(|a| self.lib.get_by_bibcode(&a.bibcode))
                 .map(|e| e.key().to_string()),
             Some(Scope::Manuscript { rows }) => rows.get(pos).and_then(|r| r.key.clone()),
-            _ => self.filtered.get(pos).map(|&i| self.order[i].clone()),
+            _ => self.filtered.get(pos).and_then(|&i| self.order.get(i).cloned()),
         }
+    }
+
+    /// The library entry at an `order` position — the one place that
+    /// resolves a display index, so a position that outlives the entry
+    /// it named yields None instead of indexing or unwrapping.
+    fn entry_at(&self, i: usize) -> Option<&crate::library::Entry> {
+        self.lib.get(self.order.get(i)?)
     }
 
     fn active_ads(&self) -> Option<&Scope> {
@@ -1052,7 +1149,7 @@ impl App {
     /// regenerating silently on every rescan. Created only for TeX
     /// manuscripts (astrobib refs opts a markdown one in); once the
     /// file exists it is kept fresh whatever the sources.
-    fn sync_refs_bib(&self, rows: &[MsRow]) {
+    fn sync_refs_bib(&mut self, rows: &[MsRow]) {
         let Some(root) = self.ms_root() else { return };
         let out = root.join("refs.bib");
         if !out.exists() && crate::export::manuscript_tex_files(&root).is_empty() {
@@ -1064,7 +1161,8 @@ impl App {
             .map(|r| r.cited.clone())
             .collect();
         let content = crate::export::refs_bib_content(&cited, &self.lib);
-        let _ = crate::export::write_refs_bib(&out, &content);
+        let res = crate::export::write_refs_bib(&out, &content);
+        self.state_write("refs.bib", res.err().map(|e| e.to_string()));
     }
 
     fn ms_root(&self) -> Option<std::path::PathBuf> {
@@ -1073,7 +1171,7 @@ impl App {
 
     /// Persist the current ADS scopes to the tabs.json state file,
     /// user-local and keyed per manuscript context.
-    fn save_tabs(&self) {
+    fn save_tabs(&mut self) {
         let tabs: Vec<crate::tabs::Tab> = self
             .scopes
             .iter()
@@ -1082,7 +1180,8 @@ impl App {
                 _ => None,
             })
             .collect();
-        crate::tabs::save(&tabs, self.ms_root().as_deref());
+        let res = crate::tabs::save(&tabs, self.ms_root().as_deref());
+        self.state_write("saved queries (tabs.json)", res.err().map(|e| e.to_string()));
     }
 
     /// Restore saved query scopes and refresh them all on one worker.
@@ -1252,7 +1351,7 @@ impl App {
                                     self.metrics.set_citations(&key, c);
                                 }
                             }
-                            self.metrics.save();
+                            self.save_metrics();
                             let n = articles.len();
                             crate::tabs::save_cached_articles(&tab.id, &articles);
                             tab.refreshed = Some(crate::tabs::now_secs());
@@ -1323,7 +1422,7 @@ impl App {
             _ if visible_only => self
                 .filtered
                 .iter()
-                .map(|&i| self.order[i].clone())
+                .filter_map(|&i| self.order.get(i).cloned())
                 .collect(),
             _ => self.order.clone(),
         };
@@ -1482,13 +1581,60 @@ impl App {
                         !e.doi().is_empty() || !e.adsurl().is_empty() || !e.eprint().is_empty()
                     })
             }
-            Action::Remove => {
-                !keys.is_empty() || !self.query_removal_targets().is_empty()
+            Action::Remove => !keys.is_empty(),
+            Action::Copy => !keys.is_empty() || self.on_query(),
+        }
+    }
+
+    /// Why an action is unavailable right now, in plain words. Pressing
+    /// a key (or clicking its dimmed row) must never be silent: every
+    /// variant either acts or explains itself through this.
+    fn unavailable_reason(&self, a: Action) -> String {
+        let keys = self.action_keys();
+        // every entry action needs a library cite key; on a query page a
+        // row that was never imported has none — but an imported twin
+        // does, so "import it first" must not be the answer for it
+        let unimported = self.on_query() && keys.is_empty();
+        let import_first =
+            |why: &str| format!("import the paper first (i) — {why}");
+        match a {
+            Action::Manuscript if self.lib.manuscript.is_none() => {
+                "no manuscript db (run inside a manuscript repo)".to_string()
             }
-            Action::Copy => {
-                !keys.is_empty()
-                    || matches!(self.scopes.get(self.active_scope), Some(Scope::Ads { .. }))
+            Action::Manuscript if !self.lib.global_on => {
+                // with the global tier hidden every resolvable paper is
+                // already a manuscript member, so ± would only ever mean
+                // "remove" — press t first and say which you meant
+                "manuscript ± needs the global tier shown — press t".to_string()
             }
+            Action::Manuscript if unimported => {
+                import_first("the manuscript db holds library entries")
+            }
+            Action::Manuscript => "no paper under the cursor".to_string(),
+            Action::Download | Action::BrowserDl if self.dl_rx.is_some() => {
+                "a download is already running".to_string()
+            }
+            Action::Download | Action::OpenPdf | Action::ClearPdf | Action::BrowserDl
+                if unimported =>
+            {
+                import_first("PDFs are cached under the cite key")
+            }
+            Action::Download => "nothing to download (cached, or no arXiv ID / ADS URL)".to_string(),
+            Action::OpenPdf => "no cached PDF here  (p downloads)".to_string(),
+            Action::ClearPdf => "no cached PDF to clear".to_string(),
+            Action::BrowserDl if keys.len() > 1 => {
+                "browser download takes one paper at a time".to_string()
+            }
+            Action::BrowserDl => "no DOI, ADS URL, or arXiv ID to open".to_string(),
+            Action::Remove if unimported => import_first("removal acts on the library entry"),
+            Action::Remove => "no paper to remove".to_string(),
+            Action::Copy => "nothing to copy".to_string(),
+            Action::GlobalTier => {
+                "no local db here — the global library is all there is".to_string()
+            }
+            // always available; unreachable, but the match stays total
+            Action::Select | Action::Filter | Action::Card | Action::Log | Action::Help
+            | Action::Quit => "not available here".to_string(),
         }
     }
 
@@ -1496,22 +1642,19 @@ impl App {
     /// and pub card buttons.
     fn run_action(&mut self, a: Action) {
         if !self.available(a) {
-            // a PDF key is a library cite key, so these are unavailable
-            // on a query page — say why rather than doing nothing
-            if matches!(a, Action::Download | Action::BrowserDl | Action::OpenPdf)
-                && matches!(self.scopes.get(self.active_scope), Some(Scope::Ads { .. }))
-            {
-                self.note(
-                    MsgCat::Warn,
-                    "import the paper first (i) — PDFs are cached under its cite key".to_string(),
-                );
-            }
+            let why = self.unavailable_reason(a);
+            self.note(MsgCat::Warn, why);
             return;
         }
         match a {
             Action::Select => {
                 if matches!(self.scopes.get(self.active_scope), Some(Scope::Manuscript { .. })) {
-                    return; // manuscript rows aren't a selection target
+                    // manuscript rows are citations, not selectable papers
+                    self.note(
+                        MsgCat::Warn,
+                        "manuscript rows aren't selectable — [ switches to the library".to_string(),
+                    );
+                    return;
                 }
                 self.select_mode = true;
                 if let Some(pos) = self.table.selected() {
@@ -1548,7 +1691,12 @@ impl App {
     fn open_export_prompt(&mut self) {
         let keys = self.action_keys();
         if keys.is_empty() {
-            self.note(MsgCat::Warn, "nothing to export — Space selects".to_string());
+            let msg = if self.on_query() {
+                "import the paper first (i) — export writes library entries"
+            } else {
+                "nothing to export — Space selects"
+            };
+            self.note(MsgCat::Warn, msg.to_string());
             return;
         }
         self.mode = Mode::Export { input: tui_input::Input::from("refs.bib".to_string()), keys };
@@ -1591,7 +1739,12 @@ impl App {
     fn adjust_priority(&mut self, op: PriorityOp) {
         let keys = self.priority_targets();
         if keys.is_empty() {
-            self.note(MsgCat::Warn, "no paper to prioritize".to_string());
+            let msg = if self.on_query() {
+                "import the paper first (i) — priority is per library entry"
+            } else {
+                "no paper to prioritize"
+            };
+            self.note(MsgCat::Warn, msg.to_string());
             return;
         }
         let mut last = 0.0;
@@ -1620,7 +1773,7 @@ impl App {
         let bibs: Vec<(String, String)> = self
             .filtered
             .iter()
-            .filter_map(|&i| self.lib.get(&self.order[i]))
+            .filter_map(|&i| self.entry_at(i))
             .filter_map(|e| e.bibcode().map(|b| (b.to_string(), e.key().to_string())))
             .collect();
         if bibs.is_empty() || crate::ads::get_token().is_none() {
@@ -1628,8 +1781,7 @@ impl App {
         }
         let (tx, rx) = std::sync::mpsc::channel();
         self.cit_rx = Some(rx);
-        let id = self.add_task(TaskKind::Query, "⌕ citation counts".to_string(), vec![]);
-        let _ = id;
+        self.add_task(TaskKind::Query, "⌕ citation counts".to_string(), vec![]);
         std::thread::spawn(move || {
             let q = format!(
                 "bibcode:({})",
@@ -1705,7 +1857,7 @@ impl App {
                         }
                     }
                 }
-                self.metrics.save();
+                self.save_metrics();
                 if let Some(t) = self.tasks.iter().find(|t| t.label == "⌕ citation counts") {
                     let id = t.id;
                     self.finish_task(id);
@@ -1718,7 +1870,30 @@ impl App {
         }
     }
 
+    /// The library entries an action applies to: the selection (in
+    /// display order) when selection mode is active and non-empty, else
+    /// the highlighted row — one convention for every bulk-capable
+    /// action, in every scope.
+    ///
+    /// A query page lists ADS records, not library entries, so each row
+    /// resolves through its imported twin (`get_by_bibcode`): actions
+    /// there act on the paper the user can see is already in the
+    /// library, and an un-imported row yields no key at all, so the
+    /// actions that need one dim and say why instead of doing nothing.
     fn action_keys(&self) -> Vec<String> {
+        if let Some(Scope::Ads { articles, .. }) = self.scopes.get(self.active_scope) {
+            let sel = self.selected_articles();
+            let pool: Vec<&crate::ads::Article> = if !sel.is_empty() {
+                sel
+            } else {
+                self.card_article_pos().and_then(|p| articles.get(p)).into_iter().collect()
+            };
+            return pool
+                .iter()
+                .filter_map(|a| self.lib.get_by_bibcode(&a.bibcode))
+                .map(|e| e.key().to_string())
+                .collect();
+        }
         if self.select_mode && !self.selected.is_empty() {
             return self
                 .order
@@ -1728,6 +1903,11 @@ impl App {
                 .collect();
         }
         self.selected_key().map(str::to_string).into_iter().collect()
+    }
+
+    /// Whether the active scope is a query (ADS results) page.
+    fn on_query(&self) -> bool {
+        matches!(self.scopes.get(self.active_scope), Some(Scope::Ads { .. }))
     }
 
     fn run(mut self, terminal: &mut ratatui::DefaultTerminal) -> anyhow::Result<()> {
@@ -1810,7 +1990,7 @@ impl App {
             let had_events = event::poll(Duration::from_millis(tick))?;
             if !had_events {
                 // idle: flush any dirty metrics (a no-op while clean)
-                self.metrics.save();
+                self.save_metrics();
             }
             if had_events {
                 // Coalesce: handle every already-pending event before the
@@ -1835,7 +2015,7 @@ impl App {
                 }
             }
         }
-        self.metrics.save();
+        self.save_metrics();
         Ok(())
     }
 
@@ -1862,7 +2042,11 @@ impl App {
             let in_key_col = show_key && self.hover.0 >= a.x + a.width.saturating_sub(20);
             if in_key_col {
                 if let Some(pos) = self.hovered_table_pos() {
-                    return self.filtered.get(pos).map(|&i| self.order[i].as_str());
+                    return self
+                        .filtered
+                        .get(pos)
+                        .and_then(|&i| self.order.get(i))
+                        .map(String::as_str);
                 }
             }
         }
@@ -1975,7 +2159,7 @@ impl App {
         }
         let pos = self.table.selected()?;
         let idx = *self.filtered.get(pos)?;
-        Some(self.order[idx].as_str())
+        self.order.get(idx).map(String::as_str)
     }
 
     fn refilter(&mut self) {
@@ -2019,12 +2203,18 @@ impl App {
             priority: Some(Box::new(move |k: &str| pri.get(k).copied())),
             citations: Some(Box::new(move |k: &str| cit.get(k).copied())),
         };
+        // filter_map, not filter: a key the library no longer holds
+        // simply drops out of the visible set — which also keeps every
+        // position in `filtered` resolvable for the table and the
+        // metric strip, whatever state `order` is in
         self.filtered = self
             .order
             .iter()
             .enumerate()
-            .filter(|(_, key)| query::matches(&groups, self.lib.get(key).unwrap(), &ctx))
-            .map(|(i, _)| i)
+            .filter_map(|(i, key)| {
+                let e = self.lib.get(key)?;
+                query::matches(&groups, e, &ctx).then_some(i)
+            })
             .collect();
         let sel = self.table.selected().unwrap_or(0);
         self.table.select(if self.filtered.is_empty() {
@@ -2064,7 +2254,8 @@ impl App {
                 let Some(&idx) = self.filtered.get(pos) else {
                     return;
                 };
-                self.order[idx].clone()
+                let Some(key) = self.order.get(idx) else { return };
+                key.clone()
             }
         };
         if !self.selected.remove(&key) {
@@ -2097,7 +2288,10 @@ impl App {
         let lib = &self.lib;
         let (col, asc) = self.sort;
         self.order.sort_by(|a, b| {
-            let (ea, eb) = (lib.get(a).unwrap(), lib.get(b).unwrap());
+            let (ea, eb) = match (lib.get(a), lib.get(b)) {
+                (Some(ea), Some(eb)) => (ea, eb),
+                (x, y) => return orphan_order(x.is_some(), y.is_some(), a, b),
+            };
             let ord = match col {
                 SortCol::Metric => match self.metric_col {
                     MetricCol::Priority => {
@@ -2238,6 +2432,12 @@ impl App {
         }
         let keys = self.action_keys();
         if keys.is_empty() {
+            let msg = if self.on_query() {
+                "import the paper first (i) — the manuscript db holds library entries"
+            } else {
+                "no paper under the cursor"
+            };
+            self.note(MsgCat::Warn, msg.to_string());
             return;
         }
         let missing: Vec<String> = keys
@@ -2276,32 +2476,40 @@ impl App {
         self.rebuild_order();
     }
 
-    /// Delete — ask for confirmation before removing.
+    /// Delete — ask for confirmation before removing. The targets are
+    /// the usual ones (selection, else the shown row — on a query page
+    /// their imported twins).
     fn remove_papers(&mut self) {
-        let mut keys = self.action_keys();
-        if keys.is_empty() {
-            keys = self.query_removal_targets();
-        }
-        if !keys.is_empty() {
-            self.mode = Mode::Confirm { keys };
+        let plan = self.removal_plan(self.action_keys());
+        if !plan.is_empty() {
+            self.mode = Mode::Confirm { plan };
         }
     }
 
-    /// On a query page, ⌫ (or the card's "● in library") targets the
-    /// imported twins of the selection, else of the shown article.
-    fn query_removal_targets(&self) -> Vec<String> {
-        let Some(Scope::Ads { articles, .. }) = self.scopes.get(self.active_scope) else {
-            return vec![];
-        };
-        let sel = self.selected_articles();
-        let pool: Vec<&crate::ads::Article> = if !sel.is_empty() {
-            sel
-        } else {
-            self.card_article_pos().and_then(|p| articles.get(p)).into_iter().collect()
-        };
-        pool.iter()
-            .filter_map(|a| self.lib.get_by_bibcode(&a.bibcode))
-            .map(|e| e.key().to_string())
+    /// Decide, once, what removing each target will do — the single
+    /// source of truth for Delete. The modal renders this and
+    /// remove_confirmed consumes it, so the words and the deed cannot
+    /// drift apart (and the manuscript scan behind `cited` runs once,
+    /// not once per frame the modal is up).
+    fn removal_plan(&self, keys: Vec<String>) -> Vec<(String, RemovalKind)> {
+        let local_only = self.lib.manuscript.is_some() && !self.lib.global_on;
+        // query pages: a paper the active manuscript cites keeps its
+        // tier-2 copy — only the global (tier-1) copy is removed. That
+        // only means anything when a tier-2 copy actually exists;
+        // otherwise removal is the ordinary kind (removing from a tier
+        // that does not hold the paper is a no-op either way).
+        let cited = if self.on_query() { self.cited_keys() } else { Default::default() };
+        keys.into_iter()
+            .map(|k| {
+                let kind = if cited.contains(&k) && self.lib.in_manuscript(&k) {
+                    RemovalKind::GlobalOnly
+                } else if local_only {
+                    RemovalKind::ManuscriptOnly
+                } else {
+                    RemovalKind::BothTiers
+                };
+                (k, kind)
+            })
             .collect()
     }
 
@@ -2318,25 +2526,21 @@ impl App {
             .collect()
     }
 
-    /// Confirmed removal: both tiers normally; with the global tier
-    /// hidden, only the local tier — sole copies rescue to the (hidden)
-    /// global tier rather than being destroyed.
-    fn remove_confirmed(&mut self, keys: &[String]) {
-        let local_only = self.lib.manuscript.is_some() && !self.lib.global_on;
-        // query pages: a paper the active manuscript cites keeps its
-        // tier-2 copy — only the global (tier-1) copy is removed
-        let on_query = matches!(self.scopes.get(self.active_scope), Some(Scope::Ads { .. }));
-        let cited = if on_query { self.cited_keys() } else { Default::default() };
+    /// Execute the plan the confirm modal stated — nothing is decided
+    /// here, so what happens is what the user was told would happen.
+    fn remove_confirmed(&mut self, plan: &[(String, RemovalKind)]) {
         let mut n = 0;
         let mut kept = 0;
-        for k in keys {
-            let ok = if on_query && cited.contains(k) {
-                kept += 1;
-                self.lib.personal.remove_entry(k).is_ok()
-            } else if local_only {
-                matches!(self.lib.remove_from_manuscript(k), Ok(true))
-            } else {
-                self.lib.remove_entry(k).is_ok()
+        for (k, kind) in plan {
+            let ok = match kind {
+                RemovalKind::GlobalOnly => {
+                    kept += 1;
+                    self.lib.personal.remove_entry(k).is_ok()
+                }
+                RemovalKind::ManuscriptOnly => {
+                    matches!(self.lib.remove_from_manuscript(k), Ok(true))
+                }
+                RemovalKind::BothTiers => self.lib.remove_entry(k).is_ok(),
             };
             if ok {
                 n += 1;
@@ -2571,13 +2775,11 @@ impl App {
             match m {
                 DlMsg::Progress(s) => self.status = s,
                 DlMsg::Done { id, done, failed } => {
-                    let finished = self.finish_task(id);
-                    if finished.as_ref().is_some_and(|t| t.cancelled) {
+                    if let Some(t) = self.finish_task(id).filter(|t| t.cancelled) {
                         // discard the cancelled task's result: remove
                         // anything it cached so the end state matches the
                         // existing failure/clear paths, and reset the
                         // channel state exactly as the normal arm does
-                        let t = finished.unwrap();
                         for k in &t.keys {
                             let p = pdf::cache_path(k);
                             if p.exists() {
@@ -2673,7 +2875,7 @@ impl App {
                 .and_then(|a| self.lib.get_by_bibcode(&a.bibcode))
                 .map(|e| e.key().to_string()),
             Some(Scope::Manuscript { rows }) => rows.get(pos).and_then(|r| r.key.clone()),
-            _ => self.filtered.get(pos).map(|&i| self.order[i].clone()),
+            _ => self.filtered.get(pos).and_then(|&i| self.order.get(i).cloned()),
         }
     }
 
@@ -2714,12 +2916,12 @@ impl App {
             self.mode = Mode::Normal;
         }
         // confirm modal: only its two buttons act; other clicks are inert
-        if let Mode::Confirm { keys } = &self.mode {
+        if let Mode::Confirm { plan } = &self.mode {
             if let Some(&(_, is_confirm)) = self.confirm_btns.iter().find(|(r, _)| hit(*r, x, y)) {
-                let keys = keys.clone();
+                let plan = plan.clone();
                 self.mode = Mode::Normal;
                 if is_confirm {
-                    self.remove_confirmed(&keys);
+                    self.remove_confirmed(&plan);
                 } else {
                     self.note(MsgCat::Warn, "removal cancelled".to_string());
                 }
@@ -2768,10 +2970,7 @@ impl App {
         // pub card buttons (act on the card's entry)
         if let Some(&(_, btn)) = self.card_buttons.iter().find(|(r, _)| hit(*r, x, y)) {
             if btn == CardBtn::RemoveFromLib {
-                let keys = self.query_removal_targets();
-                if !keys.is_empty() {
-                    self.mode = Mode::Confirm { keys };
-                }
+                self.remove_papers();
                 return;
             }
             if btn == CardBtn::RefreshCites {
@@ -3296,11 +3495,11 @@ impl App {
                     input.handle_event(&ev);
                 }
             },
-            Mode::Confirm { keys } => match code {
+            Mode::Confirm { plan } => match code {
                 KeyCode::Enter | KeyCode::Char('y') => {
-                    let keys = keys.clone();
+                    let plan = plan.clone();
                     self.mode = Mode::Normal;
-                    self.remove_confirmed(&keys);
+                    self.remove_confirmed(&plan);
                 }
                 KeyCode::Esc | KeyCode::Char('n') => {
                     self.mode = Mode::Normal;
@@ -3342,7 +3541,9 @@ impl App {
                         self.sort = (SortCol::Year, false);
                         self.rebuild_order();
                     }
-                    let _ = crate::ads::save_state_field("metric", self.metric_col.state_tag());
+                    let res =
+                        crate::ads::save_state_field("metric", self.metric_col.state_tag());
+                    self.state_write("state.json", res.err().map(|e| e.to_string()));
                     self.note(
                         MsgCat::Info,
                         format!("metric column: {}", self.metric_col.name()),
@@ -3521,23 +3722,17 @@ impl App {
         }
     }
 
-    /// Centered confirm modal for Delete: lists the targets, offers
-    /// clickable remove/cancel (⏎/y confirms, Esc/n cancels).
+    /// Centered confirm modal for Delete: lists the targets, states in
+    /// plain words what confirming will do to them (the decided plan,
+    /// which is also what executes), offers clickable remove/cancel
+    /// (⏎/y confirms, Esc/n cancels).
     fn draw_confirm(&mut self, f: &mut Frame) {
         self.confirm_btns.clear();
-        let Mode::Confirm { keys } = &self.mode else { return };
+        let Mode::Confirm { plan } = &self.mode else { return };
         let frame = f.area();
-        let listed: Vec<&String> = keys.iter().take(8).collect();
-        let extra = keys.len().saturating_sub(listed.len());
-        let h = (listed.len() + if extra > 0 { 1 } else { 0 } + 4) as u16;
         let w = 52.min(frame.width.saturating_sub(4));
-        let area = Rect {
-            x: frame.width.saturating_sub(w) / 2,
-            y: frame.height.saturating_sub(h) / 2,
-            width: w,
-            height: h.min(frame.height),
-        };
-        f.render_widget(ratatui::widgets::Clear, area);
+        let listed: Vec<&String> = plan.iter().take(6).map(|(k, _)| k).collect();
+        let extra = plan.len().saturating_sub(listed.len());
         let mut lines: Vec<Line> = vec![];
         for k in &listed {
             lines.push(Line::from(Span::styled(
@@ -3552,6 +3747,33 @@ impl App {
             )));
         }
         lines.push(Line::default());
+        // one sentence per distinct outcome, in the order they occur;
+        // counts appear only when the targets do not share an outcome
+        let mut kinds: Vec<(RemovalKind, usize)> = vec![];
+        for (_, k) in plan.iter() {
+            match kinds.iter_mut().find(|(x, _)| x == k) {
+                Some((_, n)) => *n += 1,
+                None => kinds.push((*k, 1)),
+            }
+        }
+        let mixed = kinds.len() > 1;
+        let ms = self.lib.manuscript.is_some();
+        for (kind, n) in &kinds {
+            let s = kind.sentence(*n, ms);
+            let s = if mixed { format!("{n} · {s}") } else { s };
+            for l in wrap_text(&s, w.saturating_sub(4) as usize) {
+                lines.push(Line::from(Span::styled(l, Style::default().fg(Color::Yellow))));
+            }
+        }
+        lines.push(Line::default());
+        let h = lines.len() as u16 + 3; // + the buttons row and both borders
+        let area = Rect {
+            x: frame.width.saturating_sub(w) / 2,
+            y: frame.height.saturating_sub(h) / 2,
+            width: w,
+            height: h.min(frame.height),
+        };
+        f.render_widget(ratatui::widgets::Clear, area);
         let by = area.y + h.saturating_sub(2);
         let bx = area.x + 1;
         let (rw, cw) = (pill_width("remove"), pill_width("cancel"));
@@ -3584,10 +3806,13 @@ impl App {
             Color::White,
         );
         lines.push(Line::from(bspans));
-        let title = format!(
-            " Remove {} paper(s) from the library? ",
-            keys.len()
-        );
+        // with no local tier there is only one place to remove from, so
+        // the title can name it; otherwise the sentences below do
+        let title = if ms {
+            format!(" Remove {} paper(s)? ", plan.len())
+        } else {
+            format!(" Remove {} paper(s) from the library? ", plan.len())
+        };
         let p = Paragraph::new(Text::from(lines))
             .block(Block::default().borders(Borders::ALL).title(title));
         f.render_widget(p, area);
@@ -3626,9 +3851,10 @@ impl App {
                         height: 1,
                     };
                     let hov = avail && hit(rect, self.hover.0, self.hover.1);
-                    if avail {
-                        self.help_rects.push((rect, *click));
-                    }
+                    // unavailable rows stay clickable: the key they
+                    // synthesize explains itself in the footer, which
+                    // beats a dimmed row that swallows the click
+                    self.help_rects.push((rect, *click));
                     let (mut ks, mut ls) = if avail {
                         (Style::default().fg(Color::Cyan), Style::default())
                     } else {
@@ -4010,7 +4236,7 @@ impl App {
             _ => self
                 .filtered
                 .iter()
-                .filter_map(|&i| self.lib.get(&self.order[i]))
+                .filter_map(|&i| self.entry_at(i))
                 .map(|e| {
                     let m = self.metrics.get(e.key());
                     match metric {
@@ -4324,7 +4550,19 @@ impl App {
             .iter()
             .enumerate()
             .map(|(pos, &i)| {
-                let e = self.lib.get(&self.order[i]).unwrap();
+                // refilter only admits keys the library holds, so this
+                // resolves; if the two ever disagree the row renders as
+                // an orphan rather than panicking mid-frame — and every
+                // later position stays aligned with `filtered`
+                let Some(e) = self.entry_at(i) else {
+                    return Row::new(vec![Cell::from(Span::styled(
+                        format!(
+                            "· {} (no longer in the library)",
+                            self.order.get(i).map(String::as_str).unwrap_or("?")
+                        ),
+                        Style::default().fg(Color::DarkGray),
+                    ))]);
+                };
                 let at_cursor = cursor == Some(pos);
                 let lit = hov_row == Some(pos);
                 let (c_ind, c_pdf, c_ms, c_year, c_author, c_key) = palette(lit);
@@ -4755,7 +4993,7 @@ impl App {
         }
         // the vertical link stack: browser links plus the citation-graph
         // queries (the ⌕ rows act inside astrobib)
-        let stack: Vec<(String, LinkTarget, bool)> = vec![
+        let mut stack: Vec<(String, LinkTarget, bool)> = vec![
             (
                 "ADS".into(),
                 LinkTarget::Url(format!("https://ui.adsabs.harvard.edu/abs/{bibcode}/abstract")),
@@ -4774,6 +5012,17 @@ impl App {
             ("citations".into(), LinkTarget::Query(CardBtn::Citations), true),
             ("references".into(), LinkTarget::Query(CardBtn::Refs), true),
         ];
+        // the manuscript ± affordance the library card carries, so m has
+        // a visible twin here too; it acts on the imported entry, and
+        // dims (with a hint) while there is none
+        if self.lib.manuscript.is_some() {
+            let in_ms = lib_key.as_deref().is_some_and(|k| self.lib.in_manuscript(k));
+            stack.push((
+                if in_ms { "in manuscript".into() } else { "add to manuscript".to_string() },
+                LinkTarget::Query(CardBtn::MsToggle),
+                in_lib && self.lib.global_on,
+            ));
+        }
         // prose has no multi-item form: those rows dim while several
         // rows are selected (the others copy across the selection)
         let multi = self.select_mode && self.selected.len() > 1;

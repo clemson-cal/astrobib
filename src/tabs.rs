@@ -76,7 +76,10 @@ pub fn load(ms_root: Option<&Path>) -> Vec<Tab> {
 }
 
 /// Write this context's tabs, preserving every other context untouched.
-pub fn save(tabs: &[Tab], ms_root: Option<&Path>) {
+/// The caller reports a failure: saved queries are user state, and a
+/// state dir that has gone unwritable must not be discovered only at
+/// the next launch.
+pub fn save(tabs: &[Tab], ms_root: Option<&Path>) -> std::io::Result<()> {
     let mut contexts = read_contexts();
     let arr: Vec<serde_json::Value> = tabs
         .iter()
@@ -95,10 +98,10 @@ pub fn save(tabs: &[Tab], ms_root: Option<&Path>) {
     contexts.insert(context_key(ms_root), serde_json::Value::Array(arr));
     let file = state_file();
     if let Some(dir) = file.parent() {
-        let _ = std::fs::create_dir_all(dir);
+        std::fs::create_dir_all(dir)?;
     }
     let doc = serde_json::json!({ "contexts": contexts });
-    let _ = std::fs::write(file, serde_json::to_string_pretty(&doc).unwrap_or_default());
+    std::fs::write(file, serde_json::to_string_pretty(&doc).unwrap_or_default())
 }
 
 /// Readable tab label: drop field names, quotes, and operator wrapping,
