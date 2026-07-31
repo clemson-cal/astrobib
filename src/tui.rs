@@ -1482,13 +1482,58 @@ impl App {
                         !e.doi().is_empty() || !e.adsurl().is_empty() || !e.eprint().is_empty()
                     })
             }
-            Action::Remove => {
-                !keys.is_empty() || !self.query_removal_targets().is_empty()
+            Action::Remove => !keys.is_empty(),
+            Action::Copy => !keys.is_empty() || self.on_query(),
+        }
+    }
+
+    /// Why an action is unavailable right now, in plain words. Pressing
+    /// a key (or clicking its dimmed row) must never be silent: every
+    /// variant either acts or explains itself through this.
+    fn unavailable_reason(&self, a: Action) -> String {
+        let keys = self.action_keys();
+        // every entry action needs a library cite key; on a query page a
+        // row that was never imported has none — but an imported twin
+        // does, so "import it first" must not be the answer for it
+        let unimported = self.on_query() && keys.is_empty();
+        let import_first =
+            |why: &str| format!("import the paper first (i) — {why}");
+        match a {
+            Action::Manuscript if self.lib.manuscript.is_none() => {
+                "no manuscript db (run inside a manuscript repo)".to_string()
             }
-            Action::Copy => {
-                !keys.is_empty()
-                    || matches!(self.scopes.get(self.active_scope), Some(Scope::Ads { .. }))
+            Action::Manuscript if !self.lib.global_on => {
+                "every paper shown is already the manuscript's — t shows the global tier"
+                    .to_string()
             }
+            Action::Manuscript if unimported => {
+                import_first("the manuscript db holds library entries")
+            }
+            Action::Manuscript => "no paper under the cursor".to_string(),
+            Action::Download | Action::BrowserDl if self.dl_rx.is_some() => {
+                "a download is already running".to_string()
+            }
+            Action::Download | Action::OpenPdf | Action::ClearPdf | Action::BrowserDl
+                if unimported =>
+            {
+                import_first("PDFs are cached under the cite key")
+            }
+            Action::Download => "nothing to download (cached, or no arXiv ID / ADS URL)".to_string(),
+            Action::OpenPdf => "no cached PDF here  (p downloads)".to_string(),
+            Action::ClearPdf => "no cached PDF to clear".to_string(),
+            Action::BrowserDl if keys.len() > 1 => {
+                "browser download takes one paper at a time".to_string()
+            }
+            Action::BrowserDl => "no DOI, ADS URL, or arXiv ID to open".to_string(),
+            Action::Remove if unimported => import_first("removal acts on the library entry"),
+            Action::Remove => "no paper to remove".to_string(),
+            Action::Copy => "nothing to copy".to_string(),
+            Action::GlobalTier => {
+                "no local db here — the global library is all there is".to_string()
+            }
+            // always available; unreachable, but the match stays total
+            Action::Select | Action::Filter | Action::Card | Action::Log | Action::Help
+            | Action::Quit => "not available here".to_string(),
         }
     }
 
@@ -1496,22 +1541,19 @@ impl App {
     /// and pub card buttons.
     fn run_action(&mut self, a: Action) {
         if !self.available(a) {
-            // a PDF key is a library cite key, so these are unavailable
-            // on a query page — say why rather than doing nothing
-            if matches!(a, Action::Download | Action::BrowserDl | Action::OpenPdf)
-                && matches!(self.scopes.get(self.active_scope), Some(Scope::Ads { .. }))
-            {
-                self.note(
-                    MsgCat::Warn,
-                    "import the paper first (i) — PDFs are cached under its cite key".to_string(),
-                );
-            }
+            let why = self.unavailable_reason(a);
+            self.note(MsgCat::Warn, why);
             return;
         }
         match a {
             Action::Select => {
                 if matches!(self.scopes.get(self.active_scope), Some(Scope::Manuscript { .. })) {
-                    return; // manuscript rows aren't a selection target
+                    // manuscript rows are citations, not selectable papers
+                    self.note(
+                        MsgCat::Warn,
+                        "manuscript rows aren't selectable — [ switches to the library".to_string(),
+                    );
+                    return;
                 }
                 self.select_mode = true;
                 if let Some(pos) = self.table.selected() {
@@ -1548,7 +1590,12 @@ impl App {
     fn open_export_prompt(&mut self) {
         let keys = self.action_keys();
         if keys.is_empty() {
-            self.note(MsgCat::Warn, "nothing to export — Space selects".to_string());
+            let msg = if self.on_query() {
+                "import the paper first (i) — export writes library entries"
+            } else {
+                "nothing to export — Space selects"
+            };
+            self.note(MsgCat::Warn, msg.to_string());
             return;
         }
         self.mode = Mode::Export { input: tui_input::Input::from("refs.bib".to_string()), keys };
@@ -1591,7 +1638,12 @@ impl App {
     fn adjust_priority(&mut self, op: PriorityOp) {
         let keys = self.priority_targets();
         if keys.is_empty() {
-            self.note(MsgCat::Warn, "no paper to prioritize".to_string());
+            let msg = if self.on_query() {
+                "import the paper first (i) — priority is per library entry"
+            } else {
+                "no paper to prioritize"
+            };
+            self.note(MsgCat::Warn, msg.to_string());
             return;
         }
         let mut last = 0.0;
@@ -1718,7 +1770,30 @@ impl App {
         }
     }
 
+    /// The library entries an action applies to: the selection (in
+    /// display order) when selection mode is active and non-empty, else
+    /// the highlighted row — one convention for every bulk-capable
+    /// action, in every scope.
+    ///
+    /// A query page lists ADS records, not library entries, so each row
+    /// resolves through its imported twin (`get_by_bibcode`): actions
+    /// there act on the paper the user can see is already in the
+    /// library, and an un-imported row yields no key at all, so the
+    /// actions that need one dim and say why instead of doing nothing.
     fn action_keys(&self) -> Vec<String> {
+        if let Some(Scope::Ads { articles, .. }) = self.scopes.get(self.active_scope) {
+            let sel = self.selected_articles();
+            let pool: Vec<&crate::ads::Article> = if !sel.is_empty() {
+                sel
+            } else {
+                self.card_article_pos().and_then(|p| articles.get(p)).into_iter().collect()
+            };
+            return pool
+                .iter()
+                .filter_map(|a| self.lib.get_by_bibcode(&a.bibcode))
+                .map(|e| e.key().to_string())
+                .collect();
+        }
         if self.select_mode && !self.selected.is_empty() {
             return self
                 .order
@@ -1728,6 +1803,11 @@ impl App {
                 .collect();
         }
         self.selected_key().map(str::to_string).into_iter().collect()
+    }
+
+    /// Whether the active scope is a query (ADS results) page.
+    fn on_query(&self) -> bool {
+        matches!(self.scopes.get(self.active_scope), Some(Scope::Ads { .. }))
     }
 
     fn run(mut self, terminal: &mut ratatui::DefaultTerminal) -> anyhow::Result<()> {
@@ -2238,6 +2318,12 @@ impl App {
         }
         let keys = self.action_keys();
         if keys.is_empty() {
+            let msg = if self.on_query() {
+                "import the paper first (i) — the manuscript db holds library entries"
+            } else {
+                "no paper under the cursor"
+            };
+            self.note(MsgCat::Warn, msg.to_string());
             return;
         }
         let missing: Vec<String> = keys
@@ -2276,33 +2362,14 @@ impl App {
         self.rebuild_order();
     }
 
-    /// Delete — ask for confirmation before removing.
+    /// Delete — ask for confirmation before removing. The targets are
+    /// the usual ones (selection, else the shown row — on a query page
+    /// their imported twins).
     fn remove_papers(&mut self) {
-        let mut keys = self.action_keys();
-        if keys.is_empty() {
-            keys = self.query_removal_targets();
-        }
+        let keys = self.action_keys();
         if !keys.is_empty() {
             self.mode = Mode::Confirm { keys };
         }
-    }
-
-    /// On a query page, ⌫ (or the card's "● in library") targets the
-    /// imported twins of the selection, else of the shown article.
-    fn query_removal_targets(&self) -> Vec<String> {
-        let Some(Scope::Ads { articles, .. }) = self.scopes.get(self.active_scope) else {
-            return vec![];
-        };
-        let sel = self.selected_articles();
-        let pool: Vec<&crate::ads::Article> = if !sel.is_empty() {
-            sel
-        } else {
-            self.card_article_pos().and_then(|p| articles.get(p)).into_iter().collect()
-        };
-        pool.iter()
-            .filter_map(|a| self.lib.get_by_bibcode(&a.bibcode))
-            .map(|e| e.key().to_string())
-            .collect()
     }
 
     /// Keys cited by the active manuscript's sources (not merely db
@@ -2768,10 +2835,7 @@ impl App {
         // pub card buttons (act on the card's entry)
         if let Some(&(_, btn)) = self.card_buttons.iter().find(|(r, _)| hit(*r, x, y)) {
             if btn == CardBtn::RemoveFromLib {
-                let keys = self.query_removal_targets();
-                if !keys.is_empty() {
-                    self.mode = Mode::Confirm { keys };
-                }
+                self.remove_papers();
                 return;
             }
             if btn == CardBtn::RefreshCites {
@@ -3626,9 +3690,10 @@ impl App {
                         height: 1,
                     };
                     let hov = avail && hit(rect, self.hover.0, self.hover.1);
-                    if avail {
-                        self.help_rects.push((rect, *click));
-                    }
+                    // unavailable rows stay clickable: the key they
+                    // synthesize explains itself in the footer, which
+                    // beats a dimmed row that swallows the click
+                    self.help_rects.push((rect, *click));
                     let (mut ks, mut ls) = if avail {
                         (Style::default().fg(Color::Cyan), Style::default())
                     } else {
@@ -4755,7 +4820,7 @@ impl App {
         }
         // the vertical link stack: browser links plus the citation-graph
         // queries (the ⌕ rows act inside astrobib)
-        let stack: Vec<(String, LinkTarget, bool)> = vec![
+        let mut stack: Vec<(String, LinkTarget, bool)> = vec![
             (
                 "ADS".into(),
                 LinkTarget::Url(format!("https://ui.adsabs.harvard.edu/abs/{bibcode}/abstract")),
@@ -4774,6 +4839,17 @@ impl App {
             ("citations".into(), LinkTarget::Query(CardBtn::Citations), true),
             ("references".into(), LinkTarget::Query(CardBtn::Refs), true),
         ];
+        // the manuscript ± affordance the library card carries, so m has
+        // a visible twin here too; it acts on the imported entry, and
+        // dims (with a hint) while there is none
+        if self.lib.manuscript.is_some() {
+            let in_ms = lib_key.as_deref().is_some_and(|k| self.lib.in_manuscript(k));
+            stack.push((
+                if in_ms { "in manuscript".into() } else { "add to manuscript".to_string() },
+                LinkTarget::Query(CardBtn::MsToggle),
+                in_lib && self.lib.global_on,
+            ));
+        }
         // prose has no multi-item form: those rows dim while several
         // rows are selected (the others copy across the selection)
         let multi = self.select_mode && self.selected.len() > 1;
