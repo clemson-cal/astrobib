@@ -186,7 +186,7 @@ fn main() -> anyhow::Result<()> {
                 return Ok(());
             }
             let groups = query::tokenize(&query);
-            let ctx = QueryContext::default();
+            let ctx = query_context(&lib);
             print_entries(&lib, |e| query::matches(&groups, e, &ctx), limit);
             Ok(())
         }
@@ -301,6 +301,41 @@ fn main() -> anyhow::Result<()> {
                 std::process::exit(1);
             }
         },
+    }
+}
+
+/// The context the local filter needs for the terms that live outside
+/// the BibTeX data: is:ms / is:pdf and the pri:/cit: comparisons. The
+/// default (empty) context silently matches nothing for those terms, so
+/// the CLI must build a real one or `astrobib search pri:>0.5` reports
+/// no results however many papers qualify.
+fn query_context(lib: &MergedLibrary) -> QueryContext {
+    use std::collections::{HashMap, HashSet};
+    let in_ms: HashSet<String> = lib
+        .manuscript
+        .as_ref()
+        .map(|m| m.entries().iter().map(|e| e.key().to_string()).collect())
+        .unwrap_or_default();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    let metrics = astrobib::metrics::Metrics::load();
+    let pri: HashMap<String, f64> = metrics
+        .papers
+        .iter()
+        .filter_map(|(k, m)| m.effective_priority(now).map(|v| (k.clone(), v)))
+        .collect();
+    let cit: HashMap<String, f64> = metrics
+        .papers
+        .iter()
+        .filter_map(|(k, m)| m.citations.map(|v| (k.clone(), v as f64)))
+        .collect();
+    QueryContext {
+        in_manuscript: Some(Box::new(move |k: &str| in_ms.contains(k))),
+        has_pdf: Some(Box::new(astrobib::library::has_cached_pdf)),
+        priority: Some(Box::new(move |k: &str| pri.get(k).copied())),
+        citations: Some(Box::new(move |k: &str| cit.get(k).copied())),
     }
 }
 
@@ -767,6 +802,18 @@ fn adopt_manuscript(lib: &mut MergedLibrary, dry_run: bool) -> anyhow::Result<()
         "\n{adopted} entr{} adopted, {skipped} left alone.",
         if adopted == 1 { "y" } else { "ies" }
     );
+    // an adoption that adopted nothing is a failure, not a quiet
+    // success: pressing on would regenerate refs.bib from an empty
+    // manuscript db, overwriting the very .bib file we failed to read
+    if adopted == 0 {
+        eprintln!(
+            "\nNothing adopted — {} left unchanged.\n\
+             Foreign cite keys are resolved against ADS; set a token with\n\
+             astrobib config ads_token <token> (or $ADS_API_TOKEN) and retry.",
+            root.display()
+        );
+        std::process::exit(1);
+    }
     let superseded: Vec<_> = loose
         .iter()
         .filter(|p| p.file_name().is_some_and(|f| f != "refs.bib"))
@@ -992,7 +1039,19 @@ fn run_refs(
             .count()
     };
     if let Some(out) = &bib_out {
-        if dry_run {
+        // never truncate a bibliography that is already there: when no
+        // cite resolves (an unadopted manuscript, a library not yet
+        // synced) the file on disk is the user's own — hand-written or
+        // from another tool — and overwriting it with nothing loses
+        // bibdata astrobib cannot regenerate
+        let occupied = std::fs::read_to_string(out).is_ok_and(|t| !t.trim().is_empty());
+        if content.trim().is_empty() && occupied {
+            eprintln!(
+                "refusing to overwrite {} with an empty bibliography — \
+                 no cited key resolves in the library.",
+                out.display()
+            );
+        } else if dry_run {
             println!("would write {n_bib} entr{} → {}", if n_bib == 1 { "y" } else { "ies" }, out.display());
         } else {
             let changed = export::write_refs_bib(out, &content)?;
