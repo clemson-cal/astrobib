@@ -79,13 +79,19 @@ Cite pandoc-style — bare `@Zrake2019` or bracketed `[@Zrake2019; @Metzger2017]
 
 ---
 ## Building with make
-`astrobib refs` does two things at once, and a build system only wants one of them, so it has three modes:
+The dependency graph of a paper is acyclic, and `astrobib refs` implements the middle of it:
 
-`astrobib refs` — sync: copy cited-but-missing entries into `bib/`, then write the bibliography. What you run yourself.
-`astrobib refs --no-sync` — build: write the bibliography from what is already present, never modifying `bib/`, and stamp the file's mtime even when the content is unchanged. A recipe must not write into its own prerequisites, and make judges freshness by timestamp — so this converges instead of re-running every build. No `touch` needed.
-`astrobib refs --check` — verify: answer "would `astrobib refs` change anything?" and write nothing. Exits nonzero if `refs.bib` is stale or a cited entry is still missing from `bib/`. For CI and pre-commit hooks.
+```
+main.pdf  <-  main.tex, refs.bib
+bib/      <-  main.tex          (citing a paper pulls it out of your library)
+refs.bib  <-  main.tex, bib/
+```
 
-A complete Makefile is in [docs/examples/Makefile](docs/examples/Makefile). It works whether or not the TUI is watching, and whether or not astrobib is installed at all — a coauthor or arXiv builds from the committed `refs.bib` and nothing tries to regenerate it.
+`astrobib refs` — copy newly cited papers into `bib/`, then write `refs.bib` from what is there. It stamps `refs.bib`'s mtime even when the content is unchanged, so a make rule settles instead of re-running every build; no `touch $@` is needed.
+`astrobib refs --check` — verify only: writes nothing, exits nonzero if `refs.bib` is stale or a cited paper is still missing from `bib/`. For CI and pre-commit hooks.
+`astrobib refs --no-sync` — write `refs.bib` from what `bib/` already holds and fetch nothing, for a CI job that must not modify tracked files.
+
+A complete Makefile is in [docs/examples/Makefile](docs/examples/Makefile).
 
 ---
 ## refs.bib and co-authors

@@ -1,19 +1,26 @@
 # Build a LaTeX manuscript whose bibliography astrobib maintains.
 #
-#   make            compile main.pdf (regenerating refs.bib and figures as needed)
-#   make refs       sync bib/ with the keys cited in the sources, then rewrite refs.bib
-#   make check      verify refs.bib is current without changing anything (CI, hooks)
-#   make clean      remove build artifacts
+#   make          compile main.pdf
+#   make check    verify refs.bib is in sync, changing nothing (CI, pre-commit)
+#   make clean    remove build products, refs.bib among them
 #
-# Works in every mode:
+# astrobib is required. refs.bib is a build product — gitignore it. What is
+# version controlled is bib/, one .bib file per paper; refs.bib is the
+# flattened view LaTeX consumes, keyed by the strings you actually cite.
 #
-#   * astrobib open as a watching TUI — it keeps refs.bib current while you
-#     write; this Makefile's regeneration is then a cheap no-op.
-#   * astrobib installed but not running — the build regenerates refs.bib.
-#   * astrobib absent (a coauthor's checkout, arXiv, a CI runner) — the
-#     committed refs.bib is used as shipped and nothing tries to rebuild it.
+# The dependency graph, which is acyclic:
 #
-# Requires astrobib >= 0.9 for `refs --no-sync` / `refs --check`.
+#   main.pdf  <- main.tex, refs.bib
+#   bib/      <- main.tex          (citing a paper pulls it out of your library)
+#   refs.bib  <- main.tex, bib/
+#
+# `astrobib refs` implements both of the middle edges in one pass: it copies
+# newly cited papers from your global library into bib/, then writes refs.bib
+# from what is there. It also stamps refs.bib's mtime even when the content is
+# unchanged, so the rule settles instead of re-running every build — the
+# `touch $@` that this Makefile used to need is gone.
+#
+# Requires astrobib >= 0.9.
 
 MAIN      := main
 FIGURE    := figures/analytic_MC_validation_plot.pdf
@@ -24,10 +31,7 @@ VENV    := .venv
 PYTHON  := $(VENV)/bin/python
 LATEXMK := latexmk -pdf -halt-on-error -interaction=nonstopmode
 
-# Empty when astrobib is not installed, which is a supported situation.
-ASTROBIB := $(shell command -v astrobib 2>/dev/null)
-
-.PHONY: all figures refs check clean distclean
+.PHONY: all figures check clean distclean
 
 all: $(MAIN).pdf
 
@@ -47,48 +51,38 @@ $(PYTHON):
 	$(VENV)/bin/pip install --quiet --upgrade pip
 	$(VENV)/bin/pip install --quiet numpy matplotlib
 
-ifdef ASTROBIB
-
-# `--no-sync` is the build-safe mode: it writes refs.bib and nothing else.
-# A plain `astrobib refs` would also copy cited entries from your global
-# library into bib/ — useful when you invoke it (see the `refs` target),
-# but a recipe must not modify its own prerequisites. It also stamps
-# refs.bib's mtime even when the content is unchanged, so this rule
-# settles instead of re-running on every build; no `touch` needed.
-refs.bib: $(wildcard bib/*.bib) $(MAIN).tex
-	$(ASTROBIB) refs --no-sync
-
-# Pull cited-but-missing entries into bib/ as well. Run this yourself;
-# it is deliberately not part of the build, because it changes tracked
-# files and `git status` should not be surprised by a compile.
-refs:
-	$(ASTROBIB) refs
-
-# Verify without writing: exits nonzero if refs.bib is stale or if a
-# cited entry is still missing from bib/. Suitable for CI and hooks.
-check:
-	$(ASTROBIB) refs --check
-
-else
-
-# astrobib is not installed. refs.bib has no prerequisites here, so make
-# treats an existing file as up to date and never tries to rebuild it —
-# which is exactly right: the committed bibliography is authoritative for
-# anyone without the tool. Only a missing file is an error.
-refs.bib:
-	@test -f $@ || { \
-	  echo "error: $@ is missing and astrobib is not installed." >&2; \
-	  echo "       Ask an author to commit it, or install astrobib." >&2; \
+# Three kinds of change to the bibliography must reach refs.bib, and it takes
+# two prerequisites to catch them all:
+#
+#   edit an entry   -> that file's mtime advances    -> the wildcard sees it
+#   add an entry    -> the directory's mtime advances
+#   delete an entry -> ONLY the directory's mtime advances, since the file has
+#                      left the wildcard; without `bib` a removed paper would
+#                      linger in refs.bib forever
+#
+# The wildcard is re-expanded on every invocation, so files added to bib/
+# become prerequisites next run with no edit here.
+refs.bib: $(MAIN).tex bib $(wildcard bib/*.bib)
+	@command -v astrobib >/dev/null 2>&1 || { \
+	  echo "error: astrobib is required to build $@ from bib/; see README" >&2; \
 	  exit 1; }
+	astrobib refs
 
-refs check:
-	@echo "astrobib is not installed — using the committed $(MAIN) bibliography as shipped." >&2
-
-endif
+# Writes nothing; exits nonzero if refs.bib is stale or something you cite is
+# still missing from bib/. Answers "did someone add a \cite and not rebuild?"
+check:
+	astrobib refs --check
 
 clean:
 	$(LATEXMK) -C $(MAIN).tex
-	rm -f $(MAIN).bbl $(MAIN).synctex.gz $(FIGURE)
+	rm -f $(MAIN).bbl $(MAIN).synctex.gz $(FIGURE) refs.bib
 
 distclean: clean
 	rm -rf $(VENV)
+
+# A note on CI: the rule above deliberately lets the build write into bib/,
+# because that is the graph — citing a paper is what puts it in the repo. If
+# you would rather a CI job never modify tracked files, use
+#     astrobib refs --no-sync
+# there instead: it writes refs.bib from what bib/ already holds and reports
+# anything cited that is missing, rather than fetching it.
