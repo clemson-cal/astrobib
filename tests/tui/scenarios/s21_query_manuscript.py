@@ -39,7 +39,9 @@ def _pre_launch(state_dir):
     contexts = {ms: [tab], os.path.realpath(ms): [tab]}
     with open(os.path.join(state_dir, "tabs.json"), "w") as f:
         json.dump({"contexts": contexts}, f)
-    with open(os.path.join(state_dir, "query_cache.json"), "w") as f:
+    cache = os.path.join(os.path.dirname(state_dir), "home", ".cache", "astrobib")
+    os.makedirs(cache, exist_ok=True)
+    with open(os.path.join(cache, "query_cache.json"), "w") as f:
         json.dump({"version": 1, "tabs": {"q1": [_IMPORTED]}}, f)
 
 
