@@ -394,7 +394,7 @@ const HELP_ENTRIES: &[(&str, &str, Option<Action>, KeyCode)] = &[
     ("q", "quit", Some(Action::Quit), KeyCode::Char('q')),
 ];
 
-/// One row of the card's link stack: ↗ rows open the browser, ⌕ rows
+/// One row of the card's link stack: → rows open the browser, ⌕ rows
 /// act inside astrobib (query scopes).
 enum LinkTarget {
     Url(String),
@@ -424,7 +424,7 @@ fn card_hint(btn: CardBtn) -> &'static str {
         CardBtn::Oa => "↓ fetch the open-access PDF via ADS  ·  p",
         CardBtn::Browser => "↓ download via the browser, watching ~/Downloads  ·  B",
         CardBtn::Pick => "⤷ import a PDF from the filesystem",
-        CardBtn::Open => "↗ open the cached PDF  ·  o",
+        CardBtn::Open => "→ open the cached PDF  ·  o",
         CardBtn::Clear => "✕ remove the cached PDF  ·  X",
         CardBtn::Cancel => "✕ stop watching for the download",
         CardBtn::MsToggle => "◆ add to / remove from the manuscript db  ·  m",
@@ -454,7 +454,7 @@ fn scroll_window(
 /// Render the card's action block as two columns — links and query
 /// actions on the left, the permanent ⧉ copy menu on the right — split
 /// by a dim vertical divider (omitted when either column is empty).
-/// Badges name each row's kind: ↗ opens the browser, ⌕ acts inside
+/// Badges name each row's kind: → opens the browser, ⌕ acts inside
 /// astrobib, ⧉ copies. Registers whole-row click rects and returns the
 /// y below the block.
 #[allow(clippy::too_many_arguments)]
@@ -490,7 +490,7 @@ fn draw_link_stack(
         |f: &mut Frame, item: Option<(String, LinkTarget, bool)>, x: u16, colw: u16, ry: u16| {
             let Some((label, target, enabled)) = item else { return };
             let badge = match &target {
-                LinkTarget::Url(_) => "↗",
+                LinkTarget::Url(_) => "→",
                 LinkTarget::Query(_) => "⌕",
                 LinkTarget::Copy(_) => "⧉",
             };
@@ -500,7 +500,7 @@ fn draw_link_stack(
             let hov = hit(r, hover.0, hover.1);
             if hov {
                 let base = match &target {
-                    LinkTarget::Url(_) => format!("↗ open {label} in the browser"),
+                    LinkTarget::Url(_) => format!("→ open {label} in the browser"),
                     LinkTarget::Query(btn) => card_hint(*btn).to_string(),
                     LinkTarget::Copy(item) => copy_hint(*item).to_string(),
                 };
@@ -3975,7 +3975,7 @@ impl App {
             "https://pypi.org/project/astrobib",
         ];
         let frame = f.area();
-        // ambiguous-width glyphs (↗ ⟳) can render double on some
+        // emoji-set glyphs (⟳) can render double-width on some
         // terminals, shifting rows right — several columns of slack
         // beyond the longest line keep everything inside the borders
         let w = 58.min(frame.width.saturating_sub(4));
@@ -4001,7 +4001,7 @@ impl App {
         let link_row = |url: &str, lines: &mut Vec<Line>, about_links: &mut Vec<(Rect, String)>| {
             let y = area.y + 1 + lines.len() as u16;
             let r = Rect {
-                x: area.x + 5, // border + the " ↗  " prefix
+                x: area.x + 5, // border + the " →  " prefix
                 y,
                 width: url.chars().count() as u16 + 1,
                 height: 1,
@@ -4010,7 +4010,7 @@ impl App {
             let hov = hit(r, self.hover.0, self.hover.1);
             let style = if hov { cyan.add_modifier(Modifier::UNDERLINED) } else { cyan };
             lines.push(Line::from(vec![
-                Span::styled(" ↗  ", dim),
+                Span::styled(" →  ", dim),
                 Span::styled(url.to_string(), style),
             ]));
         };
@@ -5098,7 +5098,7 @@ impl App {
                 buttons.push(("browser ↓", CardBtn::Browser, Color::Yellow));
                 buttons.push(("pick …", CardBtn::Pick, Color::Magenta));
             } else {
-                buttons.push(("Open ↗", CardBtn::Open, Color::Green));
+                buttons.push(("Open →", CardBtn::Open, Color::Green));
                 buttons.push(("Clear ✕", CardBtn::Clear, Color::Gray));
             }
             let mut bspans: Vec<Span> = vec![];
@@ -5450,7 +5450,7 @@ impl App {
             buttons.push(("pick …", CardBtn::Pick, Color::Magenta));
         }
         if cached {
-            buttons.push(("Open ↗", CardBtn::Open, Color::Green));
+            buttons.push(("Open →", CardBtn::Open, Color::Green));
             buttons.push(("Clear ✕", CardBtn::Clear, Color::Gray));
         }
         let mut spans: Vec<Span> = vec![];
@@ -5588,7 +5588,7 @@ impl App {
                 (false, false) => Style::default().fg(Color::DarkGray),
             };
             spans.push(Span::styled(
-                format!("{} {label}", if on { "◼" } else { "◻" }),
+                format!("{} {label}", if on { "■" } else { "□" }),
                 style,
             ));
             spans.push(Span::raw(" "));

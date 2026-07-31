@@ -121,7 +121,8 @@ const INVENTORY: &[(char, Zone, Risk, &str)] = &[
     ('◇', Zone::Hit, Risk::Ambiguous, "manuscript toggle badge, off state"),
     ('⟳', Zone::Hit, Risk::Narrow, "refresh affordance in the strip and about modal"),
     ('▤', Zone::Hit, Risk::Ambiguous, "\"▤ card\" segment of the card/bib toggler"),
-    ('→', Zone::Hit, Risk::Ambiguous, "import button, help-sheet key legend"),
+    ('→', Zone::Hit, Risk::Ambiguous, "import button, help-sheet key legend, \
+         link-row badge, about-modal links, \"Open →\" button"),
     ('⧗', Zone::Hit, Risk::Narrow, "pending-task count at the head of the footer"),
     // -- key legend -------------------------------------------------------
     ('⌫', Zone::Hit, Risk::Narrow, "help-sheet key legend: remove"),
@@ -135,9 +136,8 @@ const INVENTORY: &[(char, Zone, Risk, &str)] = &[
     ('⤷', Zone::Flow, Risk::Narrow, "hover hint for the PDF picker"),
     ('⤓', Zone::Flow, Risk::Narrow, "import task label"),
     // -- shipping offenders (see ACCEPTED_RISK) ---------------------------
-    ('↗', Zone::Hit, Risk::Emoji, "link-row badge, about-modal links, \"Open ↗\" button"),
-    ('◼', Zone::Hit, Risk::Emoji, "footer badge, on state"),
-    ('◻', Zone::Hit, Risk::Emoji, "footer badge, off state"),
+    ('■', Zone::Hit, Risk::Ambiguous, "footer badge, on state"),
+    ('□', Zone::Hit, Risk::Ambiguous, "footer badge, off state"),
     ('⚠', Zone::Flow, Risk::Emoji, "\"no open-access PDF found\" status message"),
     ('👁', Zone::Flow, Risk::Emoji, "\"watching ~/Downloads\" status message"),
     ('©', Zone::Flow, Risk::Emoji, "about modal copyright line"),
@@ -146,25 +146,12 @@ const INVENTORY: &[(char, Zone, Risk, &str)] = &[
 /// Glyphs that break rule 1 or 2 and are still on screen. Shrink, never
 /// grow: each row is a live rendering bug on some terminal.
 ///
-/// All six are grandfathered, not endorsed. Fixing them means editing
-/// `src/tui.rs`, which is outside the reach of the change that added this
-/// guard; the point of listing them here is that they can never grow to
-/// seven without a deliberate act.
+/// The three that sat in Hit zones — ↗ and the ◼/◻ footer badges — were
+/// fixed by swapping in →, ■ and □ (Ambiguous but not emoji-set, so no
+/// terminal substitutes a double-width font). What remains is confined
+/// to status text and modal prose, where a width surprise only ragged-
+/// edges its own line: nothing is positioned after it.
 const ACCEPTED_RISK: &[(char, &str)] = &[
-    (
-        '↗',
-        "SHIPPING BUG. Caused the about-modal underline bleed; still prefixes \
-         the card's link rows and the \"Open ↗\" pill. Click rects are sized \
-         with pill_width()/chars().count(), i.e. one cell per char, so on an \
-         emoji-font terminal every affordance to its right is off by one.",
-    ),
-    (
-        '◼',
-        "SHIPPING BUG. Footer badge on-state, drawn by draw_badges(), whose \
-         click rects advance bx by chars().count()+2. Two cells here misplaces \
-         the card / log / keys toggles.",
-    ),
-    ('◻', "SHIPPING BUG. Footer badge off-state; same rects as ◼."),
     (
         '⚠',
         "Status-line message only — nothing is positioned after it, so the \

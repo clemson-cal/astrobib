@@ -38,6 +38,6 @@ def run(t):
     require("citations" in txt, "pub card citations affordance missing", t)
     require("references" in txt, "pub card references affordance missing", t)
     # footer view badges: card on, log and keys off
-    require("◼ card" in txt, "card badge should be on (◼)", t)
-    require("◻ log" in txt, "log badge should be off (◻)", t)
-    require("◻ keys" in txt, "keys badge should be off (◻)", t)
+    require("■ card" in txt, "card badge should be on (■)", t)
+    require("□ log" in txt, "log badge should be off (□)", t)
+    require("□ keys" in txt, "keys badge should be off (□)", t)
