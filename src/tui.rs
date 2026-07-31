@@ -39,8 +39,10 @@ enum Mode {
         files: Vec<std::path::PathBuf>,
         sel: usize,
     },
-    /// Confirm modal for removing papers (Delete key).
-    Confirm { keys: Vec<String> },
+    /// Confirm modal for removing papers (Delete key). It carries the
+    /// decided plan, not just the keys: the modal states that plan in
+    /// plain words and remove_confirmed executes exactly it.
+    Confirm { plan: Vec<(String, RemovalKind)> },
     /// S — compose an ADS query; ↑/↓ steps the result limit, ⏎ runs it.
     AdsPrompt { input: tui_input::Input, limit: usize },
     // first-run setup: collect the ADS token, then the email, into
@@ -52,6 +54,46 @@ enum Mode {
     /// y pressed — the next key picks what to copy (the Copy panel tab
     /// shows the menu, which-key style); Esc cancels.
     Copy,
+}
+
+/// What removing one paper will actually do. Delete means three
+/// different things depending on context, each defensible on its own
+/// but unpredictable from the keystroke — so the decision is made once,
+/// stated by the confirm modal, and executed from the same value.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum RemovalKind {
+    /// the ordinary case: gone from every tier that holds it
+    BothTiers,
+    /// global tier hidden: only the local tier's copy goes, and a sole
+    /// copy is rescued into the global tier first
+    ManuscriptOnly,
+    /// a query page, and the active manuscript cites this paper: its
+    /// manuscript copy stays, only the global one goes
+    GlobalOnly,
+}
+
+impl RemovalKind {
+    /// The consequence in plain words. `n` is how many targets share
+    /// this outcome; `ms` whether a local (tier-2) db exists at all.
+    fn sentence(self, n: usize, ms: bool) -> String {
+        match self {
+            RemovalKind::BothTiers if ms => {
+                "removes from both tiers — the global library's copy and this manuscript's"
+                    .to_string()
+            }
+            RemovalKind::BothTiers => {
+                let f = if n == 1 { "file is" } else { "files are" };
+                format!("removes from the library — the .bib {f} deleted")
+            }
+            RemovalKind::ManuscriptOnly => {
+                "removes from this manuscript; sole copies are rescued to the global library"
+                    .to_string()
+            }
+            RemovalKind::GlobalOnly => {
+                format!("removes from the global library (kept in the manuscript: {n} cited)")
+            }
+        }
+    }
 }
 
 /// Every user action; the panel lists them all, dimming the unavailable.
@@ -2436,10 +2478,37 @@ impl App {
     /// the usual ones (selection, else the shown row — on a query page
     /// their imported twins).
     fn remove_papers(&mut self) {
-        let keys = self.action_keys();
-        if !keys.is_empty() {
-            self.mode = Mode::Confirm { keys };
+        let plan = self.removal_plan(self.action_keys());
+        if !plan.is_empty() {
+            self.mode = Mode::Confirm { plan };
         }
+    }
+
+    /// Decide, once, what removing each target will do — the single
+    /// source of truth for Delete. The modal renders this and
+    /// remove_confirmed consumes it, so the words and the deed cannot
+    /// drift apart (and the manuscript scan behind `cited` runs once,
+    /// not once per frame the modal is up).
+    fn removal_plan(&self, keys: Vec<String>) -> Vec<(String, RemovalKind)> {
+        let local_only = self.lib.manuscript.is_some() && !self.lib.global_on;
+        // query pages: a paper the active manuscript cites keeps its
+        // tier-2 copy — only the global (tier-1) copy is removed. That
+        // only means anything when a tier-2 copy actually exists;
+        // otherwise removal is the ordinary kind (removing from a tier
+        // that does not hold the paper is a no-op either way).
+        let cited = if self.on_query() { self.cited_keys() } else { Default::default() };
+        keys.into_iter()
+            .map(|k| {
+                let kind = if cited.contains(&k) && self.lib.in_manuscript(&k) {
+                    RemovalKind::GlobalOnly
+                } else if local_only {
+                    RemovalKind::ManuscriptOnly
+                } else {
+                    RemovalKind::BothTiers
+                };
+                (k, kind)
+            })
+            .collect()
     }
 
     /// Keys cited by the active manuscript's sources (not merely db
@@ -2455,25 +2524,21 @@ impl App {
             .collect()
     }
 
-    /// Confirmed removal: both tiers normally; with the global tier
-    /// hidden, only the local tier — sole copies rescue to the (hidden)
-    /// global tier rather than being destroyed.
-    fn remove_confirmed(&mut self, keys: &[String]) {
-        let local_only = self.lib.manuscript.is_some() && !self.lib.global_on;
-        // query pages: a paper the active manuscript cites keeps its
-        // tier-2 copy — only the global (tier-1) copy is removed
-        let on_query = matches!(self.scopes.get(self.active_scope), Some(Scope::Ads { .. }));
-        let cited = if on_query { self.cited_keys() } else { Default::default() };
+    /// Execute the plan the confirm modal stated — nothing is decided
+    /// here, so what happens is what the user was told would happen.
+    fn remove_confirmed(&mut self, plan: &[(String, RemovalKind)]) {
         let mut n = 0;
         let mut kept = 0;
-        for k in keys {
-            let ok = if on_query && cited.contains(k) {
-                kept += 1;
-                self.lib.personal.remove_entry(k).is_ok()
-            } else if local_only {
-                matches!(self.lib.remove_from_manuscript(k), Ok(true))
-            } else {
-                self.lib.remove_entry(k).is_ok()
+        for (k, kind) in plan {
+            let ok = match kind {
+                RemovalKind::GlobalOnly => {
+                    kept += 1;
+                    self.lib.personal.remove_entry(k).is_ok()
+                }
+                RemovalKind::ManuscriptOnly => {
+                    matches!(self.lib.remove_from_manuscript(k), Ok(true))
+                }
+                RemovalKind::BothTiers => self.lib.remove_entry(k).is_ok(),
             };
             if ok {
                 n += 1;
@@ -2849,12 +2914,12 @@ impl App {
             self.mode = Mode::Normal;
         }
         // confirm modal: only its two buttons act; other clicks are inert
-        if let Mode::Confirm { keys } = &self.mode {
+        if let Mode::Confirm { plan } = &self.mode {
             if let Some(&(_, is_confirm)) = self.confirm_btns.iter().find(|(r, _)| hit(*r, x, y)) {
-                let keys = keys.clone();
+                let plan = plan.clone();
                 self.mode = Mode::Normal;
                 if is_confirm {
-                    self.remove_confirmed(&keys);
+                    self.remove_confirmed(&plan);
                 } else {
                     self.note(MsgCat::Warn, "removal cancelled".to_string());
                 }
@@ -3428,11 +3493,11 @@ impl App {
                     input.handle_event(&ev);
                 }
             },
-            Mode::Confirm { keys } => match code {
+            Mode::Confirm { plan } => match code {
                 KeyCode::Enter | KeyCode::Char('y') => {
-                    let keys = keys.clone();
+                    let plan = plan.clone();
                     self.mode = Mode::Normal;
-                    self.remove_confirmed(&keys);
+                    self.remove_confirmed(&plan);
                 }
                 KeyCode::Esc | KeyCode::Char('n') => {
                     self.mode = Mode::Normal;
@@ -3655,23 +3720,17 @@ impl App {
         }
     }
 
-    /// Centered confirm modal for Delete: lists the targets, offers
-    /// clickable remove/cancel (⏎/y confirms, Esc/n cancels).
+    /// Centered confirm modal for Delete: lists the targets, states in
+    /// plain words what confirming will do to them (the decided plan,
+    /// which is also what executes), offers clickable remove/cancel
+    /// (⏎/y confirms, Esc/n cancels).
     fn draw_confirm(&mut self, f: &mut Frame) {
         self.confirm_btns.clear();
-        let Mode::Confirm { keys } = &self.mode else { return };
+        let Mode::Confirm { plan } = &self.mode else { return };
         let frame = f.area();
-        let listed: Vec<&String> = keys.iter().take(8).collect();
-        let extra = keys.len().saturating_sub(listed.len());
-        let h = (listed.len() + if extra > 0 { 1 } else { 0 } + 4) as u16;
         let w = 52.min(frame.width.saturating_sub(4));
-        let area = Rect {
-            x: frame.width.saturating_sub(w) / 2,
-            y: frame.height.saturating_sub(h) / 2,
-            width: w,
-            height: h.min(frame.height),
-        };
-        f.render_widget(ratatui::widgets::Clear, area);
+        let listed: Vec<&String> = plan.iter().take(6).map(|(k, _)| k).collect();
+        let extra = plan.len().saturating_sub(listed.len());
         let mut lines: Vec<Line> = vec![];
         for k in &listed {
             lines.push(Line::from(Span::styled(
@@ -3686,6 +3745,33 @@ impl App {
             )));
         }
         lines.push(Line::default());
+        // one sentence per distinct outcome, in the order they occur;
+        // counts appear only when the targets do not share an outcome
+        let mut kinds: Vec<(RemovalKind, usize)> = vec![];
+        for (_, k) in plan.iter() {
+            match kinds.iter_mut().find(|(x, _)| x == k) {
+                Some((_, n)) => *n += 1,
+                None => kinds.push((*k, 1)),
+            }
+        }
+        let mixed = kinds.len() > 1;
+        let ms = self.lib.manuscript.is_some();
+        for (kind, n) in &kinds {
+            let s = kind.sentence(*n, ms);
+            let s = if mixed { format!("{n} · {s}") } else { s };
+            for l in wrap_text(&s, w.saturating_sub(4) as usize) {
+                lines.push(Line::from(Span::styled(l, Style::default().fg(Color::Yellow))));
+            }
+        }
+        lines.push(Line::default());
+        let h = lines.len() as u16 + 3; // + the buttons row and both borders
+        let area = Rect {
+            x: frame.width.saturating_sub(w) / 2,
+            y: frame.height.saturating_sub(h) / 2,
+            width: w,
+            height: h.min(frame.height),
+        };
+        f.render_widget(ratatui::widgets::Clear, area);
         let by = area.y + h.saturating_sub(2);
         let bx = area.x + 1;
         let (rw, cw) = (pill_width("remove"), pill_width("cancel"));
@@ -3718,10 +3804,13 @@ impl App {
             Color::White,
         );
         lines.push(Line::from(bspans));
-        let title = format!(
-            " Remove {} paper(s) from the library? ",
-            keys.len()
-        );
+        // with no local tier there is only one place to remove from, so
+        // the title can name it; otherwise the sentences below do
+        let title = if ms {
+            format!(" Remove {} paper(s)? ", plan.len())
+        } else {
+            format!(" Remove {} paper(s) from the library? ", plan.len())
+        };
         let p = Paragraph::new(Text::from(lines))
             .block(Block::default().borders(Borders::ALL).title(title));
         f.render_widget(p, area);
