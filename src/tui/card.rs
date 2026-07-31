@@ -245,6 +245,7 @@ impl App {
         let abstract_ = crate::ads::clean_abstract(&a.abstract_);
         let copies: Vec<(String, LinkTarget, bool)> = vec![
             ("cite key".into(), LinkTarget::Copy(CopyItem::Key), true),
+            ("full key".into(), LinkTarget::Copy(CopyItem::FullKey), true),
             ("bibcode".into(), LinkTarget::Copy(CopyItem::Bibcode), true),
             ("ADS URL".into(), LinkTarget::Copy(CopyItem::AdsUrl), true),
             ("arXiv URL".into(), LinkTarget::Copy(CopyItem::ArxivUrl), !eprint.is_empty()),
@@ -254,7 +255,7 @@ impl App {
                 LinkTarget::Copy(CopyItem::PdfPath),
                 lib_key.as_deref().is_some_and(pdf::is_cached),
             ),
-            ("title".into(), LinkTarget::Copy(CopyItem::Title), !multi),
+            ("title".into(), LinkTarget::Copy(CopyItem::Title), !multi && !a.title.is_empty()),
             (
                 "abstract".into(),
                 LinkTarget::Copy(CopyItem::Abstract),
@@ -265,12 +266,17 @@ impl App {
         // acting on the imported entry (card_entry_key routes clicks)
         let pdf = lib_key.as_deref().map(|kk| {
             let mut buttons: Vec<(&'static str, CardBtn, Color)> = vec![];
+            let adsurl = self.lib.get(kk).map(|e| e.adsurl().to_string()).unwrap_or_default();
             if !pdf::is_cached(kk) {
                 if !eprint.is_empty() {
                     buttons.push(("arXiv ↓", CardBtn::Arxiv, Color::Cyan));
                 }
-                buttons.push(("ADS OA ↓", CardBtn::Oa, Color::Cyan));
-                buttons.push(("browser ↓", CardBtn::Browser, Color::Yellow));
+                if !adsurl.is_empty() {
+                    buttons.push(("ADS OA ↓", CardBtn::Oa, Color::Cyan));
+                }
+                if !doi.is_empty() || !adsurl.is_empty() {
+                    buttons.push(("browser ↓", CardBtn::Browser, Color::Yellow));
+                }
                 buttons.push(("pick …", CardBtn::Pick, Color::Magenta));
             } else {
                 buttons.push(("Open →", CardBtn::Open, Color::Green));
@@ -281,7 +287,7 @@ impl App {
         CardModel {
             title: a.title.clone(),
             byline: format!("{}   ·   {}", format_authors(&a.author.join(" and ")), a.year),
-            year_accent: None,
+            year_accent: Some(a.year.clone()),
             publine,
             // "?" invites a refresh only when there is an imported entry
             // to refresh into; otherwise the line appears only with a count
@@ -290,7 +296,7 @@ impl App {
             links,
             copies,
             pdf,
-            status_gap: false,
+            status_gap: true,
             keywords: String::new(),
             key_runs: vec![(hyp_key, Style::default().fg(Color::Cyan))],
             key_affix: Some(if in_lib {
