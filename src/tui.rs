@@ -1602,8 +1602,10 @@ impl App {
                 "no manuscript db (run inside a manuscript repo)".to_string()
             }
             Action::Manuscript if !self.lib.global_on => {
-                "every paper shown is already the manuscript's — t shows the global tier"
-                    .to_string()
+                // with the global tier hidden every resolvable paper is
+                // already a manuscript member, so ± would only ever mean
+                // "remove" — press t first and say which you meant
+                "manuscript ± needs the global tier shown — press t".to_string()
             }
             Action::Manuscript if unimported => {
                 import_first("the manuscript db holds library entries")
