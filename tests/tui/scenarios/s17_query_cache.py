@@ -25,11 +25,15 @@ _ARTICLE = {
 
 
 def _pre_launch(state_dir):
+    # the query cache lives under $HOME/.cache (it is disposable cache
+    # data), while the hook is handed the state dir — derive the sibling
+    cache = os.path.join(os.path.dirname(state_dir), "home", ".cache", "astrobib")
+    os.makedirs(cache, exist_ok=True)
     with open(os.path.join(state_dir, "tabs.json"), "w") as f:
         json.dump({"contexts": {"global": [
             {"id": "tt1", "query": "kilonova", "label": "kilonova", "limit": 20, "created": 0}
         ]}}, f)
-    with open(os.path.join(state_dir, "query_cache.json"), "w") as f:
+    with open(os.path.join(cache, "query_cache.json"), "w") as f:
         json.dump({"version": 1, "tabs": {"tt1": [_ARTICLE]}}, f)
 
 
