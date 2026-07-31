@@ -31,9 +31,9 @@
 //!      outside a CJK locale draws them at one cell.
 //!
 //! `INVENTORY` below records every non-ASCII character that appears in a
-//! *string literal* in `src/tui.rs`, together with the risk class it is
-//! expected to fall in. The test recomputes that class from the Unicode
-//! data and fails on any disagreement, so:
+//! *string literal* anywhere in the TUI sources (`SOURCES`), together
+//! with the risk class it is expected to fall in. The test recomputes
+//! that class from the Unicode data and fails on any disagreement, so:
 //!
 //!   * adding a new glyph to the UI fails until it is reviewed and listed;
 //!   * removing one fails until the stale row is deleted;
@@ -47,7 +47,13 @@
 use unicode_properties::UnicodeEmoji;
 use unicode_width::UnicodeWidthChar;
 
-const SRC: &str = include_str!("../src/tui.rs");
+/// Every source file that renders TUI chrome. A new module under
+/// `src/tui/` belongs here the moment it draws anything, or its glyphs
+/// ship unreviewed — the guard is only as wide as this list.
+const SOURCES: &[(&str, &str)] = &[
+    ("src/tui.rs", include_str!("../src/tui.rs")),
+    ("src/tui/card.rs", include_str!("../src/tui/card.rs")),
+];
 
 /// Where a glyph sits, which decides how bad a width surprise is.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -93,7 +99,7 @@ impl Risk {
     }
 }
 
-/// Every non-ASCII character in a string literal in `src/tui.rs`.
+/// Every non-ASCII character in a string literal in `SOURCES`.
 /// `(glyph, zone, expected risk, where it is drawn)`
 const INVENTORY: &[(char, Zone, Risk, &str)] = &[
     // -- structure: borders, rules, separators ---------------------------
@@ -168,6 +174,22 @@ const ACCEPTED_RISK: &[(char, &str)] = &[
 // ---------------------------------------------------------------------------
 // source scan
 // ---------------------------------------------------------------------------
+
+/// Every glyph the TUI renders, across all of `SOURCES`, paired with the
+/// `path:line` sites it is written at.
+fn rendered_glyphs() -> Vec<(char, Vec<String>)> {
+    let mut found: Vec<(char, Vec<String>)> = Vec::new();
+    for (path, src) in SOURCES {
+        for (c, lines) in literal_glyphs(src) {
+            let sites = lines.iter().map(|l| format!("{path}:{l}"));
+            match found.iter_mut().find(|(g, _)| *g == c) {
+                Some((_, at)) => at.extend(sites),
+                None => found.push((c, sites.collect())),
+            }
+        }
+    }
+    found
+}
 
 /// Every non-ASCII character inside a string or char literal in `src`,
 /// paired with the 1-based lines it occurs on. Comments are skipped: a
@@ -309,15 +331,14 @@ fn describe(c: char) -> String {
 // tests
 // ---------------------------------------------------------------------------
 
-/// The inventory names exactly the glyphs `src/tui.rs` actually draws.
+/// The inventory names exactly the glyphs the TUI actually draws.
 #[test]
 fn inventory_matches_the_source() {
-    let used = literal_glyphs(SRC);
+    let used = rendered_glyphs();
     let mut problems = Vec::new();
 
-    for (c, lines) in &used {
+    for (c, at) in &used {
         if !INVENTORY.iter().any(|(g, ..)| g == c) {
-            let at: Vec<String> = lines.iter().map(|l| format!("src/tui.rs:{l}")).collect();
             problems.push(format!(
                 "  new glyph {} at {} — add a row to INVENTORY in tests/glyphs.rs\n\
                      (computed risk: {:?}; Wide and Emoji are not allowed on screen)",
@@ -330,7 +351,7 @@ fn inventory_matches_the_source() {
     for (c, _, _, where_) in INVENTORY {
         if !used.iter().any(|(g, _)| g == c) {
             problems.push(format!(
-                "  stale row {} ({where_}) — no longer in any src/tui.rs string \
+                "  stale row {} ({where_}) — no longer in any TUI string \
                  literal; delete it from INVENTORY",
                 describe(*c),
             ));
@@ -386,7 +407,7 @@ fn rendered_glyphs_are_single_width_everywhere() {
 
     assert!(
         problems.is_empty(),
-        "glyphs unsafe for terminal layout are rendered by src/tui.rs:\n{}",
+        "glyphs unsafe for terminal layout are rendered by the TUI:\n{}",
         problems.join("\n"),
     );
 }
@@ -395,7 +416,7 @@ fn rendered_glyphs_are_single_width_everywhere() {
 /// violation and still be on screen, or the row has to go.
 #[test]
 fn accepted_risk_has_no_stale_entries() {
-    let used = literal_glyphs(SRC);
+    let used = rendered_glyphs();
     let mut problems = Vec::new();
     for (c, why) in ACCEPTED_RISK {
         if Risk::of(*c).acceptable() {
