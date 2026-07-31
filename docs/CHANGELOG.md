@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.9.0 — 2026-07-31
 
 ### Added
 - `astrobib refs` grew the two modes a build system needs. `--no-sync` writes the bibliography without copying entries into `bib/` — a make recipe must not modify its own prerequisites — and always stamps `refs.bib`'s mtime, so the rule converges instead of re-running on every build; the `touch $@` workaround Makefiles needed is now unnecessary. `--check` answers "would `astrobib refs` change anything?" and writes nothing, exiting nonzero when `refs.bib` is stale or a cited entry is still missing from `bib/`. A worked Makefile covering every mode — TUI watching or not, astrobib installed or not — is in `docs/examples/Makefile`.
