@@ -121,7 +121,23 @@ enum Command {
     },
 }
 
+/// Rust starts every program with SIGPIPE ignored, which turns the
+/// ordinary `astrobib list | head` into a panic ("failed printing to
+/// stdout: Broken pipe") once the reader closes. Restoring the default
+/// disposition makes the process die quietly on signal 13, the way
+/// every other command-line tool does.
+#[cfg(unix)]
+fn restore_default_sigpipe() {
+    unsafe {
+        libc::signal(libc::SIGPIPE, libc::SIG_DFL);
+    }
+}
+
+#[cfg(not(unix))]
+fn restore_default_sigpipe() {}
+
 fn main() -> anyhow::Result<()> {
+    restore_default_sigpipe();
     let cli = Cli::parse();
     if let Some(p) = &cli.library {
         // one resolution path: the flag wins by shadowing the env var

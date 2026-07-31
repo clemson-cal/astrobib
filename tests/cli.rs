@@ -826,3 +826,38 @@ fn a_bogus_positional_argument_exits_two() {
     let r = sb.run(&[ms.to_str().unwrap(), "list"]);
     assert!(r.ok(), "{}", r.report());
 }
+// ── broken pipe ─────────────────────────────────────────────────────
+
+#[test]
+fn output_into_a_closed_pipe_does_not_panic() {
+    let sb = Sandbox::new("pipe");
+    // enough output to overflow any pipe buffer, so the reader really
+    // does close on us mid-stream
+    for i in 0..1500 {
+        let key = format!("Filler{:04}aaaaa", i);
+        write(
+            sb.bib_dir().join(format!("{key}.bib")),
+            &format!(
+                "@article{{{key},\n  author = {{{{Filler}}, A.}},\n  \
+                 title = {{Padding entry {i} with a title long enough to fill a pipe buffer}},\n  \
+                 year = {{2000}},\n}}\n"
+            ),
+        );
+    }
+    let script = format!("{BIN} list -n 100000 | head -2");
+    let out = Command::new("/bin/sh")
+        .arg("-c")
+        .arg(&script)
+        .env_clear()
+        .env("PATH", std::env::var("PATH").unwrap_or_else(|_| "/usr/bin:/bin".to_string()))
+        .env("HOME", &sb.home)
+        .env("ASTROBIB_LIBRARY", &sb.library)
+        .env("ASTROBIB_STATE_DIR", &sb.state)
+        .current_dir(&sb.home)
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(!stderr.contains("panicked"), "panic on broken pipe:\n{stderr}");
+    assert!(!stderr.contains("Broken pipe"), "broken-pipe noise on stderr:\n{stderr}");
+    assert_eq!(String::from_utf8_lossy(&out.stdout).lines().count(), 2);
+}
