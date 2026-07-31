@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.9.1 — 2026-07-31
+
+### Changed
+- Corrected the build guidance shipped in 0.9.0. A manuscript's dependency graph is acyclic but includes `bib/` as an intermediate — `main.pdf ← main.tex, refs.bib` and `bib/ ← main.tex` and `refs.bib ← main.tex, bib/` — so the make recipe is plain `astrobib refs`, which implements both middle edges. The previous sample used `--no-sync`, which severs the first: a newly cited paper never enters `bib/` and `refs.bib` silently omits it. `--no-sync` is documented now as the CI variant for a job that must not modify tracked files. The sample Makefile also gained the `bib` directory as a prerequisite, without which a *deleted* paper lingers in `refs.bib` forever — it leaves the wildcard, so nothing else registers the change.
+
 ## 0.9.0 — 2026-07-31
 
 ### Added
