@@ -313,6 +313,15 @@ pub fn refs_bib_content(cited: &[String], lib: &MergedLibrary) -> String {
 }
 
 /// Write refs.bib only on change. Returns whether the file changed.
+/// Write refs.bib only when the content actually changes.
+///
+/// Deliberately does NOT bump the mtime otherwise. Leaving the
+/// timestamp alone is what stops a downstream rebuild: latexmk and
+/// make compare refs.bib against main.pdf / the .bbl, so touching an
+/// unchanged bibliography would re-run the whole LaTeX+BibTeX cycle on
+/// every build. The cost of not touching is that a rule whose *target*
+/// is refs.bib re-runs this (millisecond, idempotent) command each
+/// time; the fix for that is a stamp file, not a lie about the mtime.
 pub fn write_refs_bib(out: &Path, content: &str) -> std::io::Result<bool> {
     if std::fs::read_to_string(out).map(|t| t == content).unwrap_or(false) {
         return Ok(false);

@@ -1417,7 +1417,11 @@ impl App {
     /// single-row toggle; an emptied selection exits the mode.
     fn select_all(&mut self, visible_only: bool) {
         let ids: Vec<String> = match self.scopes.get(self.active_scope) {
-            Some(Scope::Manuscript { .. }) => return, // not a selection target
+            // every row that resolves to a paper; missing and ambiguous
+            // cites are skipped rather than blocking the whole gesture
+            Some(Scope::Manuscript { rows }) => {
+                rows.iter().filter_map(|r| r.key.clone()).collect()
+            }
             Some(Scope::Ads { articles, .. }) => {
                 articles.iter().map(|a| a.bibcode.clone()).collect()
             }
@@ -1650,17 +1654,15 @@ impl App {
         }
         match a {
             Action::Select => {
-                if matches!(self.scopes.get(self.active_scope), Some(Scope::Manuscript { .. })) {
-                    // manuscript rows are citations, not selectable papers
-                    self.note(
-                        MsgCat::Warn,
-                        "manuscript rows aren't selectable — [ switches to the library".to_string(),
-                    );
-                    return;
-                }
+                let was = self.select_mode;
                 self.select_mode = true;
                 if let Some(pos) = self.table.selected() {
                     self.toggle_row_selected(pos);
+                }
+                // an unselectable row (a cite resolving to no paper)
+                // must not strand the user in an empty selection mode
+                if !was && self.selected.is_empty() {
+                    self.select_mode = false;
                 }
             }
             Action::Manuscript => self.toggle_manuscript(),
@@ -1882,6 +1884,18 @@ impl App {
     /// there act on the paper the user can see is already in the
     /// library, and an un-imported row yields no key at all, so the
     /// actions that need one dim and say why instead of doing nothing.
+    /// The selected manuscript rows' keys, in row order.
+    fn selected_ms_keys(&self) -> Vec<String> {
+        let Some(Scope::Manuscript { rows }) = self.scopes.get(self.active_scope) else {
+            return vec![];
+        };
+        rows.iter()
+            .filter_map(|r| r.key.as_ref())
+            .filter(|k| self.selected.contains(*k))
+            .cloned()
+            .collect()
+    }
+
     fn action_keys(&self) -> Vec<String> {
         if let Some(Scope::Ads { articles, .. }) = self.scopes.get(self.active_scope) {
             let sel = self.selected_articles();
@@ -1897,6 +1911,12 @@ impl App {
                 .collect();
         }
         if self.select_mode && !self.selected.is_empty() {
+            // in the manuscript scope the visible rows are the truth:
+            // self.order is the library's ordering, which omits rows a
+            // cite resolves to only in the personal tier
+            if matches!(self.scopes.get(self.active_scope), Some(Scope::Manuscript { .. })) {
+                return self.selected_ms_keys();
+            }
             return self
                 .order
                 .iter()
@@ -2251,6 +2271,19 @@ impl App {
             Some(Scope::Ads { articles, .. }) => {
                 let Some(a) = articles.get(pos) else { return };
                 a.bibcode.clone()
+            }
+            // a manuscript row selects the paper it resolves to; a
+            // missing or ambiguous cite names no paper, so it cannot
+            // join a selection keyed by cite key
+            Some(Scope::Manuscript { rows }) => {
+                let Some(key) = rows.get(pos).and_then(|r| r.key.clone()) else {
+                    self.note(
+                        MsgCat::Warn,
+                        "this cite resolves to no paper — nothing to select".to_string(),
+                    );
+                    return;
+                };
+                key
             }
             _ => {
                 let Some(&idx) = self.filtered.get(pos) else {
@@ -3091,11 +3124,7 @@ impl App {
         let modified = mods.intersects(
             KeyModifiers::SUPER | KeyModifiers::ALT | KeyModifiers::CONTROL,
         );
-        let selectable = !matches!(
-            self.scopes.get(self.active_scope),
-            Some(Scope::Manuscript { .. })
-        );
-        if (modified || x < a.x + 2) && selectable {
+        if modified || x < a.x + 2 {
             self.select_mode = true;
             self.toggle_row_selected(pos);
             self.last_click = None;
@@ -4310,11 +4339,32 @@ impl App {
                     } else {
                         Style::default().fg(Color::Gray).add_modifier(Modifier::ITALIC)
                     };
+                    // the gutter mirrors the library's selection marks;
+                    // a cite that resolves to no paper shows none, so
+                    // "you cannot select this" is visible, not mysterious
+                    let selectable = r.key.is_some();
+                    let picked = r
+                        .key
+                        .as_deref()
+                        .is_some_and(|k| self.selected.contains(k));
+                    let circle = if !self.select_mode {
+                        if cursor == Some(pos) { "◉" } else { "" }
+                    } else if picked {
+                        "◉"
+                    } else if selectable {
+                        "◯"
+                    } else {
+                        ""
+                    };
+                    let circle_style = if circle == "◯" {
+                        Style::default().fg(Color::DarkGray).add_modifier(Modifier::DIM)
+                    } else if self.select_mode && cursor == Some(pos) {
+                        Style::default().fg(Color::White).add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::default().fg(Color::Cyan)
+                    };
                     let row = Row::new(vec![
-                        Cell::from(Span::styled(
-                            if cursor == Some(pos) { "◉" } else { "" },
-                            Style::default().fg(Color::Cyan),
-                        )),
+                        Cell::from(Span::styled(circle, circle_style)),
                         Cell::from(Span::styled(icon, style)),
                         Cell::from(Span::styled(r.cited.clone(), cite_style)),
                         Cell::from(Span::styled(word, style)),
