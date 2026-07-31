@@ -2,7 +2,11 @@
 
 ## Unreleased
 
+### Added
+- `astrobib refs` grew the two modes a build system needs. `--no-sync` writes the bibliography without copying entries into `bib/` — a make recipe must not modify its own prerequisites — and always stamps `refs.bib`'s mtime, so the rule converges instead of re-running on every build; the `touch $@` workaround Makefiles needed is now unnecessary. `--check` answers "would `astrobib refs` change anything?" and writes nothing, exiting nonzero when `refs.bib` is stale or a cited entry is still missing from `bib/`. A worked Makefile covering every mode — TUI watching or not, astrobib installed or not — is in `docs/examples/Makefile`.
+
 ### Fixed
+- `astrobib refs` is now idempotent in a single run. Copying an entry into `bib/` writes it through a parse→serialise cycle that flips its trailing fields, so the bibliography generated from the in-memory copy disagreed with a fresh read — meaning a second `refs` always reported changes, and `refs --check` said "out of date" immediately after a successful sync. The sync now re-reads from disk before generating.
 - Query results are matched to your library by paper identity rather than by bibcode. A paper imported as a preprint carries the arXiv bibcode while a later search returns the published record (or vice versa), so an exact-bibcode comparison called them two different papers: the row showed neither the in-library `●` nor the cached-PDF `↓`, the card offered to import a paper you already had, and its PDF buttons and priority went missing. Cite keys derive from the stable identifier, so they are the same on both sides of publication — every article→entry lookup now goes through them.
 
 ## 0.8.1 — 2026-07-31

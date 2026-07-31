@@ -78,6 +78,16 @@ Cite pandoc-style — bare `@Zrake2019` or bracketed `[@Zrake2019; @Metzger2017]
 `astrobib refs` renders the bibliography of everything cited into the manuscript — a sorted, linked reference list (authors, year, italic title, journal, ADS/arXiv/DOI links) kept between `<!-- astrobib:references -->` markers, appended as a `## References` section the first time. Regenerate any time; your prose is never touched.
 
 ---
+## Building with make
+`astrobib refs` does two things at once, and a build system only wants one of them, so it has three modes:
+
+`astrobib refs` — sync: copy cited-but-missing entries into `bib/`, then write the bibliography. What you run yourself.
+`astrobib refs --no-sync` — build: write the bibliography from what is already present, never modifying `bib/`, and stamp the file's mtime even when the content is unchanged. A recipe must not write into its own prerequisites, and make judges freshness by timestamp — so this converges instead of re-running every build. No `touch` needed.
+`astrobib refs --check` — verify: answer "would `astrobib refs` change anything?" and write nothing. Exits nonzero if `refs.bib` is stale or a cited entry is still missing from `bib/`. For CI and pre-commit hooks.
+
+A complete Makefile is in [docs/examples/Makefile](docs/examples/Makefile). It works whether or not the TUI is watching, and whether or not astrobib is installed at all — a coauthor or arXiv builds from the committed `refs.bib` and nothing tries to regenerate it.
+
+---
 ## refs.bib and co-authors
 For TeX manuscripts, `refs.bib` regenerates silently whenever the TUI rescans — and the TUI rescans itself when you edit sources externally (mtimes are polled, like the original app): every cited manuscript-db member, emitted under the string you actually cited (full key or unambiguous prefix), so hash suffixes never need to appear in your `.tex`. `astrobib refs [--prune]` does the same from the CLI, first copying cited-but-missing entries into the manuscript db (`--prune` also removes uncited ones, rescuing sole copies).
 Co-authors don't need astrobib. They add a reference by pasting BibTeX from the ADS website into `bib/any-name.bib` (and, if they like, appending it to `refs.bib` by hand so the paper still compiles). Next time you check out the repo, `astrobib tidy` canonicalizes those files — re-keys them through ADS when needed, renames them to `{Key}.bib`, dedupes, rewrites the old keys inside your sources — and regenerates `refs.bib` for the commit.
@@ -85,7 +95,7 @@ Migrating a manuscript that predates astrobib works the same way: in a directory
 
 ---
 ## CLI
-`list`, `search [--ads]`, `add <bibcode|ADS URL>`, `show <key>`, `rm <key> [--local-only]` (sole copies rescued), `import <file.bib> [--global-only|--local-only]`, `refs [FILE] [--prune] [--dry-run]`, `tidy [--dry-run]`, `convert bibcode|full|short` (uniform cite keys, rewritten in your sources), `update [--all]` (arXiv → published refresh, same key forever), `config [ads_token|email <value>]` (show or set the environment), `gc` (report what the machine-local caches cost), plus `--library PATH` (relocate the global tier) and `--no-global`.
+`list`, `search [--ads]`, `add <bibcode|ADS URL>`, `show <key>`, `rm <key> [--local-only]` (sole copies rescued), `import <file.bib> [--global-only|--local-only]`, `refs [FILE] [--prune|--no-sync|--check] [--dry-run]`, `tidy [--dry-run]`, `convert bibcode|full|short` (uniform cite keys, rewritten in your sources), `update [--all]` (arXiv → published refresh, same key forever), `config [ads_token|email <value>]` (show or set the environment), `gc` (report what the machine-local caches cost), plus `--library PATH` (relocate the global tier) and `--no-global`.
 `import` resolves each entry against ADS (arXiv ID → DOI → exact title+author+year) unless its cite key is already reproducible from its own data — canonical astrobib entries import byte-identically — and prints copy-pasteable key replacements for your `.tex` files.
 
 ---

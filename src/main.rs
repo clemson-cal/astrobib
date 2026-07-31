@@ -105,8 +105,17 @@ enum Command {
         #[arg(long)]
         dry_run: bool,
         /// Remove uncited entries from the manuscript database
-        #[arg(long)]
+        #[arg(long, conflicts_with_all = ["no_sync", "check"])]
         prune: bool,
+        /// Produce refs.bib without copying cited entries into bib/ —
+        /// the build-safe mode: reads the manuscript, writes only the
+        /// bibliography, and never modifies its own inputs
+        #[arg(long, conflicts_with = "check")]
+        no_sync: bool,
+        /// Report whether refs.bib is current and exit; writes nothing
+        /// (exit 0 = current, 1 = stale or missing)
+        #[arg(long)]
+        check: bool,
         /// refs.bib output path (default: refs.bib in the manuscript root)
         #[arg(short, long)]
         output: Option<std::path::PathBuf>,
@@ -226,12 +235,19 @@ fn main() -> anyhow::Result<()> {
                 None => adopt_manuscript(&mut lib, dry_run),
             }
         }
-        Some(Command::Refs { file, dry_run, prune, output }) => {
+        Some(Command::Refs { file, dry_run, prune, no_sync, check, output }) => {
             let Some(root) = ms_root.clone() else {
                 eprintln!("No local bib root here — refs needs a manuscript directory.");
                 std::process::exit(1);
             };
-            run_refs(&mut lib, &root, file.as_deref(), output.as_deref(), prune, dry_run)
+            let mode = if check {
+                RefsMode::Check
+            } else if no_sync {
+                RefsMode::Generate
+            } else {
+                RefsMode::Sync
+            };
+            run_refs(&mut lib, &root, file.as_deref(), output.as_deref(), prune, dry_run, mode)
         }
         Some(Command::Update { all }) => run_update(&mut lib, all),
         Some(Command::Convert { format, dry_run }) => {
@@ -638,7 +654,7 @@ fn run_convert(
     } else {
         rewrite_citations(root, &renames);
         println!("{} cite key(s) converted to {format} form", renames.len());
-        run_refs(lib, root, None, None, false, false)?;
+        run_refs(lib, root, None, None, false, false, RefsMode::Sync)?;
     }
     for c in &unresolved {
         eprintln!("unresolved (left alone): {c}");
@@ -767,7 +783,7 @@ fn adopt_manuscript(lib: &mut MergedLibrary, dry_run: bool) -> anyhow::Result<()
         }
     }
     println!();
-    run_refs(lib, &root, None, None, false, false)
+    run_refs(lib, &root, None, None, false, false, RefsMode::Sync)
 }
 
 /// astrobib tidy — co-author interop. Colleagues without astrobib add
@@ -810,7 +826,7 @@ fn tidy_bib_dir(
     }
     if foreign.is_empty() {
         println!("bib/ is already canonical.");
-        return run_refs(lib, root, None, None, false, dry_run);
+        return run_refs(lib, root, None, None, false, dry_run, RefsMode::Sync);
     }
     let mut renames: Vec<(String, String)> = vec![];
     let (mut tidied, mut skipped) = (0usize, 0usize);
@@ -888,7 +904,7 @@ fn tidy_bib_dir(
         rewrite_citations(root, &renames);
     }
     println!();
-    run_refs(lib, root, None, None, false, false)
+    run_refs(lib, root, None, None, false, false, RefsMode::Sync)
 }
 
 /// astrobib refs — the manuscript sync flow, for TeX and markdown
@@ -897,6 +913,72 @@ fn tidy_bib_dir(
 /// refs.bib is generated from the manuscript db (each entry keyed by the
 /// string actually cited); a markdown manuscript also gets its rendered
 /// bibliography.
+/// The Check counterpart for a markdown manuscript: is the rendered
+/// bibliography block between the markers what we would write?
+fn check_markdown(
+    lib: &MergedLibrary,
+    _root: &std::path::Path,
+    file: Option<&std::path::Path>,
+    md_files: &[std::path::PathBuf],
+    cited: &[String],
+) -> anyhow::Result<()> {
+    use astrobib::export;
+    let Some(target) = (match file {
+        Some(f) => Some(f.to_path_buf()),
+        None => md_files
+            .first()
+            .filter(|f| md_files.len() == 1 || f.ends_with("main.md"))
+            .cloned(),
+    }) else {
+        return Ok(()); // no markdown manuscript to check
+    };
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let entries: Vec<_> = cited
+        .iter()
+        .filter_map(|c| lib.resolve_citation(c).1)
+        .filter(|e| seen.insert(e.key().to_string()))
+        .collect();
+    let block = export::render_md_bibliography(&entries);
+    let text = std::fs::read_to_string(&target).unwrap_or_default();
+    if text.contains(&block) {
+        println!("{} bibliography is current", target.display());
+        Ok(())
+    } else {
+        eprintln!(
+            "{} bibliography is out of date — run: astrobib refs",
+            target.display()
+        );
+        std::process::exit(1);
+    }
+}
+
+/// Set a file's mtime to now without altering a byte of it.
+fn stamp(path: &std::path::Path) -> std::io::Result<()> {
+    std::fs::OpenOptions::new()
+        .append(true)
+        .open(path)?
+        .set_times(std::fs::FileTimes::new().set_modified(std::time::SystemTime::now()))
+}
+
+/// What a `refs` invocation is being asked to do. The three modes exist
+/// because three different callers want three different contracts:
+///
+/// * `Sync` — a person at a terminal: pull cited entries into `bib/`,
+///   write the bibliography, report what changed. Mutates.
+/// * `Generate` — a build system: produce `refs.bib` from what is
+///   already present and touch nothing else, so a recipe never writes
+///   into its own prerequisites. Always stamps the file's mtime, since
+///   make judges freshness by timestamp and would otherwise re-run the
+///   rule forever.
+/// * `Check` — a build guard or CI: answer "is refs.bib current?" and
+///   write nothing at all.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum RefsMode {
+    Sync,
+    Generate,
+    Check,
+}
+
 fn run_refs(
     lib: &mut MergedLibrary,
     root: &std::path::Path,
@@ -904,6 +986,7 @@ fn run_refs(
     output: Option<&std::path::Path>,
     prune: bool,
     dry_run: bool,
+    mode: RefsMode,
 ) -> anyhow::Result<()> {
     use astrobib::export;
     use astrobib::library::CiteState;
@@ -921,6 +1004,7 @@ fn run_refs(
 
     // sync: copy library-only cites into the manuscript db
     let mut copied: Vec<String> = vec![];
+    let mut uncopied: Vec<String> = vec![];
     let mut missing: Vec<String> = vec![];
     let mut ambiguous: Vec<String> = vec![];
     let mut targets: std::collections::HashSet<String> = std::collections::HashSet::new();
@@ -935,11 +1019,15 @@ fn run_refs(
             }
             CiteState::Library => {
                 let key = key.unwrap();
-                if !dry_run {
+                // Generate and Check never modify bib/: a build step
+                // must not write into its own inputs
+                if !dry_run && mode == RefsMode::Sync {
                     lib.add_to_manuscript(&key)?;
+                    copied.push(if *c == key { key.clone() } else { format!("{c} → {key}") });
+                    targets.insert(key);
+                } else {
+                    uncopied.push(if *c == key { key.clone() } else { format!("{c} → {key}") });
                 }
-                copied.push(if *c == key { key.clone() } else { format!("{c} → {key}") });
-                targets.insert(key);
             }
             CiteState::Ambiguous => ambiguous.push(c.clone()),
             CiteState::Missing => missing.push(c.clone()),
@@ -956,10 +1044,23 @@ fn run_refs(
                 .collect()
         })
         .unwrap_or_default();
-    if prune && !dry_run {
+    if prune && !dry_run && mode == RefsMode::Sync {
         for k in &uncited {
             lib.remove_from_manuscript(k)?; // sole copies are rescued
         }
+    }
+
+    // Copying an entry into bib/ writes it through a parse→serialise
+    // cycle, which flips its trailing fields (the documented two-form
+    // oscillation). Generating refs.bib from the in-memory copy would
+    // therefore disagree with a fresh read of the same file — so
+    // `refs` would not be idempotent, and `refs --check` would report
+    // "out of date" immediately after a successful sync. Re-read from
+    // disk so one run settles.
+    if mode == RefsMode::Sync && !copied.is_empty() && !dry_run {
+        let global_on = lib.global_on;
+        *lib = MergedLibrary::load(Some(root))?;
+        lib.global_on = global_on;
     }
 
     // refs.bib from the manuscript db, keyed by the cited strings
@@ -993,10 +1094,43 @@ fn run_refs(
                  no cited key resolves in the library.",
                 out.display()
             );
+        } else if mode == RefsMode::Check {
+            // The question a build guard is really asking is "would
+            // running astrobib refs change anything?" — so an entry that
+            // a sync would copy into bib/ counts as stale too, and an
+            // absent file is stale even when the content would be empty
+            // (comparing "" to a missing file would call it current).
+            let why = match std::fs::read_to_string(out) {
+                Err(_) => Some("missing".to_string()),
+                Ok(disk) if disk != content => Some("out of date".to_string()),
+                _ if !uncopied.is_empty() => Some(format!(
+                    "out of sync ({} cited entr{} not in bib/)",
+                    uncopied.len(),
+                    if uncopied.len() == 1 { "y is" } else { "ies are" }
+                )),
+                _ => None,
+            };
+            match why {
+                None => println!("{} is current ({n_bib} entries)", out.display()),
+                Some(why) => {
+                    eprintln!("{} is {why} — run: astrobib refs", out.display());
+                    std::process::exit(1);
+                }
+            }
         } else if dry_run {
             println!("would write {n_bib} entr{} → {}", if n_bib == 1 { "y" } else { "ies" }, out.display());
         } else {
             let changed = export::write_refs_bib(out, &content)?;
+            // A build system judges freshness by mtime, so a CLI run
+            // always stamps the file even when the bytes are identical:
+            // otherwise the target stays older than its prerequisites
+            // and make re-runs the rule on every single build. The TUI's
+            // background sync deliberately does NOT do this — it runs
+            // constantly, and advancing the mtime there would provoke a
+            // full LaTeX rebuild for nothing.
+            if !changed {
+                stamp(out)?;
+            }
             println!(
                 "{n_bib} entr{} → {}{}",
                 if n_bib == 1 { "y" } else { "ies" },
@@ -1004,6 +1138,11 @@ fn run_refs(
                 if changed { "" } else { "  (unchanged)" }
             );
         }
+    }
+
+    if mode == RefsMode::Check {
+        // any markdown bibliography is checked the same way, then done
+        return check_markdown(lib, root, file, &md_files, &cited);
     }
 
     // rendered bibliography for a markdown manuscript
@@ -1043,6 +1182,16 @@ fn run_refs(
         }
     }
 
+    if !uncopied.is_empty() {
+        println!(
+            "\n{} cited entr{} in the global library but not in bib/ (astrobib refs copies them in):",
+            uncopied.len(),
+            if uncopied.len() == 1 { "y is" } else { "ies are" }
+        );
+        for k in &uncopied {
+            println!("  {k}");
+        }
+    }
     if !copied.is_empty() {
         println!(
             "{}opied {} entr{} from the personal library:",

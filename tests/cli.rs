@@ -897,3 +897,87 @@ fn output_into_a_closed_pipe_does_not_panic() {
     assert!(!stderr.contains("Broken pipe"), "broken-pipe noise on stderr:\n{stderr}");
     assert_eq!(String::from_utf8_lossy(&out.stdout).lines().count(), 2);
 }
+
+/// The build-facing modes: `--no-sync` produces the bibliography
+/// without writing into `bib/` (a make recipe must not modify its own
+/// prerequisites) and always advances the mtime (make judges freshness
+/// by timestamp, so an unchanged file left with an old mtime makes the
+/// rule re-run on every build). `--check` answers the question and
+/// writes nothing at all.
+#[test]
+fn refs_no_sync_generates_without_mutating_bib() {
+    let sb = Sandbox::new("refs-nosync");
+    let ms = sb.ms("paper");
+    write(
+        ms.join("main.tex"),
+        "\\documentclass{article}\n\\begin{document}\n\
+         \\citep{Andersson2021}\n\\end{document}\n",
+    );
+
+    let r = sb.run_in(&ms, &["refs", "--no-sync"]);
+    assert!(r.ok(), "{}", r.report());
+    // the bibliography exists…
+    assert!(ms.join("refs.bib").exists(), "{}", r.report());
+    // …but the cited entry was NOT copied into the manuscript db
+    assert!(
+        !ms.join("bib/Andersson2021pombz.bib").exists(),
+        "--no-sync mutated bib/: {}",
+        r.report()
+    );
+    // and the run says what it deliberately skipped
+    assert!(r.stdout.contains("not in bib/"), "{}", r.report());
+}
+
+#[test]
+fn refs_stamps_the_mtime_even_when_the_content_is_unchanged() {
+    let sb = Sandbox::new("refs-stamp");
+    let ms = sb.ms("paper");
+    write(
+        ms.join("main.tex"),
+        "\\documentclass{article}\n\\begin{document}\n\
+         \\citep{Andersson2021}\n\\end{document}\n",
+    );
+    assert!(sb.run_in(&ms, &["refs"]).ok());
+    let first = std::fs::metadata(ms.join("refs.bib")).unwrap().modified().unwrap();
+    let before = read(ms.join("refs.bib"));
+
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    let r = sb.run_in(&ms, &["refs", "--no-sync"]);
+    assert!(r.ok(), "{}", r.report());
+
+    let second = std::fs::metadata(ms.join("refs.bib")).unwrap().modified().unwrap();
+    assert_eq!(before, read(ms.join("refs.bib")), "content should not change");
+    assert!(
+        second > first,
+        "mtime must advance so make converges (was {first:?}, now {second:?}): {}",
+        r.report()
+    );
+}
+
+#[test]
+fn refs_check_reports_without_writing() {
+    let sb = Sandbox::new("refs-check");
+    let ms = sb.ms("paper");
+    write(
+        ms.join("main.tex"),
+        "\\documentclass{article}\n\\begin{document}\n\
+         \\citep{Andersson2021}\n\\end{document}\n",
+    );
+
+    // missing → stale, and still nothing written
+    let r = sb.run_in(&ms, &["refs", "--check"]);
+    assert!(!r.ok(), "check should fail when refs.bib is absent: {}", r.report());
+    assert!(!ms.join("refs.bib").exists(), "check wrote refs.bib");
+
+    assert!(sb.run_in(&ms, &["refs"]).ok());
+    let r = sb.run_in(&ms, &["refs", "--check"]);
+    assert!(r.ok(), "check should pass on a current file: {}", r.report());
+    assert!(r.stdout.contains("current"), "{}", r.report());
+
+    // tampered → stale, and check leaves the tampering in place
+    let tampered = read(ms.join("refs.bib")) + "\n% edited by hand\n";
+    write(ms.join("refs.bib"), &tampered);
+    let r = sb.run_in(&ms, &["refs", "--check"]);
+    assert!(!r.ok(), "check should fail on a stale file: {}", r.report());
+    assert_eq!(read(ms.join("refs.bib")), tampered, "check modified the file");
+}
