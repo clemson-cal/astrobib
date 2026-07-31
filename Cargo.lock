@@ -94,6 +94,7 @@ dependencies = [
  "tui-input",
  "unicode-normalization",
  "unicode-properties",
+ "unicode-width 0.2.0",
  "ureq",
 ]
 

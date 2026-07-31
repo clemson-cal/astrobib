@@ -36,3 +36,15 @@ Gotchas learned the hard way:
 - The gutter (two leftmost cells of a table row) is a click target for selection mode; data rows start two rows below the header line (header, rule, rows).
 - Never click a copy target in a scenario: clipboard writes go through `pbcopy`, which is the user's real pasteboard — the pty sandbox does not contain it. Open the copy modal, assert, Esc out.
 - ratatui diff-renders, so the pty stream alone is meaningless; only the pyte screen state is trustworthy. `wait_for` pumps the stream before every predicate check.
+
+## What this harness structurally cannot catch: glyph width
+
+ratatui lays a frame out by asking the `unicode-width` crate how wide each character is, and pyte reconstructs the screen with the same table. App and harness therefore always agree — so a glyph that a *real* terminal draws wider than ratatui assumed produces a perfect green run here and a broken screen for the user.
+
+Two shipped bugs came from that blind spot. `⏳` (U+23F3, East Asian Width = Wide) began the "waiting for download… cancel `✕`" line; Warp drew it two cells wide, so every cell after it landed one column right of its registered click rect and the cancel button ignored clicks. `↗` (U+2197, Ambiguous *and* a member of the Unicode emoji set) prefixed the about modal's link rows and pushed them one column right, bleeding the hover underline through the modal border.
+
+`tests/glyphs.rs` (a plain `cargo test`, not part of this harness) is the guard. It scans every string literal in `src/tui.rs`, and for each non-ASCII character it finds it requires that the character is **neither Wide/Fullwidth nor in the Unicode emoji set** — emoji-set membership matters because a terminal may pick an emoji font and spend two cells regardless of what the width table says. East-Asian-Ambiguous non-emoji glyphs (box drawing, arrows, geometric shapes, `·`, `…`, `—`) are accepted: every terminal outside a CJK locale draws them at one cell.
+
+Each glyph is listed in an `INVENTORY` table with its expected risk class and where it is drawn, so adding a glyph, removing one, or a Unicode release reclassifying one all fail with a message naming the character and the site. Glyphs that violate the rule and still ship sit in `ACCEPTED_RISK` with a written reason; entries that stop violating anything also fail, so the list can only shrink.
+
+The practical rule when writing UI: anything inside, or to the left of, a click rect or a fixed-width column must be an unambiguous single-width glyph, because every rect in `src/tui.rs` is sized with `chars().count()` / `pill_width()`.

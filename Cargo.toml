@@ -20,6 +20,12 @@ unicode-normalization = "0.1"
 unicode-properties = "0.1"
 ureq = { version = "2", features = ["json"] }
 
+[dev-dependencies]
+# tests/glyphs.rs asks the same width table ratatui lays frames out with.
+# Pinned to ratatui 0.29's own `=0.2.0` so the two can never diverge into
+# separate copies with different answers.
+unicode-width = "=0.2.0"
+
 [profile.release]
 lto = true
 strip = true
