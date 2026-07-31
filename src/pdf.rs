@@ -14,7 +14,7 @@ pub enum Source {
 }
 
 pub fn cache_dir() -> PathBuf {
-    PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".cache/astrobib/pdfs")
+    crate::library::pdf_cache_dir()
 }
 
 pub fn cache_path(key: &str) -> PathBuf {
@@ -246,20 +246,3 @@ pub fn open_paths(paths: &[PathBuf]) {
     }
 }
 
-/// Cached PDFs as (cite key, bytes).
-pub fn cached_entries() -> Vec<(String, u64)> {
-    std::fs::read_dir(cache_dir())
-        .map(|rd| {
-            rd.flatten()
-                .filter_map(|e| {
-                    let path = e.path();
-                    let key = path.file_stem()?.to_string_lossy().into_owned();
-                    if path.extension()? != "pdf" {
-                        return None;
-                    }
-                    Some((key, e.metadata().ok().map(|m| m.len()).unwrap_or(0)))
-                })
-                .collect()
-        })
-        .unwrap_or_default()
-}

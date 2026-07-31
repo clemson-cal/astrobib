@@ -89,6 +89,10 @@ impl Sandbox {
         self.home.join(".cache/astrobib/pdfs")
     }
 
+    fn query_cache(&self) -> PathBuf {
+        self.home.join(".cache/astrobib/query_cache.json")
+    }
+
     fn run(&self, args: &[&str]) -> Run {
         self.run_in(&self.home, args)
     }
@@ -747,66 +751,98 @@ fn config_reports_the_resolved_environment_and_saves_fields() {
 
 // ── gc ──────────────────────────────────────────────────────────────
 
-/// A sandbox with a live and an orphaned PDF, one live and one stale
-/// query-cache entry, and a live plus an orphaned metric.
+/// A sandbox with something in every cache: two PDFs, a query cache at
+/// its cache-dir home, and two curated metrics.
 fn gc_sandbox(tag: &str) -> Sandbox {
     let sb = Sandbox::new(tag);
-    write(sb.pdf_cache().join("Andersson2021pombz.pdf"), "%PDF-1.4 live\n");
-    write(sb.pdf_cache().join("Ghost2001aaaaa.pdf"), "%PDF-1.4 orphan\n");
+    write(sb.pdf_cache().join("Andersson2021pombz.pdf"), "%PDF-1.4 one\n");
+    write(sb.pdf_cache().join("Baxter2019equxm.pdf"), "%PDF-1.4 two\n");
     write(
-        sb.state.join("tabs.json"),
-        r#"{"contexts": {"global": [{"id": "live", "query": "jets", "label": "jets"}]}}"#,
-    );
-    write(
-        sb.state.join("query_cache.json"),
-        r#"{"version": 1, "tabs": {"live": [], "stale": []}}"#,
+        sb.query_cache(),
+        r#"{"version": 1, "tabs": {"tt1": [], "tt2": []}}"#,
     );
     sb.seed_metrics(&[("Andersson2021pombz", 0.5), ("Ghost2001aaaaa", 0.9)]);
     sb
 }
 
 #[test]
-fn gc_reports_without_reclaiming_anything() {
-    let sb = gc_sandbox("gc-report");
+fn gc_reports_what_the_caches_cost_and_deletes_nothing() {
+    let sb = gc_sandbox("gc");
     let r = sb.run(&["gc"]);
     assert!(r.ok(), "{}", r.report());
-    assert!(r.stdout.contains("cached PDFs      1 orphaned"), "{}", r.report());
-    assert!(r.stdout.contains("Ghost2001aaaaa"), "{}", r.report());
-    assert!(r.stdout.contains("query cache      1 stale"), "{}", r.report());
-    assert!(r.stdout.contains("metrics          1 outside"), "{}", r.report());
-    assert!(r.stdout.contains("Nothing reclaimed."), "{}", r.report());
-    // everything still on disk
-    assert!(sb.pdf_cache().join("Ghost2001aaaaa.pdf").exists());
-    assert!(read(sb.state.join("query_cache.json")).contains("stale"));
+    assert!(
+        r.stdout.contains(&format!("PDF cache        {}  (2 file(s)", sb.pdf_cache().display())),
+        "{}",
+        r.report()
+    );
+    assert!(
+        r.stdout.contains(&format!("query cache      {}", sb.query_cache().display())),
+        "{}",
+        r.report()
+    );
+    assert!(
+        r.stdout.contains(&format!("metrics          {}  (2 paper(s)", sb.state.join("metrics.json").display())),
+        "{}",
+        r.report()
+    );
+    // the closing advice: the cache dir is the user's to delete
+    assert!(
+        r.stdout.contains(&format!("rm -rf {}", sb.home.join(".cache/astrobib").display())),
+        "{}",
+        r.report()
+    );
+    assert!(r.stdout.contains("never deletes it for you"), "{}", r.report());
+    assert!(r.stdout.contains("metrics.json is not cache"), "{}", r.report());
+
+    // a report reports: every byte is still there afterwards
+    assert!(sb.pdf_cache().join("Andersson2021pombz.pdf").exists());
+    assert!(sb.pdf_cache().join("Baxter2019equxm.pdf").exists());
+    assert!(sb.query_cache().exists());
     assert_eq!(sb.metrics_keys(), ["Andersson2021pombz", "Ghost2001aaaaa"]);
 }
 
 #[test]
-fn gc_clean_reclaims_disposables_but_keeps_curated_metrics() {
-    let sb = gc_sandbox("gc-clean");
-    let r = sb.run(&["gc", "--clean"]);
-    assert!(r.ok(), "{}", r.report());
-    assert!(!sb.pdf_cache().join("Ghost2001aaaaa.pdf").exists(), "{}", r.report());
-    assert!(sb.pdf_cache().join("Andersson2021pombz.pdf").exists(), "live PDF was deleted");
-    assert!(!read(sb.state.join("query_cache.json")).contains("stale"), "{}", r.report());
-    assert!(read(sb.state.join("query_cache.json")).contains("live"), "{}", r.report());
-    assert!(r.stdout.contains("Kept 1 metric(s)"), "{}", r.report());
-    assert_eq!(sb.metrics_keys(), ["Andersson2021pombz", "Ghost2001aaaaa"]);
-
-    let r = sb.run(&["gc", "--clean", "--metrics"]);
-    assert!(r.ok(), "{}", r.report());
-    assert!(r.stdout.contains("dropped metrics for Ghost2001aaaaa"), "{}", r.report());
-    assert_eq!(sb.metrics_keys(), ["Andersson2021pombz"]);
+fn gc_has_no_deleting_flags_at_all() {
+    let sb = gc_sandbox("gc-flags");
+    for flag in ["--clean", "--metrics", "--prune"] {
+        let r = sb.run(&["gc", flag]);
+        assert_eq!(r.code(), 2, "{}", r.report());
+        assert!(sb.pdf_cache().join("Baxter2019equxm.pdf").exists());
+    }
 }
 
 #[test]
-fn gc_refuses_to_judge_orphans_against_an_empty_library() {
-    let sb = Sandbox::empty("gc-empty");
-    write(sb.pdf_cache().join("Ghost2001aaaaa.pdf"), "%PDF-1.4\n");
-    let r = sb.run(&["gc", "--clean"]);
-    assert_eq!(r.code(), 1, "{}", r.report());
-    assert!(r.stderr.contains("refusing to judge orphans"), "{}", r.report());
-    assert!(sb.pdf_cache().join("Ghost2001aaaaa.pdf").exists());
+fn gc_on_a_machine_with_no_caches_reports_zeroes() {
+    let sb = Sandbox::empty("gc-cold");
+    let r = sb.run(&["gc"]);
+    assert!(r.ok(), "{}", r.report());
+    assert!(r.stdout.contains("(0 file(s), 0 KB)"), "{}", r.report());
+    assert!(r.stdout.contains("(0 paper(s), 0 KB)"), "{}", r.report());
+}
+
+#[test]
+fn the_query_cache_lives_in_the_cache_dir_not_the_state_dir() {
+    let sb = Sandbox::new("query-cache");
+    // this test exercises the library in-process, so it points $HOME at
+    // the sandbox; every other test passes the environment explicitly
+    // to a child, so nothing else can see this
+    std::env::set_var("HOME", &sb.home);
+    std::env::set_var("ASTROBIB_STATE_DIR", &sb.state);
+
+    assert_eq!(astrobib::tabs::cache_file(), sb.query_cache());
+    astrobib::tabs::save_cached_articles("tt1", &[]);
+    assert!(sb.query_cache().exists(), "the query cache was not written to the cache dir");
+    // curated state is not in the blast radius of rm -rf ~/.cache
+    assert!(!sb.state.join("query_cache.json").exists());
+    assert_eq!(astrobib::tabs::load_cached_articles("tt1").len(), 0);
+
+    // and gc points at the file that is actually being used
+    let r = sb.run(&["gc"]);
+    assert!(
+        r.stdout.contains(&format!("query cache      {}", sb.query_cache().display())),
+        "{}",
+        r.report()
+    );
 }
 
 // ── argument handling ───────────────────────────────────────────────
