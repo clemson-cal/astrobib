@@ -714,12 +714,30 @@ enum DlMsg {
     Done { id: u64, done: usize, failed: Vec<String> },
 }
 
+/// Sort fallback for a key the library no longer holds. `self.order`
+/// and the library are kept in step by rebuild_order — every mutation
+/// path calls it — but nothing in the type system enforces that, and a
+/// future path that forgets must not take the running TUI down with it.
+/// Orphans sort to the end in either direction (the sort direction is
+/// applied to real entries only), keyed by cite key so the order stays
+/// total, stable, and identical to before whenever the two agree.
+fn orphan_order(a_live: bool, b_live: bool, a: &str, b: &str) -> std::cmp::Ordering {
+    match (a_live, b_live) {
+        (true, false) => std::cmp::Ordering::Less,
+        (false, true) => std::cmp::Ordering::Greater,
+        _ => a.cmp(b),
+    }
+}
+
 impl App {
     fn new(lib: MergedLibrary) -> Self {
         let mut order: Vec<String> = lib.entries().iter().map(|e| e.key().to_string()).collect();
-        order.sort_by(|a, b| {
-            let (ea, eb) = (lib.get(a).unwrap(), lib.get(b).unwrap());
-            eb.year().cmp(&ea.year()).then(a.cmp(b))
+        order.sort_by(|a, b| match (lib.get(a), lib.get(b)) {
+            (Some(ea), Some(eb)) => eb.year().cmp(&ea.year()).then(a.cmp(b)),
+            // orphans cannot exist here (the order was just derived from
+            // the library), but comparators never panic on principle —
+            // see orphan_order
+            (x, y) => orphan_order(x.is_some(), y.is_some(), a, b),
         });
         let filtered = (0..order.len()).collect::<Vec<_>>();
         let mut table = TableState::default();
@@ -810,8 +828,15 @@ impl App {
                 .and_then(|a| self.lib.get_by_bibcode(&a.bibcode))
                 .map(|e| e.key().to_string()),
             Some(Scope::Manuscript { rows }) => rows.get(pos).and_then(|r| r.key.clone()),
-            _ => self.filtered.get(pos).map(|&i| self.order[i].clone()),
+            _ => self.filtered.get(pos).and_then(|&i| self.order.get(i).cloned()),
         }
+    }
+
+    /// The library entry at an `order` position — the one place that
+    /// resolves a display index, so a position that outlives the entry
+    /// it named yields None instead of indexing or unwrapping.
+    fn entry_at(&self, i: usize) -> Option<&crate::library::Entry> {
+        self.lib.get(self.order.get(i)?)
     }
 
     fn active_ads(&self) -> Option<&Scope> {
@@ -1323,7 +1348,7 @@ impl App {
             _ if visible_only => self
                 .filtered
                 .iter()
-                .map(|&i| self.order[i].clone())
+                .filter_map(|&i| self.order.get(i).cloned())
                 .collect(),
             _ => self.order.clone(),
         };
@@ -1672,7 +1697,7 @@ impl App {
         let bibs: Vec<(String, String)> = self
             .filtered
             .iter()
-            .filter_map(|&i| self.lib.get(&self.order[i]))
+            .filter_map(|&i| self.entry_at(i))
             .filter_map(|e| e.bibcode().map(|b| (b.to_string(), e.key().to_string())))
             .collect();
         if bibs.is_empty() || crate::ads::get_token().is_none() {
@@ -1942,7 +1967,11 @@ impl App {
             let in_key_col = show_key && self.hover.0 >= a.x + a.width.saturating_sub(20);
             if in_key_col {
                 if let Some(pos) = self.hovered_table_pos() {
-                    return self.filtered.get(pos).map(|&i| self.order[i].as_str());
+                    return self
+                        .filtered
+                        .get(pos)
+                        .and_then(|&i| self.order.get(i))
+                        .map(String::as_str);
                 }
             }
         }
@@ -2055,7 +2084,7 @@ impl App {
         }
         let pos = self.table.selected()?;
         let idx = *self.filtered.get(pos)?;
-        Some(self.order[idx].as_str())
+        self.order.get(idx).map(String::as_str)
     }
 
     fn refilter(&mut self) {
@@ -2099,12 +2128,18 @@ impl App {
             priority: Some(Box::new(move |k: &str| pri.get(k).copied())),
             citations: Some(Box::new(move |k: &str| cit.get(k).copied())),
         };
+        // filter_map, not filter: a key the library no longer holds
+        // simply drops out of the visible set — which also keeps every
+        // position in `filtered` resolvable for the table and the
+        // metric strip, whatever state `order` is in
         self.filtered = self
             .order
             .iter()
             .enumerate()
-            .filter(|(_, key)| query::matches(&groups, self.lib.get(key).unwrap(), &ctx))
-            .map(|(i, _)| i)
+            .filter_map(|(i, key)| {
+                let e = self.lib.get(key)?;
+                query::matches(&groups, e, &ctx).then_some(i)
+            })
             .collect();
         let sel = self.table.selected().unwrap_or(0);
         self.table.select(if self.filtered.is_empty() {
@@ -2144,7 +2179,8 @@ impl App {
                 let Some(&idx) = self.filtered.get(pos) else {
                     return;
                 };
-                self.order[idx].clone()
+                let Some(key) = self.order.get(idx) else { return };
+                key.clone()
             }
         };
         if !self.selected.remove(&key) {
@@ -2177,7 +2213,10 @@ impl App {
         let lib = &self.lib;
         let (col, asc) = self.sort;
         self.order.sort_by(|a, b| {
-            let (ea, eb) = (lib.get(a).unwrap(), lib.get(b).unwrap());
+            let (ea, eb) = match (lib.get(a), lib.get(b)) {
+                (Some(ea), Some(eb)) => (ea, eb),
+                (x, y) => return orphan_order(x.is_some(), y.is_some(), a, b),
+            };
             let ord = match col {
                 SortCol::Metric => match self.metric_col {
                     MetricCol::Priority => {
@@ -2638,13 +2677,11 @@ impl App {
             match m {
                 DlMsg::Progress(s) => self.status = s,
                 DlMsg::Done { id, done, failed } => {
-                    let finished = self.finish_task(id);
-                    if finished.as_ref().is_some_and(|t| t.cancelled) {
+                    if let Some(t) = self.finish_task(id).filter(|t| t.cancelled) {
                         // discard the cancelled task's result: remove
                         // anything it cached so the end state matches the
                         // existing failure/clear paths, and reset the
                         // channel state exactly as the normal arm does
-                        let t = finished.unwrap();
                         for k in &t.keys {
                             let p = pdf::cache_path(k);
                             if p.exists() {
@@ -2740,7 +2777,7 @@ impl App {
                 .and_then(|a| self.lib.get_by_bibcode(&a.bibcode))
                 .map(|e| e.key().to_string()),
             Some(Scope::Manuscript { rows }) => rows.get(pos).and_then(|r| r.key.clone()),
-            _ => self.filtered.get(pos).map(|&i| self.order[i].clone()),
+            _ => self.filtered.get(pos).and_then(|&i| self.order.get(i).cloned()),
         }
     }
 
@@ -4075,7 +4112,7 @@ impl App {
             _ => self
                 .filtered
                 .iter()
-                .filter_map(|&i| self.lib.get(&self.order[i]))
+                .filter_map(|&i| self.entry_at(i))
                 .map(|e| {
                     let m = self.metrics.get(e.key());
                     match metric {
@@ -4389,7 +4426,19 @@ impl App {
             .iter()
             .enumerate()
             .map(|(pos, &i)| {
-                let e = self.lib.get(&self.order[i]).unwrap();
+                // refilter only admits keys the library holds, so this
+                // resolves; if the two ever disagree the row renders as
+                // an orphan rather than panicking mid-frame — and every
+                // later position stays aligned with `filtered`
+                let Some(e) = self.entry_at(i) else {
+                    return Row::new(vec![Cell::from(Span::styled(
+                        format!(
+                            "· {} (no longer in the library)",
+                            self.order.get(i).map(String::as_str).unwrap_or("?")
+                        ),
+                        Style::default().fg(Color::DarkGray),
+                    ))]);
+                };
                 let at_cursor = cursor == Some(pos);
                 let lit = hov_row == Some(pos);
                 let (c_ind, c_pdf, c_ms, c_year, c_author, c_key) = palette(lit);
