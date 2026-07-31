@@ -257,8 +257,37 @@ class Session:
             what=f"disappearance of {needle!r}",
         )
 
+    def wait_quiet(self, idle=0.15, timeout=5.0):
+        """Block until the pty has been silent for `idle` seconds.
+
+        ratatui diff-renders, so a redraw is a burst of bytes followed by
+        silence: once the stream goes quiet again, whatever the last input
+        triggered has finished landing. This is the condition-based form of
+        "let the frame settle" — prefer it to `settle()` whenever there is
+        no positive needle to wait for (proving a key did *not* change
+        something, sweeping many hover positions), because `settle()` can
+        return in the middle of a burst and hand the scenario half a frame.
+
+        Returns True if the stream went quiet, False on timeout.
+        """
+        deadline = time.monotonic() + timeout
+        while not self.eof and time.monotonic() < deadline:
+            r, _, _ = select.select([self.master], [], [], idle)
+            if not r:
+                return True
+            self._pump(0)
+        return self.eof
+
     def settle(self, seconds=0.3):
-        """Let a redraw land when there is nothing unique to wait for."""
+        """Sleep for a fixed span, pumping as we go.
+
+        A blunt instrument: it cannot tell "nothing happened yet" from
+        "nothing will happen". Reach for `wait_for` first and `wait_quiet`
+        second; the one remaining use is the pty keyboard-fusion window in
+        s15, where the point is to leave a gap between two keystrokes, not
+        to wait for the screen. Any new call site needs a comment saying
+        why neither of the other two works.
+        """
         end = time.monotonic() + seconds
         while time.monotonic() < end:
             self._pump(0.05)

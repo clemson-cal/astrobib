@@ -39,10 +39,15 @@ PRE_LAUNCH = _pre_launch
 def run(t):
     t.send("]")  # into the restored query scope
     t.wait_for(lambda: "An un-imported paper" in t.text(), what="cached query row")
+    # the assertions below are negative — that no PDF affordance is on
+    # screen — so they must not run against a card still showing the
+    # library entry we just navigated away from (which *does* offer them).
+    # The abstract is card-only, so it pins the card to the new paper.
+    t.wait_for("Not in the library.", what="pub card repainted for the query result")
     txt = t.text()
     # the card offers no PDF actions for a paper that is not in the library
     for label in ("arXiv ↓", "ADS OA ↓", "browser ↓", "pick …"):
-        require(label not in txt, f"PDF action {label!r} offered pre-import", t)
+        require(label not in txt, f"PDF action {label!r} offered before import", t)
     # and the keys say why instead of silently doing nothing
     t.send("p")
     t.wait_for(lambda: "import the paper first" in t.text(), what="p explanation")

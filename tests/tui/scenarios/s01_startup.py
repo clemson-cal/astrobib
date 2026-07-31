@@ -6,6 +6,10 @@ DESCRIPTION = "startup: scope strip + table + card + badges"
 
 
 def run(t):
+    # wait_ready guarantees a complete *table* frame; the pub card is
+    # filled from the cursor entry and can land one frame later, so anchor
+    # on a card-only needle before reading the screen once.
+    t.wait_for("arXiv:2407.20112", what="pub card populated (arXiv link)")
     txt = t.text()
     # scope strip
     require("Library" in txt, "Library scope missing from scope strip", t)
@@ -29,7 +33,6 @@ def run(t):
     # pub card is on by default and shows the highlighted (newest) entry:
     # its cite key appears in the card footer
     require("Cabrera2024" in txt, "pub card cite key footer missing", t)
-    require("arXiv:2407.20112" in txt, "pub card arXiv link missing", t)
     # citation-graph affordances in the card links row (the entry has an
     # adsurl, so both query affordances render alongside the URL links)
     require("citations" in txt, "pub card citations affordance missing", t)
