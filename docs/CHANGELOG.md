@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.8.0 — 2026-07-31
 
 ### Fixed
 - The two pub cards (library and query results) are one renderer over one model, ending a bug class: five features had already been "fixed on one card but not the other", and unifying them exposed five more silent divergences, now resolved — the query card was missing the `full key` copy row even though the `y Y` chord worked there; it offered `ADS OA ↓` and `browser ↓` on an imported paper with no ADS record, buttons that could not act; and the year accent, the status-line spacing, and an empty-title copy row differed for no reason. Verified by capturing 126 card states (every fixture at five heights and three widths, mid-scroll, multi-selected, hovering fourteen targets, cached and missing PDFs, imported and un-imported query results) as text *and* per-cell style attributes: zero differences across the refactor.
