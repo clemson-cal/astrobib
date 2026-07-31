@@ -622,6 +622,9 @@ struct App {
     // sources and bib/, compared every ~1.5 s
     ms_watch: MsWatch,
     ms_watch_at: std::time::Instant,
+    // user-state stores whose last write failed: the latch behind
+    // state_write, so an unwritable state dir reports once per store
+    write_failed: HashSet<&'static str>,
 }
 
 /// option/alt+arrow (and emacs alt+b/f) word motions for text inputs.
@@ -813,7 +816,34 @@ impl App {
             last_click: None,
             ms_watch: (vec![], None),
             ms_watch_at: std::time::Instant::now(),
+            write_failed: HashSet::new(),
         }
+    }
+
+    /// Report a failed user-state write — once. Saved queries, curated
+    /// priorities, state.json fields, and refs.bib are written on
+    /// changes and on idle ticks, so the choice is not "log it or not"
+    /// but "log it once or every tick": the first failure per store is
+    /// logged, the rest are latched until that store writes again.
+    fn state_write(&mut self, what: &'static str, err: Option<String>) {
+        match err {
+            None => {
+                self.write_failed.remove(what);
+            }
+            Some(e) => {
+                if self.write_failed.insert(what) {
+                    self.note(MsgCat::Err, format!("could not save {what}: {e}"));
+                }
+            }
+        }
+    }
+
+    /// Flush the metrics store — priorities are hand-curated user data,
+    /// so a write that quietly stops working gets said out loud.
+    fn save_metrics(&mut self) {
+        let err = (!self.metrics.save())
+            .then(|| self.metrics.error().unwrap_or("write failed").to_string());
+        self.state_write("metrics.json", err);
     }
 
     /// The PDF-cache key for a table row, per scope (cite key when the
@@ -1077,7 +1107,7 @@ impl App {
     /// regenerating silently on every rescan. Created only for TeX
     /// manuscripts (astrobib refs opts a markdown one in); once the
     /// file exists it is kept fresh whatever the sources.
-    fn sync_refs_bib(&self, rows: &[MsRow]) {
+    fn sync_refs_bib(&mut self, rows: &[MsRow]) {
         let Some(root) = self.ms_root() else { return };
         let out = root.join("refs.bib");
         if !out.exists() && crate::export::manuscript_tex_files(&root).is_empty() {
@@ -1089,7 +1119,8 @@ impl App {
             .map(|r| r.cited.clone())
             .collect();
         let content = crate::export::refs_bib_content(&cited, &self.lib);
-        let _ = crate::export::write_refs_bib(&out, &content);
+        let res = crate::export::write_refs_bib(&out, &content);
+        self.state_write("refs.bib", res.err().map(|e| e.to_string()));
     }
 
     fn ms_root(&self) -> Option<std::path::PathBuf> {
@@ -1098,7 +1129,7 @@ impl App {
 
     /// Persist the current ADS scopes to the tabs.json state file,
     /// user-local and keyed per manuscript context.
-    fn save_tabs(&self) {
+    fn save_tabs(&mut self) {
         let tabs: Vec<crate::tabs::Tab> = self
             .scopes
             .iter()
@@ -1107,7 +1138,8 @@ impl App {
                 _ => None,
             })
             .collect();
-        crate::tabs::save(&tabs, self.ms_root().as_deref());
+        let res = crate::tabs::save(&tabs, self.ms_root().as_deref());
+        self.state_write("saved queries (tabs.json)", res.err().map(|e| e.to_string()));
     }
 
     /// Restore saved query scopes and refresh them all on one worker.
@@ -1277,7 +1309,7 @@ impl App {
                                     self.metrics.set_citations(&key, c);
                                 }
                             }
-                            self.metrics.save();
+                            self.save_metrics();
                             let n = articles.len();
                             crate::tabs::save_cached_articles(&tab.id, &articles);
                             tab.refreshed = Some(crate::tabs::now_secs());
@@ -1705,8 +1737,7 @@ impl App {
         }
         let (tx, rx) = std::sync::mpsc::channel();
         self.cit_rx = Some(rx);
-        let id = self.add_task(TaskKind::Query, "⌕ citation counts".to_string(), vec![]);
-        let _ = id;
+        self.add_task(TaskKind::Query, "⌕ citation counts".to_string(), vec![]);
         std::thread::spawn(move || {
             let q = format!(
                 "bibcode:({})",
@@ -1782,7 +1813,7 @@ impl App {
                         }
                     }
                 }
-                self.metrics.save();
+                self.save_metrics();
                 if let Some(t) = self.tasks.iter().find(|t| t.label == "⌕ citation counts") {
                     let id = t.id;
                     self.finish_task(id);
@@ -1915,7 +1946,7 @@ impl App {
             let had_events = event::poll(Duration::from_millis(tick))?;
             if !had_events {
                 // idle: flush any dirty metrics (a no-op while clean)
-                self.metrics.save();
+                self.save_metrics();
             }
             if had_events {
                 // Coalesce: handle every already-pending event before the
@@ -1940,7 +1971,7 @@ impl App {
                 }
             }
         }
-        self.metrics.save();
+        self.save_metrics();
         Ok(())
     }
 
@@ -3443,7 +3474,9 @@ impl App {
                         self.sort = (SortCol::Year, false);
                         self.rebuild_order();
                     }
-                    let _ = crate::ads::save_state_field("metric", self.metric_col.state_tag());
+                    let res =
+                        crate::ads::save_state_field("metric", self.metric_col.state_tag());
+                    self.state_write("state.json", res.err().map(|e| e.to_string()));
                     self.note(
                         MsgCat::Info,
                         format!("metric column: {}", self.metric_col.name()),
