@@ -41,8 +41,18 @@ PRE_LAUNCH = _pre_launch
 
 
 def run(t):
+    # the restore note is a logged message that clears after ~5s, so read
+    # it before anything else — and assert it for real (it used to be
+    # written `… or True`, which asserted nothing at all)
+    t.wait_for(
+        lambda: "restored 1 saved query from cache" in t.text(),
+        what="the startup 'restored … from cache' note",
+    )
     t.send("]")  # into the restored query scope
-    t.wait_for(lambda: "A cached result about kilonovae" in t.text(), what="cached row")
-    require("restored 1 saved query from cache" in t.text() or True, "note", t)
-    # the card renders from cached data too
-    require("Cachette" in t.text(), "cached author missing", t)
+    t.wait_for(
+        lambda: "A cached result about kilonovae" in t.text(),
+        what="the cached result row in the restored query scope",
+    )
+    # the card renders from cached data too — needle on the abstract,
+    # which only the card draws (the author also sits in a table column)
+    t.wait_for("From the cache, not the network.", what="cached abstract on the pub card")

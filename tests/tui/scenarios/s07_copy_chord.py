@@ -16,8 +16,10 @@ def run(t):
     require("│" in txt, "vertical column divider missing", t)
     # y arms the chord: the footer shows the which-key line
     t.send("y")
-    t.wait_for(lambda: "copy:" in t.text(), what="footer which-key line")
-    require("A abstract" in t.text(), "footer chord line incomplete", t)
+    t.wait_for(
+        lambda: "copy:" in t.text() and "A abstract" in t.text(),
+        what="the complete footer which-key line (through 'A abstract')",
+    )
     # yy copies the cite key
     t.send("y")
     t.wait_for(lambda: "Copied:" in t.text(), what="copy confirmation")

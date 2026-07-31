@@ -26,9 +26,20 @@ A scenario is `scenarios/sNN_name.py` exposing `DESCRIPTION`, optionally `ALLOW_
 - `t.send(str)` / `t.key("esc"|"enter"|"delete"|"space"|…)` — keyboard input
 - `t.click(x, y)` — left click at a 0-based cell, injected as SGR mouse reports
 - `t.lines()` / `t.text()` / `t.find(needle)` / `t.row_of(needle)` — reconstructed screen
-- `t.wait_for(substring_or_predicate, timeout=8)` / `t.wait_gone(needle)` — polling waits; there are no sleeps in scenarios
+- `t.wait_for(substring_or_predicate, timeout=8)` / `t.wait_gone(needle)` — polling waits
+- `t.wait_quiet(idle=0.15)` — block until the pty has been silent that long, i.e. the redraw the last input triggered has finished landing; the condition-based way to assert that something did *not* change
 - `driver.require(cond, msg, t)` — assert with a screen dump attached
 - raise `driver.Skip("why")` to skip
+
+### Waiting, not sleeping
+
+Every assertion about something that must *become* true belongs inside a `wait_for`, not after one. The recurring flake is a scenario that waits for X and then asserts Y in the same breath, when Y lands a frame later: the pub card, in particular, repaints from the cursor entry and can trail the table by a frame, so `t.wait_for("1 selected")` followed by `require("Baxter2019equxm" in t.text())` is a race, while waiting on the card needle is not.
+
+Useful invariant: within one frame the footer is drawn *after* the table, so a footer needle appearing (or disappearing) means that frame's table is already on screen. Negative assertions about the table are safe immediately after a footer `wait_gone`.
+
+For "prove this key did *not* do something", prefer proof that the key was processed at all — after `?` opens the keys panel, `j` is verified by the card moving to the next entry, and only then is the panel asserted to still be up. Where no such proof exists, `wait_quiet` beats `settle`: it returns once the stream is actually idle, whereas a fixed sleep can hand you half a repaint. `settle` survives in exactly one place, s15, and not for the screen at all — a lone ESC written back-to-back with the next byte arrives in one pty read and crossterm parses it as alt+*key*, so the sleep is there to split two keystrokes. Any new `settle` call needs a comment saying why the other two do not work.
+
+Failure messages print the reconstructed screen, so they should say what was expected, not that something was missing — `what="the 2018 entry (Délacroix) on the first data row, 6"` reads far better next to a screen dump than `"row wrong"`.
 
 Gotchas learned the hard way:
 

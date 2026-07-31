@@ -55,28 +55,37 @@ def run(t):
 
     # the modal's own links must still react to the mouse
     t.hover(lx + 10, ly)
-    t.settle()
-    require(
-        t.screen.buffer[ly][lx + 10].underscore,
-        "hovered modal link did not underline (hover injection broken?)",
-        t,
+    t.wait_for(
+        lambda: t.screen.buffer[ly][lx + 10].underscore,
+        what=f"underline on the hovered modal link at ({lx + 10}, {ly})",
     )
 
     # sweep the modal interior: card link/copy rows run beneath its right
-    # half here, and pre-fix their hover styling bled out around the modal
+    # half here, and pre-fix their hover styling bled out around the modal.
+    #
+    # There is no needle to wait for here — a correct app answers most of
+    # these hovers with no output at all — so wait_quiet, not settle: it
+    # returns only once the stream has actually gone silent, whereas a
+    # fixed sleep can snapshot halfway through a repaint and report cells
+    # as "leaked" that were about to be restored.
     leaks = []
     for y in range(Y0 + 1, Y1 - 1):
         for x in (X0 + 21, X0 + 33, X0 + 41, X0 + 49):
             t.hover(x, y)
-            t.settle(0.05)
+            t.wait_quiet(0.06)
             cur = snapshot_outside(t)
             diff = [k for k in base if cur[k] != base[k]]
             if diff:
-                leaks.append(((x, y), diff[:4]))
+                leaks.append((
+                    (x, y),
+                    [f"{k}: {base[k][0]!r}->{cur[k][0]!r} style {base[k][1:]}->{cur[k][1:]}"
+                     for k in diff[:3]],
+                ))
     require(
         not leaks,
-        "hover leaked outside the modal: " + "; ".join(
-            f"hover{p} restyled {d}" for p, d in leaks[:4]
+        "hovering inside the @ modal restyled cells outside it (the modal must "
+        "blind the surfaces it covers to the mouse): " + "; ".join(
+            f"hover{p} changed {d}" for p, d in leaks[:4]
         ),
         t,
     )

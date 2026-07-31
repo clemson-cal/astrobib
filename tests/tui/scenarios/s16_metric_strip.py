@@ -27,8 +27,10 @@ def run(t):
     # the wheel over a priority swatch scales that row's level
     t.send("M")
     t.wait_for(lambda: "metric column: priority" in t.text(), what="priority back on")
-    header = next(i for i, l in enumerate(t.lines()) if "Year" in l[:40])
+    header = next((i for i, l in enumerate(t.lines()) if "Year" in l[:40]), None)
+    require(header is not None, "table header row not found (Year in the first 40 cols)", t)
     t.send(b"\x1b[<64;1;%dM" % (header + 3))  # wheel-up, column 0, first row
     t.wait_for(
-        lambda: "priority 0.0" in t.lines()[-1], what="wheel-up priority feedback"
+        lambda: "priority 0.0" in t.lines()[-1],
+        what="wheel-up priority feedback in the footer",
     )
