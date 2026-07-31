@@ -180,12 +180,20 @@ mod tests {
 
 // ── cached query results ────────────────────────────────────────────
 //
-// The last results of every saved tab, in query_cache.json beside
-// tabs.json: startup restores scopes from here instantly (and offline)
-// instead of re-querying ADS; r refreshes on demand.
+// The last results of every saved tab: startup restores scopes from
+// here instantly (and offline) instead of re-querying ADS; r refreshes
+// on demand.
+//
+// This is cache, not state — every byte of it is one ADS round-trip
+// away from coming back — so it lives in the machine-local cache dir
+// beside the PDFs rather than next to tabs.json. `rm -rf ~/.cache/
+// astrobib` is then the supported way to reclaim it, with nothing
+// curated in the blast radius. (A file left at the old state-dir path
+// by an earlier build is simply ignored; astrobib has no released
+// versions to stay compatible with.)
 
-fn cache_file() -> PathBuf {
-    state_file().with_file_name("query_cache.json")
+pub fn cache_file() -> PathBuf {
+    crate::library::cache_dir().join("query_cache.json")
 }
 
 fn read_cache() -> serde_json::Map<String, serde_json::Value> {
@@ -229,23 +237,4 @@ pub fn drop_cached_articles(tab_id: &str) {
     if tabs.remove(tab_id).is_some() {
         write_cache(tabs);
     }
-}
-
-/// Every tab id across every context — what the query cache may
-/// legitimately hold.
-pub fn all_tab_ids() -> std::collections::HashSet<String> {
-    read_contexts()
-        .values()
-        .filter_map(|v| v.as_array())
-        .flatten()
-        .filter_map(|t| t.get("id").and_then(|i| i.as_str()).map(str::to_string))
-        .collect()
-}
-
-/// The tab ids the query cache currently holds, with their byte sizes.
-pub fn cached_tab_entries() -> Vec<(String, usize)> {
-    read_cache()
-        .iter()
-        .map(|(k, v)| (k.clone(), v.to_string().len()))
-        .collect()
 }

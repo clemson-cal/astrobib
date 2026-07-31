@@ -2,6 +2,11 @@
 //! state.json — never in any bib database. `priority` is curated user
 //! data — a 0..1 level that decays over time; `citations` is
 //! cache-like, refreshable from ADS.
+//!
+//! Nothing ever prunes this store. Priorities halve every week
+//! untouched, so anything stale is already invisible, and the whole
+//! file is a few kilobytes even for a library of hundreds — deleting
+//! hand-curated data to reclaim that is a bad trade at any size.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -33,7 +38,7 @@ pub struct Metrics {
     dirty: bool,
 }
 
-fn metrics_file() -> PathBuf {
+pub fn metrics_file() -> PathBuf {
     let base = std::env::var("ASTROBIB_STATE_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|_| {
@@ -152,19 +157,5 @@ impl Metrics {
 
     pub fn get(&self, key: &str) -> Option<&PaperMetrics> {
         self.papers.get(key)
-    }
-
-    /// Drop metrics for papers that no longer exist. The caller must
-    /// pass EVERY live key across both tiers — pruning against a
-    /// partial view (a hidden global tier, a relocated library) would
-    /// destroy curated priorities, so callers guard accordingly.
-    pub fn prune(&mut self, live: &std::collections::HashSet<String>) -> usize {
-        let before = self.papers.len();
-        self.papers.retain(|k, _| live.contains(k));
-        let dropped = before - self.papers.len();
-        if dropped > 0 {
-            self.dirty = true;
-        }
-        dropped
     }
 }

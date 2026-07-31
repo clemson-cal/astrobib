@@ -87,6 +87,7 @@ dependencies = [
  "clap",
  "colorous",
  "indexmap",
+ "libc",
  "ratatui",
  "regex",
  "serde_json",
