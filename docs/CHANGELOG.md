@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.8.1 — 2026-07-31
 
 ### Changed
 - Manuscript rows are selectable. Every row that resolves to a paper — a manuscript-db member, a cite that resolves only in the global library, an uncited member — now takes part in selection mode, so the view's central workflow ("these cites are in my library but not yet in the manuscript") is a select-all plus `m` rather than one row at a time. A cite that resolves to nothing (missing or ambiguous) still cannot be selected — there is no paper to act on — and now shows a blank gutter and says so instead of silently refusing.
