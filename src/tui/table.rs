@@ -27,7 +27,7 @@ use ratatui::Frame;
 /// Every column the app can draw, across all scopes. Also the sort
 /// vocabulary: `Metric` names the swatch strip beside the table, which
 /// is a sort target without being a table column.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub(super) enum Col {
     Metric,
     /// the selection gutter — cursor ◉ and selection ◯/◉
@@ -115,6 +115,64 @@ pub(super) fn fixed(id: Col, header: &str, w: u16, sortable: bool) -> ColumnSpec
 
 pub(super) fn flex(id: Col, header: &str, sortable: bool) -> ColumnSpec {
     ColumnSpec { id, header: header.to_string(), width: Width::Flex, sortable }
+}
+
+/// A user's overrides for one scope kind's columns.
+///
+/// Empty means "auto", and auto is not a special case: with nothing
+/// stored, every column keeps the responsive width and visibility the
+/// app has always given it — the author column still scales with the
+/// terminal, the Key column still drops first when things get tight.
+/// Only a column the user has actually touched gets pinned, so opening
+/// the panel and closing it again changes nothing.
+#[derive(Clone, Default)]
+pub(super) struct ColumnConfig {
+    pub hidden: std::collections::HashSet<Col>,
+    pub widths: std::collections::HashMap<Col, u16>,
+}
+
+/// Narrowest a column may be dragged before it stops carrying
+/// information, and widest before it crowds everything else out.
+pub(super) const MIN_COL_W: u16 = 2;
+pub(super) const MAX_COL_W: u16 = 60;
+
+impl ColumnConfig {
+    pub fn from_json(v: &serde_json::Value) -> Self {
+        let hidden = v
+            .get("hidden")
+            .and_then(|h| h.as_array())
+            .map(|a| a.iter().filter_map(|x| x.as_str()).map(Col::from_tag).collect())
+            .unwrap_or_default();
+        let widths = v
+            .get("widths")
+            .and_then(|w| w.as_object())
+            .map(|o| {
+                o.iter()
+                    .filter_map(|(k, val)| {
+                        val.as_u64()
+                            .map(|n| (Col::from_tag(k), (n as u16).clamp(MIN_COL_W, MAX_COL_W)))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        ColumnConfig { hidden, widths }
+    }
+
+    pub fn to_json(&self) -> serde_json::Value {
+        let mut hidden: Vec<&str> = self.hidden.iter().map(|c| c.tag()).collect();
+        hidden.sort_unstable();
+        let mut widths = serde_json::Map::new();
+        let mut pairs: Vec<(&str, u16)> = self.widths.iter().map(|(c, w)| (c.tag(), *w)).collect();
+        pairs.sort_unstable();
+        for (tag, w) in pairs {
+            widths.insert(tag.to_string(), serde_json::json!(w));
+        }
+        serde_json::json!({ "hidden": hidden, "widths": widths })
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.hidden.is_empty() && self.widths.is_empty()
+    }
 }
 
 pub(super) struct TableModel {

@@ -119,6 +119,12 @@ const INVENTORY: &[(char, Zone, Risk, &str)] = &[
     ('▲', Zone::Hit, Risk::Ambiguous, "ascending sort indicator"),
     ('▼', Zone::Hit, Risk::Ambiguous, "descending sort indicator"),
     ('✗', Zone::Hit, Risk::Narrow, "cite-state missing marker"),
+    // -- columns panel ----------------------------------------------------
+    ('✓', Zone::Hit, Risk::Narrow, "columns panel: this column is shown"),
+    ('‹', Zone::Hit, Risk::Narrow, "columns panel: narrow this column"),
+    ('›', Zone::Hit, Risk::Narrow, "columns panel: widen this column"),
+    ('▸', Zone::Hit, Risk::Narrow, "columns panel: the chosen ADS selection sort"),
+    ('←', Zone::Flow, Risk::Ambiguous, "columns panel hover hint: narrow this column"),
     // -- card affordances and badges -------------------------------------
     ('⧉', Zone::Hit, Risk::Narrow, "copy-row badge in the card link stack"),
     ('⌕', Zone::Hit, Risk::Narrow, "query-row badge, filter chip, task labels"),

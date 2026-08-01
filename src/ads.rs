@@ -78,6 +78,28 @@ pub fn save_state_field(key: &str, value: &str) -> std::io::Result<()> {
     std::fs::write(&path, serde_json::to_string_pretty(&v)? + "\n")
 }
 
+/// The same, for a field whose value is structured rather than a
+/// string — the per-scope column configuration, for instance.
+pub fn save_state_value(key: &str, value: serde_json::Value) -> std::io::Result<()> {
+    let path = state_file();
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let mut v: serde_json::Value = std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_else(|| serde_json::json!({ "version": 1 }));
+    v[key] = value;
+    std::fs::write(&path, serde_json::to_string_pretty(&v)? + "\n")
+}
+
+/// Any structured field from state.json.
+pub fn get_state_value(key: &str) -> Option<serde_json::Value> {
+    let raw = std::fs::read_to_string(state_file()).ok()?;
+    let v: serde_json::Value = serde_json::from_str(&raw).ok()?;
+    v.get(key).cloned()
+}
+
 /// Any string field from state.json.
 pub fn get_state_field(key: &str) -> Option<String> {
     let raw = std::fs::read_to_string(state_file()).ok()?;

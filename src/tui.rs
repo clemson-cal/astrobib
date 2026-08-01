@@ -116,6 +116,7 @@ enum Action {
     Card,
     Log,
     Help,
+    Columns,
     GlobalTier,
     Quit,
 }
@@ -187,6 +188,14 @@ type MsWatch = (
 );
 
 impl Scope {
+    fn kind(&self) -> ScopeKind {
+        match self {
+            Scope::Library => ScopeKind::Library,
+            Scope::Manuscript { .. } => ScopeKind::Manuscript,
+            Scope::Ads { .. } => ScopeKind::Query,
+        }
+    }
+
     fn label(&self) -> &str {
         match self {
             Scope::Library => "Library",
@@ -238,6 +247,85 @@ struct Task {
 /// rules — uses this one quite-dim color.
 const DIVIDER_FG: Color = Color::Rgb(62, 66, 74);
 
+/// Which side of the screen the arrow keys drive.
+///
+/// The columns panel is a toggle view, not a modal — the table stays
+/// visible and live beside it. But it needs ↑↓ to walk its list and ←→
+/// to size a column, which are the table's own navigation keys, so
+/// something has to say who gets them. Opening the panel moves focus
+/// into it; Esc hands focus back without closing it, and clicking either
+/// side moves focus there.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Focus {
+    Table,
+    Columns,
+}
+
+/// One line of the columns panel, and what clicking a part of it does.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PanelHit {
+    /// the row itself — select it
+    Row(usize),
+    /// the ✓ box: show or hide this column
+    Toggle(Col),
+    /// the label: sort by this column, shown or not
+    Sort(Col),
+    /// the ‹ › nudges beside the width
+    Narrower(Col),
+    Wider(Col),
+    /// pick the ADS sort a query tab selects records with
+    AdsSort(&'static str),
+}
+
+/// A line in the columns panel.
+enum PanelRow {
+    Column(Col),
+    /// query scopes only: which records ADS sends back at all
+    AdsSort(&'static str, &'static str),
+}
+
+/// The ADS `sort` parameters a query tab can select records with, in the
+/// order the panel offers them. The first is the default and the reason
+/// the feature exists: a query tab that reads as a feed of postings.
+const ADS_SORTS: [(&str, &str); 4] = [
+    ("newest posting", "entry_date desc"),
+    ("newest published", "date desc"),
+    ("most cited", "citation_count desc"),
+    ("most relevant", "score desc"),
+];
+
+/// Which kind of table a scope presents. Columns are configured per
+/// kind, not per scope: every query tab holds the same kind of record,
+/// so they all show the same columns, while each keeps its own sort.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+enum ScopeKind {
+    Library,
+    Manuscript,
+    Query,
+}
+
+impl ScopeKind {
+    fn tag(self) -> &'static str {
+        match self {
+            ScopeKind::Library => "library",
+            ScopeKind::Manuscript => "manuscript",
+            ScopeKind::Query => "query",
+        }
+    }
+}
+
+/// The width a column asked for, 0 if it is absent or flexible. Cell
+/// builders need it for Author, which truncates its text to fit.
+fn spec_width(cols: &[table::ColumnSpec], id: Col) -> u16 {
+    cols.iter()
+        .find(|c| c.id == id)
+        .and_then(|c| match c.width {
+            table::Width::Fixed(w) => Some(w),
+            table::Width::Flex => None,
+        })
+        .unwrap_or(0)
+}
+
 /// Read a stored sort ("column:asc" / "column:desc") from state.json.
 /// An absent or unparseable field means "no stored sort", which each
 /// caller resolves to its own default.
@@ -268,6 +356,22 @@ fn ms_state_rank(r: &MsRow) -> u8 {
         CiteState::Ambiguous => 1,
         CiteState::Library => 2,
         CiteState::Ok => 3,
+    }
+}
+
+/// The columns sidebar's width: enough for a label, a width readout
+/// with its ‹ › nudges, and the sort marker.
+const COLUMNS_PANEL_W: u16 = 26;
+
+/// A columns-panel line, filled like the table's cursor row when it is
+/// the one the arrow keys are on. Without it the selection is invisible
+/// on a hidden column, whose label stays dim either way.
+fn cursor_line(spans: Vec<Span<'static>>, on_cursor: bool) -> Line<'static> {
+    let line = Line::from(spans);
+    if on_cursor {
+        line.style(Style::default().bg(table::CURSOR_FILL))
+    } else {
+        line
     }
 }
 
@@ -406,6 +510,7 @@ const HELP_ENTRIES: &[(&str, &str, Option<Action>, KeyCode)] = &[
     ("⌫", "remove…", Some(Action::Remove), KeyCode::Delete),
     ("/", "filter", Some(Action::Filter), KeyCode::Char('/')),
     ("D", "pub card", Some(Action::Card), KeyCode::Char('D')),
+    ("|", "columns…", Some(Action::Columns), KeyCode::Char('|')),
     ("L", "event log", Some(Action::Log), KeyCode::Char('L')),
     ("t", "global tier", Some(Action::GlobalTier), KeyCode::Char('t')),
     ("v", "pub view", None, KeyCode::Char('v')),
@@ -627,6 +732,15 @@ struct App {
     dl_rx: Option<std::sync::mpsc::Receiver<DlMsg>>,
     // ? keyboard cheat-sheet overlay; any key or click dismisses
     show_help: bool,
+    /// the columns sidebar, a toggle view like the log and the keys sheet
+    show_columns: bool,
+    /// which side the arrow keys drive while the columns panel is open
+    focus: Focus,
+    col_sel: usize,
+    col_rects: Vec<(Rect, PanelHit)>,
+    /// per scope kind: which columns are hidden and how wide the user
+    /// pinned them. Absent means auto — see table::ColumnConfig.
+    columns: std::collections::HashMap<ScopeKind, table::ColumnConfig>,
     // the @ about modal: clickable links, the update-check button
     show_about: bool,
     about_links: Vec<(Rect, String)>,
@@ -851,6 +965,11 @@ impl App {
             table_area: Rect::default(),
             dl_rx: None,
             show_help: false,
+            show_columns: false,
+            focus: Focus::Table,
+            col_sel: 0,
+            col_rects: vec![],
+            columns: App::load_column_config(),
             show_about: false,
             about_links: vec![],
             about_btn: Rect::default(),
@@ -1615,7 +1734,7 @@ impl App {
         let entry = |k: &String| self.lib.get(k);
         match a {
             Action::Select | Action::Filter | Action::Card | Action::Log | Action::Help
-            | Action::Quit => true,
+            | Action::Columns | Action::Quit => true,
             Action::GlobalTier => self.lib.manuscript.is_some(),
             Action::Manuscript => {
                 self.lib.manuscript.is_some() && self.lib.global_on && !keys.is_empty()
@@ -1693,7 +1812,7 @@ impl App {
             }
             // always available; unreachable, but the match stays total
             Action::Select | Action::Filter | Action::Card | Action::Log | Action::Help
-            | Action::Quit => "not available here".to_string(),
+            | Action::Columns | Action::Quit => "not available here".to_string(),
         }
     }
 
@@ -1735,6 +1854,13 @@ impl App {
             Action::Card => self.show_detail = !self.show_detail,
             Action::Log => self.show_log = !self.show_log,
             Action::Help => self.show_help = !self.show_help,
+            Action::Columns => {
+                self.show_columns = !self.show_columns;
+                // opening it hands over the arrow keys, closing it gives
+                // them back — otherwise the table would go quietly dead
+                self.focus = if self.show_columns { Focus::Columns } else { Focus::Table };
+                self.col_sel = self.col_sel.min(self.panel_rows().len().saturating_sub(1));
+            }
             Action::GlobalTier => self.toggle_global(),
             Action::Quit => self.quit = true,
         }
@@ -3251,6 +3377,36 @@ impl App {
             self.run_action(action);
             return;
         }
+        // the columns panel: clicking anywhere in it takes focus and
+        // selects the row; a control inside the row also acts. The
+        // specific hits are searched first because each shares its row's
+        // rect, and Row alone would swallow every one of them.
+        if self.show_columns && self.col_rects.iter().any(|(r, _)| hit(*r, x, y)) {
+            self.focus = Focus::Columns;
+            if let Some(&(_, PanelHit::Row(i))) = self
+                .col_rects
+                .iter()
+                .find(|(r, h)| hit(*r, x, y) && matches!(h, PanelHit::Row(_)))
+            {
+                self.col_sel = i;
+            }
+            let action = self
+                .col_rects
+                .iter()
+                .find(|(r, h)| hit(*r, x, y) && !matches!(h, PanelHit::Row(_)))
+                .map(|&(_, h)| h);
+            match action {
+                Some(PanelHit::Toggle(id)) => self.toggle_column(id),
+                Some(PanelHit::Sort(id)) => self.sort_by(id),
+                Some(PanelHit::Narrower(_)) => self.nudge_width(-1),
+                Some(PanelHit::Wider(_)) => self.nudge_width(1),
+                Some(PanelHit::AdsSort(s)) => self.set_ads_sort(s),
+                _ => {}
+            }
+            return;
+        }
+        // a click anywhere else is the table's, and takes focus with it
+        self.focus = Focus::Table;
         // column headers sort
         if let Some(&(_, col)) = self.sort_headers.iter().find(|(r, _)| hit(*r, x, y)) {
             self.sort_by(col);
@@ -3530,6 +3686,16 @@ impl App {
             self.show_about = false; // any key dismisses the about modal
             return;
         }
+        // while the columns panel holds focus it takes the navigation
+        // keys; anything it does not claim falls through to the table,
+        // so q, ?, D and the rest keep working with the panel open
+        if matches!(self.mode, Mode::Normal)
+            && self.show_columns
+            && self.focus == Focus::Columns
+            && self.columns_panel_key(code)
+        {
+            return;
+        }
         match &mut self.mode {
             Mode::Filter => match code {
                 KeyCode::Esc => {
@@ -3711,6 +3877,7 @@ impl App {
                 KeyCode::Char('B') => self.run_action(Action::BrowserDl),
                 KeyCode::Char('D') | KeyCode::Char('z') => self.run_action(Action::Card),
                 KeyCode::Char('?') => self.run_action(Action::Help),
+                KeyCode::Char('|') => self.run_action(Action::Columns),
                 KeyCode::Char('t') => self.run_action(Action::GlobalTier),
                 KeyCode::Char('v') => self.show_bib_source = !self.show_bib_source,
                 KeyCode::Char('e') => self.open_export_prompt(),
@@ -3846,12 +4013,17 @@ impl App {
             Constraint::Length(3), // rule + air + the footer line
         ])
         .areas(f.area());
-        let mut constraints = vec![Constraint::Min(40)];
+        let mut constraints = vec![];
+        if self.show_columns {
+            constraints.push(Constraint::Length(COLUMNS_PANEL_W));
+        }
+        constraints.push(Constraint::Min(40));
         if self.show_detail {
             constraints.push(Constraint::Length(48));
         }
         let areas = Layout::horizontal(constraints).split(main);
         let mut it = areas.iter();
+        let columns_area = self.show_columns.then(|| *it.next().unwrap());
         let table_area = *it.next().unwrap();
         let detail_area = self.show_detail.then(|| *it.next().unwrap());
 
@@ -3875,6 +4047,12 @@ impl App {
             table_area
         };
         let _ = table_area;
+        if let Some(area) = columns_area {
+            // after the table: the panel reads the solved column widths
+            self.draw_columns_panel(f, area);
+        } else {
+            self.col_rects.clear();
+        }
         if let Some(area) = detail_area {
             self.draw_detail(f, area);
         } else {
@@ -4536,6 +4714,7 @@ impl App {
     fn manuscript_model(&self, rows: &[MsRow]) -> table::TableModel {
         use crate::library::CiteState;
         use ratatui::widgets::Cell;
+        let columns = self.columns_for(ScopeKind::Manuscript, 0);
         let cursor = self.table.selected();
         let hov_row = self.hovered_table_pos();
         let trows: Vec<Row<'static>> = rows
@@ -4566,13 +4745,18 @@ impl App {
                 };
                 let at_cursor = cursor == Some(pos);
                 let (circle, circle_style) = self.gutter(r.key.as_deref(), at_cursor);
-                let row = Row::new(vec![
-                    Cell::from(Span::styled(circle, circle_style)),
-                    Cell::from(Span::styled(icon, style)),
-                    Cell::from(Span::styled(r.cited.clone(), cite_style)),
-                    Cell::from(Span::styled(word, style)),
-                    Cell::from(Span::styled(r.title.clone(), title_style)),
-                ]);
+                let cells: Vec<Cell> = columns
+                    .iter()
+                    .map(|c| match c.id {
+                        Col::Sel => Cell::from(Span::styled(circle, circle_style)),
+                        Col::CiteIcon => Cell::from(Span::styled(icon, style)),
+                        Col::Cited => Cell::from(Span::styled(r.cited.clone(), cite_style)),
+                        Col::State => Cell::from(Span::styled(word, style)),
+                        Col::Title => Cell::from(Span::styled(r.title.clone(), title_style)),
+                        _ => Cell::from(""),
+                    })
+                    .collect();
+                let row = Row::new(cells);
                 if at_cursor {
                     row.style(Style::default().bg(table::CURSOR_FILL))
                 } else {
@@ -4580,27 +4764,15 @@ impl App {
                 }
             })
             .collect();
-        table::TableModel {
-            columns: vec![
-                table::fixed(Col::Sel, "", 2, false),
-                // the glyph column has no label, so nothing to click; the
-                // State column beside it sorts by the same fact
-                table::fixed(Col::CiteIcon, "", 2, false),
-                table::fixed(Col::Cited, "Cited", 26, true),
-                table::fixed(Col::State, "State", 10, true),
-                table::flex(Col::Title, "Title", true),
-            ],
-            rows: trows,
-            sort: self.sort(),
-            hover: self.hover,
-        }
+        table::TableModel { columns, rows: trows, sort: self.sort(), hover: self.hover }
     }
 
     /// ADS results: ↓ from the canonical cache key (the cite key once
     /// imported, the bibcode otherwise), ● from paper identity.
     fn ads_model(&self, articles: &[crate::ads::Article], width: u16) -> table::TableModel {
         use ratatui::widgets::Cell;
-        let (author_w, _) = column_layout(width);
+        let columns = self.columns_for(ScopeKind::Query, width);
+        let author_w = spec_width(&columns, Col::Author);
         let cursor = self.table.selected();
         let hov_row = self.hovered_table_pos();
         let rows: Vec<Row<'static>> = articles
@@ -4626,25 +4798,35 @@ impl App {
                 };
                 let at_cursor = cursor == Some(pos);
                 let (circle, circle_style) = self.gutter(Some(&a.bibcode), at_cursor);
-                let row = Row::new(vec![
-                    Cell::from(Span::styled(circle, circle_style)),
-                    Cell::from(Span::styled(
-                        if pdf::is_cached(cache_key) { "↓" } else { "" },
-                        Style::default().fg(Color::Green),
-                    )),
-                    Cell::from(Span::styled(
-                        if entry.is_some() { "●" } else { "" },
-                        Style::default().fg(Color::Magenta),
-                    )),
-                    Cell::from(Span::styled(a.year.clone(), yr_style)),
-                    Cell::from(Span::styled(a.entry_date.clone(), yr_style)),
-                    Cell::from(Span::styled(fit_authors(&author, author_w as usize), au_style)),
-                    Cell::from(Span::styled(a.title.clone(), ti_style)),
-                    Cell::from(Span::styled(
-                        self.hypothetical_key(a),
-                        Style::default().fg(Color::Cyan).add_modifier(Modifier::DIM),
-                    )),
-                ]);
+                let cells: Vec<Cell> = columns
+                    .iter()
+                    .map(|c| match c.id {
+                        Col::Sel => Cell::from(Span::styled(circle, circle_style)),
+                        Col::Pdf => Cell::from(Span::styled(
+                            if pdf::is_cached(cache_key) { "↓" } else { "" },
+                            Style::default().fg(Color::Green),
+                        )),
+                        Col::InLib => Cell::from(Span::styled(
+                            if entry.is_some() { "●" } else { "" },
+                            Style::default().fg(Color::Magenta),
+                        )),
+                        Col::Year => Cell::from(Span::styled(a.year.clone(), yr_style)),
+                        Col::Entered => {
+                            Cell::from(Span::styled(a.entry_date.clone(), yr_style))
+                        }
+                        Col::Author => Cell::from(Span::styled(
+                            fit_authors(&author, author_w as usize),
+                            au_style,
+                        )),
+                        Col::Title => Cell::from(Span::styled(a.title.clone(), ti_style)),
+                        Col::Key => Cell::from(Span::styled(
+                            self.hypothetical_key(a),
+                            Style::default().fg(Color::Cyan).add_modifier(Modifier::DIM),
+                        )),
+                        _ => Cell::from(""),
+                    })
+                    .collect();
+                let row = Row::new(cells);
                 if at_cursor {
                     row.style(Style::default().bg(table::CURSOR_FILL))
                 } else {
@@ -4652,24 +4834,7 @@ impl App {
                 }
             })
             .collect();
-        table::TableModel {
-            columns: vec![
-                table::fixed(Col::Sel, "", 2, false),
-                table::fixed(Col::Pdf, "↓", 2, true),
-                table::fixed(Col::InLib, "●", 2, true),
-                table::fixed(Col::Year, "Year", 6, true),
-                // the two clocks sit side by side on purpose: Year is
-                // when the paper was published, Entered is when ADS
-                // indexed it, and a date-sorted query needs the second
-                table::fixed(Col::Entered, "Entered", 10, true),
-                table::fixed(Col::Author, "Author", author_w, true),
-                table::flex(Col::Title, "Title", true),
-                table::fixed(Col::Key, "Key", 20, true),
-            ],
-            rows,
-            sort: self.sort(),
-            hover: self.hover,
-        }
+        table::TableModel { columns, rows, sort: self.sort(), hover: self.hover }
     }
 
     /// The library: a subtle per-column palette, with the terminal theme
@@ -4696,11 +4861,8 @@ impl App {
                 )
             }
         };
-        // responsive columns: author scales, Key drops first when tight —
-        // but never while the card is shown: the Key column is the
-        // hover-preview target, so the title absorbs the squeeze instead
-        let (author_w, show_key) = column_layout(width);
-        let show_key = show_key || self.show_detail;
+        let columns = self.columns_for(ScopeKind::Library, width);
+        let author_w = spec_width(&columns, Col::Author);
         let hov_row = self.hovered_table_pos();
         let cursor = self.table.selected();
         let show_membership = self.lib.manuscript.is_some() && self.lib.global_on;
@@ -4726,33 +4888,39 @@ impl App {
                 let lit = hov_row == Some(pos);
                 let (c_pdf, c_ms, c_year, c_author, c_key) = palette(lit);
                 let (circle, circle_style) = self.gutter(Some(e.key()), at_cursor);
-                let mut cells = vec![
-                    Cell::from(Span::styled(circle, circle_style)),
-                    Cell::from(Span::styled(
-                        if has_cached_pdf(e.key()) { "↓" } else { "" },
-                        c_pdf,
-                    )),
-                    Cell::from(Span::styled(
-                        if show_membership && self.lib.in_manuscript(e.key()) { "●" } else { "" },
-                        c_ms,
-                    )),
-                    Cell::from(Span::styled(e.year(), c_year)),
-                    Cell::from(Span::styled(
-                        fit_authors(e.author(), author_w as usize),
-                        c_author,
-                    )),
-                    Cell::from(Span::styled(
-                        e.title().trim_matches(['{', '}']).to_string(),
-                        if lit {
-                            Style::default().fg(Color::White).add_modifier(Modifier::ITALIC)
-                        } else {
-                            Style::default().fg(TABLE_TEXT).add_modifier(Modifier::ITALIC)
-                        },
-                    )),
-                ];
-                if show_key {
-                    cells.push(Cell::from(Span::styled(e.short_key.clone(), c_key)));
-                }
+                let cells: Vec<Cell> = columns
+                    .iter()
+                    .map(|c| match c.id {
+                        Col::Sel => Cell::from(Span::styled(circle, circle_style)),
+                        Col::Pdf => Cell::from(Span::styled(
+                            if has_cached_pdf(e.key()) { "↓" } else { "" },
+                            c_pdf,
+                        )),
+                        Col::InLib => Cell::from(Span::styled(
+                            if show_membership && self.lib.in_manuscript(e.key()) {
+                                "●"
+                            } else {
+                                ""
+                            },
+                            c_ms,
+                        )),
+                        Col::Year => Cell::from(Span::styled(e.year(), c_year)),
+                        Col::Author => Cell::from(Span::styled(
+                            fit_authors(e.author(), author_w as usize),
+                            c_author,
+                        )),
+                        Col::Title => Cell::from(Span::styled(
+                            e.title().trim_matches(['{', '}']).to_string(),
+                            if lit {
+                                Style::default().fg(Color::White).add_modifier(Modifier::ITALIC)
+                            } else {
+                                Style::default().fg(TABLE_TEXT).add_modifier(Modifier::ITALIC)
+                            },
+                        )),
+                        Col::Key => Cell::from(Span::styled(e.short_key.clone(), c_key)),
+                        _ => Cell::from(""),
+                    })
+                    .collect();
                 let row = Row::new(cells);
                 if at_cursor {
                     row.style(Style::default().bg(table::CURSOR_FILL))
@@ -4761,20 +4929,251 @@ impl App {
                 }
             })
             .collect();
-        // the ● column is only labelled — and only sorts — when a
-        // manuscript is active and the global tier is showing
-        let mut columns = vec![
-            table::fixed(Col::Sel, "", 2, false),
-            table::fixed(Col::Pdf, "↓", 2, true),
-            table::fixed(Col::InLib, if show_membership { "●" } else { "" }, 2, show_membership),
-            table::fixed(Col::Year, "Year", 6, true),
-            table::fixed(Col::Author, "Author", author_w, true),
-            table::flex(Col::Title, "Title", true),
-        ];
-        if show_key {
-            columns.push(table::fixed(Col::Key, "Key", 20, true));
-        }
         table::TableModel { columns, rows, sort: self.sort(), hover: self.hover }
+    }
+
+    /// Every column a scope can draw, in order, shown or not — the list
+    /// the columns panel offers. Widths here are the responsive
+    /// defaults; `columns_for` applies the user's overrides on top.
+    fn all_columns(&self, kind: ScopeKind, width: u16) -> Vec<table::ColumnSpec> {
+        match kind {
+            ScopeKind::Manuscript => vec![
+                table::fixed(Col::Sel, "", 2, false),
+                // the glyph column has no label, so nothing to click; the
+                // State column beside it sorts by the same fact
+                table::fixed(Col::CiteIcon, "", 2, false),
+                table::fixed(Col::Cited, "Cited", 26, true),
+                table::fixed(Col::State, "State", 10, true),
+                table::flex(Col::Title, "Title", true),
+            ],
+            ScopeKind::Query => {
+                let (author_w, _) = column_layout(width);
+                vec![
+                    table::fixed(Col::Sel, "", 2, false),
+                    table::fixed(Col::Pdf, "↓", 2, true),
+                    table::fixed(Col::InLib, "●", 2, true),
+                    table::fixed(Col::Year, "Year", 6, true),
+                    // the two clocks sit side by side on purpose: Year is
+                    // when the paper was published, Entered is when ADS
+                    // indexed it, and a date-sorted query needs the second
+                    table::fixed(Col::Entered, "Entered", 10, true),
+                    table::fixed(Col::Author, "Author", author_w, true),
+                    table::flex(Col::Title, "Title", true),
+                    table::fixed(Col::Key, "Key", 20, true),
+                ]
+            }
+            ScopeKind::Library => {
+                // responsive columns: author scales, Key drops first when
+                // tight — but never while the card is shown, since the Key
+                // column is the hover-preview target, so the title absorbs
+                // the squeeze instead
+                let (author_w, show_key) = column_layout(width);
+                let show_membership = self.lib.manuscript.is_some() && self.lib.global_on;
+                let mut cols = vec![
+                    table::fixed(Col::Sel, "", 2, false),
+                    table::fixed(Col::Pdf, "↓", 2, true),
+                    // the ● column is only labelled — and only sorts —
+                    // when a manuscript is active and the global tier shows
+                    table::fixed(
+                        Col::InLib,
+                        if show_membership { "●" } else { "" },
+                        2,
+                        show_membership,
+                    ),
+                    table::fixed(Col::Year, "Year", 6, true),
+                    table::fixed(Col::Author, "Author", author_w, true),
+                    table::flex(Col::Title, "Title", true),
+                ];
+                if show_key || self.show_detail {
+                    cols.push(table::fixed(Col::Key, "Key", 20, true));
+                }
+                cols
+            }
+        }
+    }
+
+    /// The columns a scope actually draws: `all_columns` with the user's
+    /// configuration applied. The flex column is never hidden — without
+    /// one nothing absorbs the leftover width and the table strands a
+    /// blank margin — so the panel offers it as permanently on.
+    fn columns_for(&self, kind: ScopeKind, width: u16) -> Vec<table::ColumnSpec> {
+        let mut cols = self.all_columns(kind, width);
+        let Some(cfg) = self.columns.get(&kind) else {
+            return cols;
+        };
+        cols.retain(|c| matches!(c.width, table::Width::Flex) || !cfg.hidden.contains(&c.id));
+        for c in cols.iter_mut() {
+            if let (table::Width::Fixed(_), Some(&w)) = (c.width, cfg.widths.get(&c.id)) {
+                c.width = table::Width::Fixed(w);
+            }
+        }
+        cols
+    }
+
+    fn load_column_config() -> std::collections::HashMap<ScopeKind, table::ColumnConfig> {
+        let mut out = std::collections::HashMap::new();
+        let Some(v) = crate::ads::get_state_value("columns") else {
+            return out;
+        };
+        for kind in [ScopeKind::Library, ScopeKind::Manuscript, ScopeKind::Query] {
+            if let Some(o) = v.get(kind.tag()) {
+                let cfg = table::ColumnConfig::from_json(o);
+                if !cfg.is_empty() {
+                    out.insert(kind, cfg);
+                }
+            }
+        }
+        out
+    }
+
+    fn save_column_config(&mut self) {
+        let mut o = serde_json::Map::new();
+        for (kind, cfg) in &self.columns {
+            if !cfg.is_empty() {
+                o.insert(kind.tag().to_string(), cfg.to_json());
+            }
+        }
+        let res = crate::ads::save_state_value("columns", serde_json::Value::Object(o));
+        self.state_write("state.json", res.err().map(|e| e.to_string()));
+    }
+
+    /// Keys the columns panel claims while it has focus. Returns false
+    /// for anything it does not handle, which then reaches the table.
+    fn columns_panel_key(&mut self, code: KeyCode) -> bool {
+        let rows = self.panel_rows();
+        if rows.is_empty() {
+            return false;
+        }
+        self.col_sel = self.col_sel.min(rows.len() - 1);
+        match code {
+            KeyCode::Up | KeyCode::Char('k') => {
+                self.col_sel = self.col_sel.saturating_sub(1);
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                self.col_sel = (self.col_sel + 1).min(rows.len() - 1);
+            }
+            KeyCode::Left => self.nudge_width(-1),
+            KeyCode::Right => self.nudge_width(1),
+            KeyCode::Char(' ') => match rows[self.col_sel] {
+                PanelRow::Column(id) => self.toggle_column(id),
+                PanelRow::AdsSort(_, sort) => self.set_ads_sort(sort),
+            },
+            KeyCode::Char('s') | KeyCode::Enter => match rows[self.col_sel] {
+                PanelRow::Column(id) => self.sort_by(id),
+                PanelRow::AdsSort(_, sort) => self.set_ads_sort(sort),
+            },
+            // Esc gives the arrows back without closing the panel
+            KeyCode::Esc => self.focus = Focus::Table,
+            _ => return false,
+        }
+        true
+    }
+
+    /// Show or hide one column in the active scope kind. The flex column
+    /// is exempt: with nothing to absorb the leftover width the table
+    /// would strand a blank margin.
+    fn toggle_column(&mut self, id: Col) {
+        let kind = self.active_kind();
+        let all = self.all_columns(kind, self.table_area.width);
+        if all
+            .iter()
+            .find(|c| c.id == id)
+            .is_some_and(|c| matches!(c.width, table::Width::Flex))
+        {
+            self.note(
+                MsgCat::Warn,
+                format!("{} fills the leftover width and cannot be hidden", id.tag()),
+            );
+            return;
+        }
+        let cfg = self.columns.entry(kind).or_default();
+        if !cfg.hidden.remove(&id) {
+            cfg.hidden.insert(id);
+        }
+        self.save_column_config();
+    }
+
+    /// ←/→ on a column: widen or narrow it, pinning the width. Until
+    /// this is used a column keeps its responsive default, which is what
+    /// makes an untouched configuration indistinguishable from none.
+    fn nudge_width(&mut self, d: i16) {
+        let kind = self.active_kind();
+        let rows = self.panel_rows();
+        let Some(&PanelRow::Column(id)) = rows.get(self.col_sel) else {
+            return;
+        };
+        let shown = self.columns_for(kind, self.table_area.width);
+        let Some(spec) = shown.iter().find(|c| c.id == id) else {
+            self.note(MsgCat::Warn, "a hidden column has no width".to_string());
+            return;
+        };
+        if matches!(spec.width, table::Width::Flex) {
+            self.note(
+                MsgCat::Warn,
+                format!("{} takes whatever the others leave", id.tag()),
+            );
+            return;
+        }
+        let cur = spec_width(&shown, id) as i16;
+        let next = (cur + d).clamp(table::MIN_COL_W as i16, table::MAX_COL_W as i16) as u16;
+        self.columns.entry(kind).or_default().widths.insert(id, next);
+        self.save_column_config();
+    }
+
+    /// Choose the ADS `sort` a query tab selects records with. This
+    /// changes *which* records the next refresh returns, so nothing on
+    /// screen moves until `r` runs the query again — say so, or the
+    /// keystroke looks like it did nothing.
+    fn set_ads_sort(&mut self, sort: &str) {
+        let Some(Scope::Ads { tab, .. }) = self.scopes.get_mut(self.active_scope) else {
+            self.note(
+                MsgCat::Warn,
+                "the ADS selection sort belongs to a query, not this scope".to_string(),
+            );
+            return;
+        };
+        if tab.ads_sort == sort {
+            return;
+        }
+        tab.ads_sort = sort.to_string();
+        let label = ADS_SORTS
+            .iter()
+            .find(|(_, s)| *s == sort)
+            .map(|(l, _)| *l)
+            .unwrap_or(sort);
+        self.save_tabs();
+        self.note(MsgCat::Info, format!("ADS selects by {label} — r refreshes"));
+    }
+
+    fn active_kind(&self) -> ScopeKind {
+        self.scopes
+            .get(self.active_scope)
+            .map(Scope::kind)
+            .unwrap_or(ScopeKind::Library)
+    }
+
+    /// What the columns panel lists for the active scope: every column
+    /// it can draw — shown or not, which is the point, since sorting by
+    /// a hidden column is allowed — followed, in a query scope, by the
+    /// ADS sort that decides which records come back at all.
+    ///
+    /// Structural columns are left out: the selection gutter and the
+    /// manuscript's state glyph have no label to click and nothing worth
+    /// configuring.
+    fn panel_rows(&self) -> Vec<PanelRow> {
+        let kind = self.active_kind();
+        let mut rows: Vec<PanelRow> = self
+            .all_columns(kind, self.table_area.width)
+            .into_iter()
+            .filter(|c| !c.header.is_empty() || c.sortable)
+            .map(|c| PanelRow::Column(c.id))
+            .collect();
+        if kind == ScopeKind::Query {
+            for (label, sort) in ADS_SORTS {
+                rows.push(PanelRow::AdsSort(label, sort));
+            }
+        }
+        rows
     }
 
     /// The pub card for an ADS result: body, links, citation count, an
@@ -4931,6 +5330,7 @@ impl App {
         }
         badges.extend([
             ("card", self.show_detail, Action::Card),
+            ("cols", self.show_columns, Action::Columns),
             ("log", self.show_log, Action::Log),
             ("keys", self.show_help, Action::Help),
         ]);
@@ -4994,6 +5394,209 @@ impl App {
             .border_style(divider())
             .title(Span::styled(title, Style::default().fg(Color::DarkGray)));
         f.render_widget(Paragraph::new(Text::from(lines)).block(block), area);
+    }
+
+    /// The columns sidebar: every column the active scope can draw, with
+    /// its visibility, its width, and whether it is the sort target.
+    ///
+    /// Sorting is offered on hidden columns too, which is the point of
+    /// listing them: a query can be ordered by entry date without
+    /// spending ten columns of screen on the dates themselves.
+    fn draw_columns_panel(&mut self, f: &mut Frame, area: Rect) {
+        self.col_rects.clear();
+        let kind = self.active_kind();
+        let focused = self.focus == Focus::Columns;
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(if focused {
+                Style::default().fg(Color::Cyan)
+            } else {
+                divider()
+            })
+            .title(Span::styled(
+                format!(" Columns · {} ", kind.tag()),
+                Style::default().fg(if focused { Color::Cyan } else { Color::DarkGray }),
+            ));
+        let inner = Rect {
+            x: area.x + 1,
+            y: area.y + 1,
+            width: area.width.saturating_sub(2),
+            height: area.height.saturating_sub(2),
+        };
+        f.render_widget(block, area);
+
+        let rows = self.panel_rows();
+        let shown = self.columns_for(kind, self.table_area.width);
+        let all = self.all_columns(kind, self.table_area.width);
+        let cfg = self.columns.get(&kind).cloned().unwrap_or_default();
+        let sort = self.sort();
+        let ads_sort = match self.scopes.get(self.active_scope) {
+            Some(Scope::Ads { tab, .. }) => tab.ads_sort.clone(),
+            _ => String::new(),
+        };
+        let dim = Style::default().fg(Color::DarkGray);
+        let mut lines: Vec<Line> = vec![];
+        // the render row is tracked rather than derived from the list
+        // index: the ADS section inserts a heading line of its own
+        let mut y = inner.y;
+        let bottom = inner.y + inner.height;
+        let mut heading_done = false;
+        for (i, row) in rows.iter().enumerate() {
+            let on_cursor = focused && self.col_sel == i;
+            match *row {
+                PanelRow::Column(id) => {
+                    if y >= bottom {
+                        break;
+                    }
+                    let spec = all.iter().find(|c| c.id == id);
+                    let label = spec
+                        .map(|c| c.header.clone())
+                        .filter(|h| !h.is_empty())
+                        .unwrap_or_else(|| id.tag().to_string());
+                    let flex = spec.is_some_and(|c| matches!(c.width, table::Width::Flex));
+                    let visible = shown.iter().any(|c| c.id == id);
+                    let sortable = spec.is_some_and(|c| c.sortable);
+                    let w = spec_width(&shown, id);
+                    self.col_rects.push((
+                        Rect { x: inner.x, y, width: inner.width, height: 1 },
+                        PanelHit::Row(i),
+                    ));
+                    // the ✓ box: a flex column cannot be hidden, so it
+                    // shows a locked mark rather than a box that refuses
+                    if !flex {
+                        self.col_rects.push((
+                            Rect { x: inner.x, y, width: 2, height: 1 },
+                            PanelHit::Toggle(id),
+                        ));
+                    }
+                    if sortable {
+                        self.col_rects.push((
+                            Rect { x: inner.x + 2, y, width: 11, height: 1 },
+                            PanelHit::Sort(id),
+                        ));
+                    }
+                    // width nudges are meaningless on the flex column,
+                    // which is whatever the fixed ones leave over
+                    if !flex && visible {
+                        self.col_rects.push((
+                            Rect { x: inner.x + 13, y, width: 1, height: 1 },
+                            PanelHit::Narrower(id),
+                        ));
+                        self.col_rects.push((
+                            Rect { x: inner.x + 18, y, width: 1, height: 1 },
+                            PanelHit::Wider(id),
+                        ));
+                    }
+                    let (mark, mark_style) = if flex {
+                        ("■", dim)
+                    } else if visible {
+                        ("✓", Style::default().fg(Color::Green))
+                    } else {
+                        ("·", dim)
+                    };
+                    let lab_style = if !visible {
+                        dim
+                    } else if on_cursor {
+                        Style::default().fg(Color::White).add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::default().fg(TABLE_TEXT)
+                    };
+                    let (wtext, nudges) = if flex {
+                        ("   —".to_string(), ("  ", "  "))
+                    } else if visible {
+                        (format!("{w:>4}"), ("‹ ", " ›"))
+                    } else {
+                        ("    ".to_string(), ("  ", "  "))
+                    };
+                    let marker = match sort {
+                        Some((c, asc)) if c == id => {
+                            if asc {
+                                "▲"
+                            } else {
+                                "▼"
+                            }
+                        }
+                        _ => " ",
+                    };
+                    let spans = vec![
+                        Span::styled(format!("{mark} "), mark_style),
+                        Span::styled(format!("{label:<11}"), lab_style),
+                        Span::styled(nudges.0, dim),
+                        Span::styled(
+                            wtext,
+                            // a pinned width is the user's, not the
+                            // responsive default — worth saying so
+                            if cfg.widths.contains_key(&id) {
+                                Style::default().fg(Color::Yellow)
+                            } else {
+                                dim
+                            },
+                        ),
+                        Span::styled(nudges.1, dim),
+                        Span::styled(format!(" {marker}"), Style::default().fg(Color::Cyan)),
+                    ];
+                    lines.push(cursor_line(spans, on_cursor));
+                    y += 1;
+                }
+                PanelRow::AdsSort(label, sortp) => {
+                    if !heading_done {
+                        heading_done = true;
+                        if y + 1 < bottom {
+                            lines.push(Line::from(Span::styled(" ADS selects", dim)));
+                            y += 1;
+                        }
+                    }
+                    if y >= bottom {
+                        break;
+                    }
+                    self.col_rects.push((
+                        Rect { x: inner.x, y, width: inner.width, height: 1 },
+                        PanelHit::Row(i),
+                    ));
+                    self.col_rects.push((
+                        Rect { x: inner.x, y, width: inner.width, height: 1 },
+                        PanelHit::AdsSort(sortp),
+                    ));
+                    let chosen = ads_sort == sortp;
+                    lines.push(cursor_line(
+                        vec![
+                            Span::styled(
+                                if chosen { " ▸ " } else { "   " },
+                                Style::default().fg(Color::Cyan),
+                            ),
+                            Span::styled(
+                                label,
+                                if chosen {
+                                    Style::default().fg(Color::Cyan)
+                                } else {
+                                    dim
+                                },
+                            ),
+                        ],
+                        on_cursor,
+                    ));
+                    y += 1;
+                }
+            }
+        }
+        // rolling over a control says what it does and which key does it
+        if let Some(&(_, h)) = self
+            .col_rects
+            .iter()
+            .find(|(r, h)| !matches!(h, PanelHit::Row(_)) && hit(*r, self.hover.0, self.hover.1))
+        {
+            self.hover_hint = Some(match h {
+                PanelHit::Toggle(id) => format!("show / hide {}  ·  space", id.tag()),
+                PanelHit::Sort(id) => format!("sort by {} (shown or not)  ·  s", id.tag()),
+                PanelHit::Narrower(id) => format!("narrow {}  ·  ←", id.tag()),
+                PanelHit::Wider(id) => format!("widen {}  ·  →", id.tag()),
+                PanelHit::AdsSort(_) => {
+                    "ADS selects these records — r refreshes  ·  ⏎".to_string()
+                }
+                PanelHit::Row(_) => String::new(),
+            });
+        }
+        f.render_widget(Paragraph::new(Text::from(lines)), inner);
     }
 
     fn draw_status(&mut self, f: &mut Frame, area: Rect) {

@@ -119,3 +119,23 @@ def run(t):
         f"{[(s.get('sort_col'), s.get('sort_asc')) for s in saved]}",
         t,
     )
+
+    # the selection sort is changed from the columns panel, by clicking —
+    # and changing it moves nothing on screen, since it decides what the
+    # *next* refresh asks ADS for, so the app has to say so
+    t.send("|")
+    t.wait_for("ADS selects", what="the ADS selection section of the columns panel")
+    x, y = t.find("newest published")
+    t.click(x, y)
+    t.wait_for(
+        "ADS selects by newest published",
+        what="the note explaining that a refresh is what applies it",
+    )
+    with open(os.path.join(t.state_dir, "tabs.json")) as f:
+        tabs = json.load(f)
+    saved = [tab for ctx in tabs["contexts"].values() for tab in ctx]
+    require(
+        all(s.get("ads_sort") == "date desc" for s in saved),
+        f"tab ads_sort should now be publication date, got {[s.get('ads_sort') for s in saved]}",
+        t,
+    )

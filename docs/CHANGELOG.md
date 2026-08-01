@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+### Added
+- Saved queries read as a feed of postings. ADS is now asked for records by `entry_date` — when it indexed the record — rather than by publication date, so "the newest 20 matching this" means the newest 20 *postings*; a 2019 paper published this month no longer outranks yesterday's preprint. A new `Entered` column shows that date beside `Year`, and sorts on it. The two are separate mechanisms and never interchangeable: the ADS sort decides which records come back, the column sort reorders the ones already in hand, so ranking a feed by citations gives the most cited among the newest 20, not the most cited overall. Each query tab stores its own selection sort, changed from the columns panel; single-record lookups still use publication date.
+- A columns panel (`|`, or the `cols` footer badge) chooses which columns each view shows, how wide they are (`←`/`→`), and what it sorts by — including columns that are *not* shown, so a query can be ordered by entry date without spending ten columns of screen on the dates. It is a toggle view beside the table rather than a modal, so it takes the arrow keys while open; `Esc` hands them back without closing it. Untouched columns keep the responsive behaviour they always had — the author column still scales with the terminal, `Key` still drops first when things get tight — so a configuration you have not edited is indistinguishable from none.
+- Sort is a property of the scope, not of the app. Each query tab, the library, and the manuscript keep their own sort column and direction, all of which survive a restart; sorting one no longer reorders the others. Manuscript columns sort too, and sorting by `State` is ranked attention-first, so missing cites gather at the top. With no sort set the manuscript stays in scan order, the order the cites appear in the source.
+
+### Fixed
+- The library's `Key` header was drawn one column left of the cells beneath it, at every terminal width. The library and query views computed the same title width with two different formulas that disagreed by one, because ratatui puts its column spacing *between* columns; the query view had it right. Both now share one renderer, pinned by a golden-screen test that captures all three views at four widths.
+- Importing a paper while a query tab was in front re-sorted the *library* by the query's sort column, a consequence of the single shared sort field.
+
 ## 0.9.1 — 2026-07-31
 
 ### Changed
