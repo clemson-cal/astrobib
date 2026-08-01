@@ -11,6 +11,8 @@
 - The metric swatch is a column like any other: the columns panel decides whether it shows, and `M` now only picks which metric it shows, toggling priority ↔ citations. It used to be the one piece of chrome with a visibility mode of its own, cycling off → priority → citations → off. It is still off until you ask for it, and the panel names the active metric, which nothing else on screen did.
 
 ### Fixed
+- The footer's view badges (`global`, `card`, `cols`, `log`, `keys`) say in the footer what clicking them does and which key does the same, like every other affordance. The shortcut comes from the cheat-sheet table, so the two cannot drift apart.
+- `←`/`→` on a column whose width is not yours to set now says which kind of not-yours it is — one cell by construction (the metric swatch), taking the leftover width (whichever column is flexing), or simply hidden — instead of reporting every case as "hidden".
 - The library's `Key` header was drawn one column left of the cells beneath it, at every terminal width. The library and query views computed the same title width with two different formulas that disagreed by one, because ratatui puts its column spacing *between* columns; the query view had it right. Both now share one renderer, pinned by a golden-screen test that captures all three views at four widths.
 - Importing a paper while a query tab was in front re-sorted the *library* by the query's sort column, a consequence of the single shared sort field.
 

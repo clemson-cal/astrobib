@@ -41,3 +41,15 @@ def run(t):
     require("■ card" in txt, "card badge should be on (■)", t)
     require("□ log" in txt, "log badge should be off (□)", t)
     require("□ keys" in txt, "keys badge should be off (□)", t)
+
+    # …and each says in the footer what clicking it does and which key
+    # does the same. The badges sit on the footer line itself, so find
+    # them there — "card" also names the pub card's own bib toggler.
+    footer = len(t.lines()) - 1
+    for label, hint in (
+        ("log", "show the event log  ·  L"),
+        ("keys", "show the cheat-sheet  ·  ?"),
+        ("card", "hide the pub card  ·  D"),
+    ):
+        t.hover(t.lines()[footer].index(label), footer)
+        t.wait_for(hint, what=f"the {label} badge's rollover hint")

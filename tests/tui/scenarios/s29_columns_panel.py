@@ -107,6 +107,31 @@ def run(t):
     t.key("down")
     t.wait_for("Baxter · 2019", what="the table cursor moving once focus is back")
 
+    # a column whose width is not the user's to set says which kind of
+    # not-yours it is, rather than one generic refusal for both
+    t.send("|")
+    t.wait_gone("Columns · library")
+    t.send("|")
+    t.wait_for("Columns · library", what="the panel reopened, focused")
+    for _ in range(8):
+        t.key("up")  # to the top of the list, wherever the cursor was left
+    t.send(" ")
+    t.wait_for(lambda: "✓ Metric" in t.text(), what="the metric column switched on")
+    t.key("right")
+    t.wait_for(
+        "the metric swatch is one cell wide",
+        what="the metric column explaining its fixed size",
+    )
+    # Title still holds the leftover width — Author and Key were hidden
+    # above, but it was not
+    for _ in range(4):
+        t.key("down")  # Metric -> ↓ -> Year -> Author -> Title
+    t.key("right")
+    t.wait_for(
+        "taking the leftover width",
+        what="the flex column explaining that its size is derived",
+    )
+
     # and | closes it
     t.send("|")
     t.wait_gone("Columns · library")

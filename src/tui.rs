@@ -5165,12 +5165,24 @@ impl App {
         let Some(&PanelRow::Column(id)) = rows.get(self.col_sel) else {
             return;
         };
+        if !self.column_shown(kind, id) {
+            self.note(
+                MsgCat::Warn,
+                format!("{} is hidden — nothing to size", id.tag()),
+            );
+            return;
+        }
         let shown = self.columns_for(kind, self.table_area.width);
         let Some(spec) = shown.iter().find(|c| c.id == id) else {
-            self.note(MsgCat::Warn, "a hidden column has no width".to_string());
+            // shown, but not among the table's columns: the metric
+            // swatch is drawn in its own strip beside the table
+            self.note(
+                MsgCat::Warn,
+                "the metric swatch is one cell wide by construction".to_string(),
+            );
             return;
         };
-        if matches!(spec.width, table::Width::Flex) {
+        if !spec.resizable {
             self.note(
                 MsgCat::Warn,
                 format!("{} is taking the leftover width — its size is derived", id.tag()),
@@ -5384,10 +5396,14 @@ impl App {
         self.draw_card_toggle(f, x0, w, bottom, true);
     }
 
-    /// Right-aligned clickable show/hide badges for each app-wide view.
-    fn draw_badges(&mut self, f: &mut Frame, area: Rect) {
-        self.footer_badges.clear();
-        let mut badges: Vec<(&str, bool, Action)> = vec![];
+    /// Where the footer's view badges sit, and what each one is:
+    /// `(rect, action, label, currently on)`, right-aligned.
+    ///
+    /// Separate from drawing them because the hover hint has to be
+    /// decided *before* the footer line is built — `draw_badges` runs
+    /// after it, so a hint set there would appear a frame late.
+    fn badge_layout(&self, area: Rect) -> Vec<(Rect, Action, &'static str, bool)> {
+        let mut badges: Vec<(&'static str, bool, Action)> = vec![];
         if self.lib.manuscript.is_some() {
             badges.push(("global", self.lib.global_on, Action::GlobalTier));
         }
@@ -5399,11 +5415,51 @@ impl App {
         ]);
         let total: u16 = badges.iter().map(|(l, _, _)| l.chars().count() as u16 + 3).sum();
         let mut bx = (area.x + area.width).saturating_sub(total);
+        badges
+            .into_iter()
+            .map(|(label, on, action)| {
+                let wl = label.chars().count() as u16 + 2;
+                let r = Rect { x: bx, y: area.y, width: wl, height: 1 };
+                bx += wl + 1;
+                (r, action, label, on)
+            })
+            .collect()
+    }
+
+    /// What a hovered view badge says in the footer: whether clicking it
+    /// shows or hides, what, and which key does the same thing. The key
+    /// comes from the cheat-sheet table so the two cannot drift apart.
+    fn badge_hint(&self, area: Rect) -> Option<String> {
+        let (_, action, label, on) = self
+            .badge_layout(area)
+            .into_iter()
+            .find(|(r, ..)| hit(*r, self.hover.0, self.hover.1))?;
+        let what = match action {
+            Action::GlobalTier => "the global tier",
+            Action::Card => "the pub card",
+            Action::Columns => "the columns panel",
+            Action::Log => "the event log",
+            Action::Help => "the cheat-sheet",
+            _ => label,
+        };
+        let key = HELP_ENTRIES
+            .iter()
+            .find(|(.., a, _)| *a == Some(action))
+            .map(|(k, ..)| *k)
+            .unwrap_or("");
+        let verb = if on { "hide" } else { "show" };
+        Some(format!("{verb} {what}  ·  {key}"))
+    }
+
+    /// Right-aligned clickable show/hide badges for each app-wide view.
+    fn draw_badges(&mut self, f: &mut Frame, area: Rect) {
+        let layout = self.badge_layout(area);
+        self.footer_badges.clear();
         let mut spans: Vec<Span> = vec![];
-        for (label, on, action) in badges {
-            let wl = label.chars().count() as u16 + 2;
-            let r = Rect { x: bx, y: area.y, width: wl, height: 1 };
+        let mut total = 0u16;
+        for (r, action, label, on) in layout {
             self.footer_badges.push((r, action));
+            total += r.width + 1;
             let hov = hit(r, self.hover.0, self.hover.1);
             let style = match (on, hov) {
                 (true, true) => Style::default().fg(Color::Cyan).add_modifier(Modifier::UNDERLINED),
@@ -5416,7 +5472,6 @@ impl App {
                 style,
             ));
             spans.push(Span::raw(" "));
-            bx += wl + 1;
         }
         let w = total.min(area.width);
         let badge_area = Rect {
@@ -5689,6 +5744,11 @@ impl App {
             Rect { x: area.x, y: area.y, width: area.width, height: 1 },
         );
         let area = Rect { x: area.x, y: area.y + 2, width: area.width, height: 1 };
+        // the badges live on this same line and are drawn after it, so
+        // their hover hint has to be settled before the line is built
+        if let Some(hint) = self.badge_hint(area) {
+            self.hover_hint = Some(hint);
+        }
         let line = match self.mode {
             Mode::Filter => {
                 let avail = area.width.saturating_sub(2) as usize;
