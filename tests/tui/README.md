@@ -28,6 +28,7 @@ A scenario is `scenarios/sNN_name.py` exposing `DESCRIPTION`, optionally `ALLOW_
 - `t.lines()` / `t.text()` / `t.find(needle)` / `t.row_of(needle)` — reconstructed screen
 - `t.wait_for(substring_or_predicate, timeout=8)` / `t.wait_gone(needle)` — polling waits
 - `t.wait_quiet(idle=0.15)` — block until the pty has been silent that long, i.e. the redraw the last input triggered has finished landing; the condition-based way to assert that something did *not* change
+- `t.resize(cols, rows=None)` — resize the pty and the pyte screen together; the app gets a real SIGWINCH and re-lays-out as it would in a dragged terminal
 - `driver.require(cond, msg, t)` — assert with a screen dump attached
 - raise `driver.Skip("why")` to skip
 
@@ -47,6 +48,13 @@ Gotchas learned the hard way:
 - The gutter (two leftmost cells of a table row) is a click target for selection mode; data rows start two rows below the header line (header, rule, rows).
 - Never click a copy target in a scenario: clipboard writes go through `pbcopy`, which is the user's real pasteboard — the pty sandbox does not contain it. Open the copy modal, assert, Esc out.
 - ratatui diff-renders, so the pty stream alone is meaningless; only the pyte screen state is trustworthy. `wait_for` pumps the stream before every predicate check.
+- `wait_quiet` is unsound straight after `resize`: the stream is *already* quiet at that instant, so it can return before SIGWINCH has even been handled and hand the scenario the previous geometry — after which every click lands on stale coordinates. Wait for a positive width-dependent signal instead; s26 waits for the table's header rule to take its new width.
+
+## Golden screens
+
+`s26_table_chrome` is a refactor oracle rather than a feature test. It captures the table region — header, rule, and data rows — in all three scopes (library, manuscript, query) at four terminal widths with the pub card open and closed, plus three sort states, and requires the result to match `baselines/table_chrome.txt` byte for byte. Its purpose is to make large edits to `draw_table` provable: the responsive rules (author width scaling, the Key column dropping when tight) only appear under resize, and inspection alone cannot show that 460 lines of conditional rendering still produce the same pixels.
+
+Re-bless with `ASTROBIB_BLESS=1 tests/tui/run.py -k s26`. That is a deliberate act, not a fixture refresh — a diff here means the rendered screen changed, which is exactly what the file exists to report. Review the diff in the commit.
 
 ## What this harness structurally cannot catch: glyph width
 

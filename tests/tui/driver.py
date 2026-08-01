@@ -148,6 +148,23 @@ class Session:
                 self._pump(0.05)
         self.close()
 
+    def resize(self, cols, rows=None):
+        """Resize the pty, and the pyte screen with it.
+
+        Setting the window size on the master delivers SIGWINCH to the
+        slave's foreground process group, so the app re-lays-out exactly
+        as it would in a real terminal being dragged — this is the only
+        way to exercise the responsive column rules without spawning a
+        fresh session per width. The caller should wait_quiet() after:
+        the repaint is asynchronous.
+        """
+        rows = self.rows if rows is None else rows
+        fcntl.ioctl(
+            self.master, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, 0, 0)
+        )
+        self.cols, self.rows = cols, rows
+        self.screen.resize(rows, cols)
+
     def close(self):
         if self.proc.poll() is None:
             try:
