@@ -19,6 +19,13 @@ pub struct Tab {
     /// come back and is a property of the query itself.
     pub sort_col: String,
     pub sort_asc: bool,
+    /// The ADS `sort` parameter this query runs with — what decides
+    /// *which* records come back, so "the 20 newest postings" rather
+    /// than an arbitrary 20. Not the same thing as `sort_col`, which
+    /// only reorders the records already in hand; the two are never
+    /// interchangeable, because the display sort ranks within whatever
+    /// this selected.
+    pub ads_sort: String,
 }
 
 /// A tab with no stored sort ordered by year, newest first — what every
@@ -80,6 +87,11 @@ pub fn load(ms_root: Option<&Path>) -> Vec<Tab> {
                     .get("sort_asc")
                     .and_then(|v| v.as_bool())
                     .unwrap_or(DEFAULT_SORT.1),
+                ads_sort: t
+                    .get("ads_sort")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or(crate::ads::DEFAULT_ADS_SORT)
+                    .to_string(),
             })
         })
         .collect()
@@ -103,6 +115,7 @@ pub fn save(tabs: &[Tab], ms_root: Option<&Path>) -> std::io::Result<()> {
                 "refreshed": t.refreshed,
                 "sort_col": t.sort_col,
                 "sort_asc": t.sort_asc,
+                "ads_sort": t.ads_sort,
             })
         })
         .collect();
@@ -176,6 +189,7 @@ pub fn make_tab(query: &str, limit: usize) -> Tab {
         refreshed: None,
         sort_col: DEFAULT_SORT.0.to_string(),
         sort_asc: DEFAULT_SORT.1,
+        ads_sort: crate::ads::DEFAULT_ADS_SORT.to_string(),
     }
 }
 

@@ -11,7 +11,7 @@ use std::time::Duration;
 pub const ADS_API: &str = "https://api.adsabs.harvard.edu/v1";
 
 const SEARCH_FIELDS: &str =
-    "bibcode,title,author,year,abstract,identifier,doi,esources,arxiv_class,citation_count,pub,volume,issue,page";
+    "bibcode,title,author,year,abstract,identifier,doi,esources,arxiv_class,citation_count,pub,volume,issue,page,entry_date";
 
 #[derive(Debug, Default)]
 pub struct Article {
@@ -23,6 +23,10 @@ pub struct Article {
     pub doi: Vec<String>,
     pub identifier: Vec<String>,
     pub citation_count: Option<i64>,
+    /// When ADS first indexed the record — the posting clock, distinct
+    /// from `year`, which is the publication clock. A 2019 paper indexed
+    /// this week is new by this measure and old by the other.
+    pub entry_date: String,
     pub journal: String,
     pub volume: String,
     pub issue: String,
@@ -141,7 +145,22 @@ fn update_quota(resp: &ureq::Response) {
     }
 }
 
+/// What a saved query selects by when it has no stored preference:
+/// the newest *postings*, which is what makes a query tab read as a
+/// feed. Note this is the ADS `sort` parameter — it decides which
+/// records come back, not how the ones in hand are displayed.
+pub const DEFAULT_ADS_SORT: &str = "entry_date desc";
+
+/// A one-off lookup, ordered by publication date. Callers that fetch a
+/// single record by identifier do not care; `search_sorted` is for the
+/// saved queries, which do.
 pub fn search(query: &str, limit: usize) -> Result<Vec<Article>> {
+    search_sorted(query, limit, "date desc")
+}
+
+/// `sort` is an ADS API parameter, not query syntax — putting
+/// `sort:"entry_date desc"` inside `q` is a Solr error, not a sort.
+pub fn search_sorted(query: &str, limit: usize, sort: &str) -> Result<Vec<Article>> {
     let token = require_token()?;
     let resp = check(
         agent()
@@ -150,7 +169,7 @@ pub fn search(query: &str, limit: usize) -> Result<Vec<Article>> {
             .query("q", query)
             .query("fl", SEARCH_FIELDS)
             .query("rows", &limit.to_string())
-            .query("sort", "date desc")
+            .query("sort", sort)
             .call(),
     )?;
     let v: serde_json::Value = resp.into_json()?;
@@ -170,6 +189,7 @@ pub(crate) fn article_to_json(a: &Article) -> serde_json::Value {
         "doi": a.doi,
         "identifier": a.identifier,
         "citation_count": a.citation_count,
+        "entry_date": a.entry_date,
         "pub": a.journal,
         "volume": a.volume,
         "issue": a.issue,
@@ -196,6 +216,14 @@ pub(crate) fn article_from_doc(d: &serde_json::Value) -> Article {
         doi: strs("doi"),
         identifier: strs("identifier"),
         citation_count: d["citation_count"].as_i64(),
+        // ADS returns an ISO timestamp; only the date part is shown or
+        // compared, and lexical order on it is chronological order
+        entry_date: d["entry_date"]
+            .as_str()
+            .unwrap_or_default()
+            .chars()
+            .take(10)
+            .collect(),
         journal: d["pub"].as_str().unwrap_or_default().to_string(),
         volume: d["volume"].as_str().unwrap_or_default().to_string(),
         issue: d["issue"].as_str().unwrap_or_default().to_string(),

@@ -1047,8 +1047,12 @@ impl App {
         let (tx, rx) = std::sync::mpsc::channel();
         self.ads_rx = Some(rx);
         self.note(MsgCat::Info, format!("Searching ADS: {query}"));
+        let ads_sort = tab.ads_sort.clone();
         std::thread::spawn(move || {
-            let result = crate::ads::search(&query, limit).map_err(|e| e.to_string());
+            // the tab's own ADS sort selects the records — "the newest
+            // n postings matching this", not an arbitrary n
+            let result = crate::ads::search_sorted(&query, limit, &ads_sort)
+                .map_err(|e| e.to_string());
             let _ = tx.send(AdsMsg::Done { id, tab, refresh_of, result });
         });
     }
@@ -2438,10 +2442,13 @@ impl App {
                     .to_lowercase()
                     .cmp(&eb.title().trim_matches(['{', '}']).to_lowercase()),
                 Col::Key => ea.key().cmp(eb.key()),
-                // the gutter and the manuscript-only columns never sort
-                // the library; listed rather than caught by a wildcard so
-                // that a new sortable column has to be handled here
-                Col::Sel | Col::CiteIcon | Col::Cited | Col::State => std::cmp::Ordering::Equal,
+                // the gutter, the manuscript-only columns, and Entered
+                // (which only ADS records carry) never sort the library;
+                // listed rather than caught by a wildcard so that a new
+                // sortable column has to be handled here
+                Col::Sel | Col::CiteIcon | Col::Cited | Col::State | Col::Entered => {
+                    std::cmp::Ordering::Equal
+                }
             };
             let ord = if asc { ord } else { ord.reverse() };
             ord.then(a.cmp(b))
@@ -2497,7 +2504,13 @@ impl App {
             Some((c, asc)) if c == col => (col, !asc),
             // bool-ish and recency columns start with the interesting side
             // up: cached/in-library/newest first; text columns start A→Z
-            _ => (col, !matches!(col, Col::Year | Col::Pdf | Col::InLib | Col::Metric)),
+            _ => (
+                col,
+                !matches!(
+                    col,
+                    Col::Year | Col::Entered | Col::Pdf | Col::InLib | Col::Metric
+                ),
+            ),
         };
         self.set_sort(next);
         self.apply_sort();
@@ -2557,6 +2570,7 @@ impl App {
                     Col::Key => String::new(), // filled below with lib access
                     Col::Metric => format!("{:012}", a.citation_count.unwrap_or(0)),
                     Col::Year => a.year.clone(),
+                    Col::Entered => a.entry_date.clone(),
                     Col::Author => a
                         .author
                         .first()
@@ -4623,6 +4637,7 @@ impl App {
                         Style::default().fg(Color::Magenta),
                     )),
                     Cell::from(Span::styled(a.year.clone(), yr_style)),
+                    Cell::from(Span::styled(a.entry_date.clone(), yr_style)),
                     Cell::from(Span::styled(fit_authors(&author, author_w as usize), au_style)),
                     Cell::from(Span::styled(a.title.clone(), ti_style)),
                     Cell::from(Span::styled(
@@ -4643,6 +4658,10 @@ impl App {
                 table::fixed(Col::Pdf, "↓", 2, true),
                 table::fixed(Col::InLib, "●", 2, true),
                 table::fixed(Col::Year, "Year", 6, true),
+                // the two clocks sit side by side on purpose: Year is
+                // when the paper was published, Entered is when ADS
+                // indexed it, and a date-sorted query needs the second
+                table::fixed(Col::Entered, "Entered", 10, true),
                 table::fixed(Col::Author, "Author", author_w, true),
                 table::flex(Col::Title, "Title", true),
                 table::fixed(Col::Key, "Key", 20, true),

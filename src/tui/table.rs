@@ -38,6 +38,9 @@ pub(super) enum Col {
     Author,
     Title,
     Key,
+    /// when ADS indexed the record — the posting clock, not the
+    /// publication clock that `Year` shows
+    Entered,
     /// manuscript: the cite-state glyph beside the cited string
     CiteIcon,
     Cited,
@@ -58,6 +61,7 @@ impl Col {
             Col::Author => "author",
             Col::Title => "title",
             Col::Key => "key",
+            Col::Entered => "entered",
             Col::CiteIcon => "citeicon",
             Col::Cited => "cited",
             Col::State => "state",
@@ -76,6 +80,7 @@ impl Col {
             Col::Author,
             Col::Title,
             Col::Key,
+            Col::Entered,
             Col::CiteIcon,
             Col::Cited,
             Col::State,

@@ -107,10 +107,10 @@
                                                                                             │                               ▤ card │ @ bib
 
 ## query w=140 card
-   ↓  ●  Year ▼ Author          Title                                   Key                 │  Cachette, Zylstra · 2020
+   ↓  ●  Year ▼ Entered    Author          Title                        Key                 │  Cachette, Zylstra · 2020
 ────────────────────────────────────────────────────────────────────────────────────────────│  TestJ 1, 1
-◉        2020   Cachette, +1    A cached result about kilonovae         Cachette2020hvsjk   │  cited by 7 ⟳
-         2015   Quist           Older cached companion paper            Quist2015kfjlg      │
+◉        2020   2024-03-02 Cachette, +1    A cached result about kilono Cachette2020hvsjk   │  cited by 7 ⟳
+         2015   2026-01-19 Quist           Older cached companion paper Quist2015kfjlg      │
                                                                                             │  From the cache, not the network.
                                                                                             │  ───────────────────────────────────────────
                                                                                             │  → ADS               │ ⧉ cite key
@@ -251,10 +251,10 @@
                                                               │                               ▤ card │ @ bib
 
 ## query w=110 card
-   ↓  ●  Year ▼ Author         Title      Key                 │  Cachette, Zylstra · 2020
+   ↓  ●  Year ▼ Entered    Author         Title Key           │  Cachette, Zylstra · 2020
 ──────────────────────────────────────────────────────────────│  TestJ 1, 1
-◉        2020  Cache A cached result abou Cachette2020hvsjk   │  cited by 7 ⟳
-         2015  Quist Older cached compani Quist2015kfjlg      │
+◉        202 202 Cac A cached result abou Cachette2020hvsjk   │  cited by 7 ⟳
+         201 202 Qui Older cached compani Quist2015kfjlg      │
                                                               │  From the cache, not the network.
                                                               │  ───────────────────────────────────────────
                                                               │  → ADS               │ ⧉ cite key
@@ -393,10 +393,10 @@
                                         │                           ▤ card │ @ bib
 
 ## query w=84 card
-   ↓  ●  Year ▼ Author         Title Key│  TestJ 1, 1
+   ↓  ●  Year ▼ Entered    Author       │  TestJ 1, 1
 ────────────────────────────────────────│  cited by 7 ⟳
-     A cached result abou Cachette2020hv│
-     Older cached compani Quist2015kfjlg│  From the cache, not the network.
+      A cached result abou Cachette2020h│
+      Older cached compani Quist2015kfjl│  From the cache, not the network.
                                         │  ───────────────────────────────────────
                                         │  → ADS               │ ⧉ cite key
                                         │  → arXiv             │ ⧉ full key
@@ -534,10 +534,10 @@
                                         │   ◇ ad▤ card │ @ bib
 
 ## query w=64 card
-   ↓  ●  Year ▼ Author         Title Key│  Cachette, Zylstra ·
+   ↓  ●  Year ▼ Entered    Author       │  Cachette, Zylstra ·
 ────────────────────────────────────────│  2020
-     A cached result abou Cachette2020hv│  TestJ 1, 1
-     Older cached compani Quist2015kfjlg│  cited by 7 ⟳
+      A cached result abou Cachette2020h│  TestJ 1, 1
+      Older cached compani Quist2015kfjl│  cited by 7 ⟳
                                         │
                                         │  From the cache, not
                                         │  the network.
