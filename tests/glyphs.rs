@@ -53,6 +53,7 @@ use unicode_width::UnicodeWidthChar;
 const SOURCES: &[(&str, &str)] = &[
     ("src/tui.rs", include_str!("../src/tui.rs")),
     ("src/tui/card.rs", include_str!("../src/tui/card.rs")),
+    ("src/tui/table.rs", include_str!("../src/tui/table.rs")),
 ];
 
 /// Where a glyph sits, which decides how bad a width surprise is.

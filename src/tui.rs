@@ -16,12 +16,15 @@ use ratatui::crossterm::execute;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
-use ratatui::widgets::{Block, Borders, Paragraph, Row, Table, TableState};
+use ratatui::widgets::{Block, Borders, Paragraph, Row, TableState};
 use ratatui::Frame;
 use std::collections::HashSet;
 use std::time::Duration;
 
 mod card;
+mod table;
+
+use table::Col;
 
 pub fn run(lib: MergedLibrary) -> anyhow::Result<()> {
     let mut terminal = ratatui::init();
@@ -229,17 +232,6 @@ struct Task {
     keys: Vec<String>,
 }
 
-/// Sortable table columns; clicking a header toggles direction.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum SortCol {
-    Metric,
-    Pdf,
-    InLib,
-    Year,
-    Author,
-    Title,
-    Key,
-}
 
 /// Every divider in the app — the card's horizontal rules and the
 /// vertical column divider, the table header rule, and the log/footer
@@ -642,8 +634,8 @@ struct App {
     help_rects: Vec<(Rect, KeyCode)>, // keys-panel rows → synthesized key
     ads_rx: Option<std::sync::mpsc::Receiver<AdsMsg>>,
     // table sort (clickable column headers) and their header hit rects
-    sort: (SortCol, bool), // (column, ascending)
-    sort_headers: Vec<(Rect, SortCol)>,
+    sort: (Col, bool), // (column, ascending)
+    sort_headers: Vec<(Rect, Col)>,
     // footer view badges: clickable show/hide toggles per app-wide view
     footer_badges: Vec<(Rect, Action)>,
     // pub card button and link rects, rebuilt each draw
@@ -845,7 +837,7 @@ impl App {
             scope_rects: vec![],
             help_rects: vec![],
             ads_rx: None,
-            sort: (SortCol::Year, false),
+            sort: (Col::Year, false),
             sort_headers: vec![],
             footer_badges: vec![],
             card_buttons: vec![],
@@ -2341,7 +2333,7 @@ impl App {
                 (x, y) => return orphan_order(x.is_some(), y.is_some(), a, b),
             };
             let ord = match col {
-                SortCol::Metric => match self.metric_col {
+                Col::Metric => match self.metric_col {
                     MetricCol::Priority => {
                         let n = std::time::SystemTime::now()
                             .duration_since(std::time::UNIX_EPOCH)
@@ -2368,21 +2360,25 @@ impl App {
                     }
                     MetricCol::Off => std::cmp::Ordering::Equal,
                 },
-                SortCol::Pdf => has_cached_pdf(ea.key()).cmp(&has_cached_pdf(eb.key())),
-                SortCol::InLib => lib
+                Col::Pdf => has_cached_pdf(ea.key()).cmp(&has_cached_pdf(eb.key())),
+                Col::InLib => lib
                     .in_manuscript(ea.key())
                     .cmp(&lib.in_manuscript(eb.key())),
-                SortCol::Year => ea.year().cmp(&eb.year()),
-                SortCol::Author => ea
+                Col::Year => ea.year().cmp(&eb.year()),
+                Col::Author => ea
                     .first_author_last()
                     .to_lowercase()
                     .cmp(&eb.first_author_last().to_lowercase()),
-                SortCol::Title => ea
+                Col::Title => ea
                     .title()
                     .trim_matches(['{', '}'])
                     .to_lowercase()
                     .cmp(&eb.title().trim_matches(['{', '}']).to_lowercase()),
-                SortCol::Key => ea.key().cmp(eb.key()),
+                Col::Key => ea.key().cmp(eb.key()),
+                // the gutter and the manuscript-only columns never sort
+                // the library; listed rather than caught by a wildcard so
+                // that a new sortable column has to be handled here
+                Col::Sel | Col::CiteIcon | Col::Cited | Col::State => std::cmp::Ordering::Equal,
             };
             let ord = if asc { ord } else { ord.reverse() };
             ord.then(a.cmp(b))
@@ -2398,7 +2394,7 @@ impl App {
 
     /// Header click: same column flips direction, a new column starts
     /// descending for Year (newest first) and ascending otherwise.
-    fn sort_by(&mut self, col: SortCol) {
+    fn sort_by(&mut self, col: Col) {
         self.sort = if self.sort.0 == col {
             (col, !self.sort.1)
         } else {
@@ -2408,7 +2404,7 @@ impl App {
                 col,
                 !matches!(
                     col,
-                    SortCol::Year | SortCol::Pdf | SortCol::InLib | SortCol::Metric
+                    Col::Year | Col::Pdf | Col::InLib | Col::Metric
                 ),
             )
         };
@@ -2431,31 +2427,31 @@ impl App {
             .into_iter()
             .map(|a| {
                 let key = match col {
-                    SortCol::Key => String::new(), // filled below with lib access
-                    SortCol::Metric => format!("{:012}", a.citation_count.unwrap_or(0)),
-                    SortCol::Year => a.year.clone(),
-                    SortCol::Author => a
+                    Col::Key => String::new(), // filled below with lib access
+                    Col::Metric => format!("{:012}", a.citation_count.unwrap_or(0)),
+                    Col::Year => a.year.clone(),
+                    Col::Author => a
                         .author
                         .first()
                         .map(|s| s.split(',').next().unwrap_or("").trim().to_lowercase())
                         .unwrap_or_default(),
-                    SortCol::Title => a.title.to_lowercase(),
+                    Col::Title => a.title.to_lowercase(),
                     _ => String::new(), // Pdf/InLib filled below with lib access
                 };
                 (key, a)
             })
             .collect();
-        if matches!(col, SortCol::Pdf | SortCol::InLib | SortCol::Key) {
+        if matches!(col, Col::Pdf | Col::InLib | Col::Key) {
             for (k, a) in decorated.iter_mut() {
                 let entry = self.article_entry(a);
                 *k = match col {
-                    SortCol::Pdf => {
+                    Col::Pdf => {
                         let ck = entry
                             .map(|e| e.key().to_string())
                             .unwrap_or_else(|| a.bibcode.clone());
                         u8::from(pdf::is_cached(&ck)).to_string()
                     }
-                    SortCol::Key => self.hypothetical_key(a),
+                    Col::Key => self.hypothetical_key(a),
                     _ => u8::from(entry.is_some()).to_string(),
                 };
             }
@@ -3579,8 +3575,8 @@ impl App {
                 KeyCode::Char('e') => self.open_export_prompt(),
                 KeyCode::Char('M') => {
                     self.metric_col = self.metric_col.next();
-                    if self.metric_col == MetricCol::Off && self.sort.0 == SortCol::Metric {
-                        self.sort = (SortCol::Year, false);
+                    if self.metric_col == MetricCol::Off && self.sort.0 == Col::Metric {
+                        self.sort = (Col::Year, false);
                         self.rebuild_order();
                     }
                     let res =
@@ -4241,11 +4237,11 @@ impl App {
         let metric = self.metric_col;
         // header swatch: legend + sort target
         let hr = Rect { x: area.x, y: area.y, width: 1, height: 1 };
-        self.sort_headers.push((hr, SortCol::Metric));
+        self.sort_headers.push((hr, Col::Metric));
         if hit(hr, self.hover.0, self.hover.1) {
             self.hover_hint = Some(format!("sort by metric: {}", metric.name()));
         }
-        let hdr = if self.sort.0 == SortCol::Metric {
+        let hdr = if self.sort.0 == Col::Metric {
             Span::styled(
                 if self.sort.1 { "▲" } else { "▼" },
                 Style::default().fg(metric_color(metric, 0.7)),
@@ -4314,274 +4310,221 @@ impl App {
         }
     }
 
+    /// Draw the active scope's table. Each scope contributes its own
+    /// columns and rows; `table::draw` owns the chrome they share.
     fn draw_table(&mut self, f: &mut Frame, area: Rect) {
-        use ratatui::widgets::Cell;
         self.table_area = area;
         self.sort_headers.clear();
-        if let Some(Scope::Manuscript { rows }) = self.scopes.get(self.active_scope) {
-            // manuscript view: cited string, state, resolved title
-            use crate::library::CiteState;
-            let cursor = self.table.selected();
-            let hov_row = self.hovered_table_pos();
-            let trows: Vec<Row> = rows
-                .iter()
-                .enumerate()
-                .map(|(pos, r)| {
-                    let lit = hov_row == Some(pos);
-                    let (icon, word, style) = match (r.uncited, r.state) {
-                        (true, _) => ("·", "uncited", Style::default().fg(Color::DarkGray)),
-                        (_, CiteState::Ok) => ("●", "ok", Style::default().fg(Color::Green)),
-                        (_, CiteState::Library) => {
-                            ("○", "library", Style::default().fg(Color::Yellow))
-                        }
-                        (_, CiteState::Ambiguous) => {
-                            ("?", "ambiguous", Style::default().fg(Color::Magenta))
-                        }
-                        (_, CiteState::Missing) => ("✗", "missing", Style::default().fg(Color::Red)),
-                    };
-                    let cite_style = if lit {
-                        Style::default().fg(Color::White)
-                    } else {
-                        Style::default().fg(Color::Cyan)
-                    };
-                    let title_style = if lit {
-                        Style::default().fg(Color::White).add_modifier(Modifier::ITALIC)
-                    } else {
-                        Style::default().fg(Color::Gray).add_modifier(Modifier::ITALIC)
-                    };
-                    // the gutter mirrors the library's selection marks;
-                    // a cite that resolves to no paper shows none, so
-                    // "you cannot select this" is visible, not mysterious
-                    let selectable = r.key.is_some();
-                    let picked = r
-                        .key
-                        .as_deref()
-                        .is_some_and(|k| self.selected.contains(k));
-                    let circle = if !self.select_mode {
-                        if cursor == Some(pos) { "◉" } else { "" }
-                    } else if picked {
-                        "◉"
-                    } else if selectable {
-                        "◯"
-                    } else {
-                        ""
-                    };
-                    let circle_style = if circle == "◯" {
-                        Style::default().fg(Color::DarkGray).add_modifier(Modifier::DIM)
-                    } else if self.select_mode && cursor == Some(pos) {
-                        Style::default().fg(Color::White).add_modifier(Modifier::BOLD)
-                    } else {
-                        Style::default().fg(Color::Cyan)
-                    };
-                    let row = Row::new(vec![
-                        Cell::from(Span::styled(circle, circle_style)),
-                        Cell::from(Span::styled(icon, style)),
-                        Cell::from(Span::styled(r.cited.clone(), cite_style)),
-                        Cell::from(Span::styled(word, style)),
-                        Cell::from(Span::styled(r.title.clone(), title_style)),
-                    ]);
-                    if cursor == Some(pos) {
-                        row.style(Style::default().bg(Color::Rgb(34, 40, 52)))
-                    } else {
-                        row
-                    }
-                })
-                .collect();
-            let header: Vec<Span> = ["", "", "Cited", "State", "Title"]
-                .iter()
-                .zip([2u16, 2, 26, 10, 0])
-                .flat_map(|(l, w)| {
-                    let pad = (w as usize).saturating_sub(l.chars().count());
-                    [
-                        Span::styled(*l, Style::default().add_modifier(Modifier::BOLD)),
-                        Span::raw(" ".repeat(pad + 1)),
-                    ]
-                })
-                .collect();
-            f.render_widget(
-                Paragraph::new(Line::from(header)),
-                Rect { x: area.x, y: area.y, width: area.width, height: 1 },
-            );
-            f.render_widget(
-                Paragraph::new(Span::styled(
-                    "─".repeat(area.width as usize),
-                    divider(),
-                )),
-                Rect { x: area.x, y: area.y + 1, width: area.width, height: 1 },
-            );
-            let data_area = Rect {
-                x: area.x,
-                y: area.y + 2,
-                width: area.width,
-                height: area.height.saturating_sub(2),
-            };
-            let table = Table::new(
-                trows,
-                [
-                    Constraint::Length(2),
-                    Constraint::Length(2),
-                    Constraint::Length(26),
-                    Constraint::Length(10),
-                    Constraint::Min(20),
-                ],
-            )
-            .block(Block::default().borders(Borders::NONE));
-            f.render_stateful_widget(table, data_area, &mut self.table);
-            return;
+        let model = self.table_model(area.width);
+        let (rects, data_area) = table::draw(f, area, model, &mut self.table);
+        self.sort_headers.extend(rects);
+        if let Some(hint) = self.empty_hint() {
+            draw_empty_hint(f, data_area, hint);
         }
-        if let Some(Scope::Ads { articles, .. }) = self.scopes.get(self.active_scope) {
-            // ADS results: ↓ ● Year Author Title; ● from the bibcode
-            // index, ↓ from the canonical cache key (cite key once
-            // imported, bibcode otherwise)
-            let (author_w, _) = column_layout(area.width);
-            let cursor = self.table.selected();
-            let hov_row = self.hovered_table_pos();
-            let rows: Vec<Row> = articles
-                .iter()
-                .enumerate()
-                .map(|(pos, a)| {
-                    let entry = self.article_entry(a);
-                    let cache_key = entry.map(|e| e.key()).unwrap_or(&a.bibcode);
-                    let author = a.author.join(" and ");
-                    let lit = hov_row == Some(pos);
-                    let (au_style, ti_style, yr_style) = if lit {
-                        (
-                            Style::default().fg(Color::White),
-                            Style::default().fg(Color::White).add_modifier(Modifier::ITALIC),
-                            Style::default().fg(Color::Green),
-                        )
-                    } else {
-                        (
-                            Style::default().fg(TABLE_TEXT),
-                            Style::default().fg(TABLE_TEXT).add_modifier(Modifier::ITALIC),
-                            Style::default().fg(Color::Green).add_modifier(Modifier::DIM),
-                        )
-                    };
-                    let circle = if self.select_mode {
-                        if self.selected.contains(&a.bibcode) { "◉" } else { "◯" }
-                    } else if cursor == Some(pos) {
-                        "◉"
-                    } else {
-                        ""
-                    };
-                    let circle_style = if circle == "◯" {
-                        Style::default().fg(Color::DarkGray).add_modifier(Modifier::DIM)
-                    } else if self.select_mode && cursor == Some(pos) {
-                        Style::default().fg(Color::White).add_modifier(Modifier::BOLD)
-                    } else {
-                        Style::default().fg(Color::Cyan)
-                    };
-                    let row = Row::new(vec![
-                        Cell::from(Span::styled(circle, circle_style)),
-                        Cell::from(Span::styled(
-                            if pdf::is_cached(cache_key) { "↓" } else { "" },
-                            Style::default().fg(Color::Green),
-                        )),
-                        Cell::from(Span::styled(
-                            if entry.is_some() { "●" } else { "" },
-                            Style::default().fg(Color::Magenta),
-                        )),
-                        Cell::from(Span::styled(a.year.clone(), yr_style)),
-                        Cell::from(Span::styled(
-                            fit_authors(&author, author_w as usize),
-                            au_style,
-                        )),
-                        Cell::from(Span::styled(a.title.clone(), ti_style)),
-                        Cell::from(Span::styled(
-                            self.hypothetical_key(a),
-                            Style::default().fg(Color::Cyan).add_modifier(Modifier::DIM),
-                        )),
-                    ]);
-                    if cursor == Some(pos) {
-                        row.style(Style::default().bg(Color::Rgb(34, 40, 52)))
-                    } else {
-                        row
-                    }
-                })
-                .collect();
-            let (sort_col, asc) = self.sort;
-            let mut hx = area.x;
-            let mut header: Vec<Span> = vec![];
-            for (ci, base) in ["", "↓", "●", "Year", "Author", "Title", "Key"].iter().enumerate() {
-                let w = [2u16, 2, 2, 6, author_w, 0, 20][ci];
-                let cw = if ci == 5 {
-                    area.width
-                        .saturating_sub(hx - area.x)
-                        .saturating_sub(21)
+    }
+
+    fn table_model(&self, width: u16) -> table::TableModel {
+        match self.scopes.get(self.active_scope) {
+            Some(Scope::Manuscript { rows }) => self.manuscript_model(rows),
+            Some(Scope::Ads { articles, .. }) => self.ads_model(articles, width),
+            _ => self.library_model(width),
+        }
+    }
+
+    /// The line drawn over an empty table, if the active scope has one.
+    fn empty_hint(&self) -> Option<&'static str> {
+        match self.scopes.get(self.active_scope) {
+            Some(Scope::Manuscript { .. }) => None,
+            Some(Scope::Ads { .. }) => {
+                (self.row_count() == 0).then_some("no results — r re-runs, +/- changes n")
+            }
+            _ => {
+                if self.order.is_empty() {
+                    Some("library is empty — S searches ADS, or: astrobib add <bibcode>")
+                } else if self.filtered.is_empty() {
+                    Some("no matches — Esc clears the filter")
                 } else {
-                    w
-                };
-                let col = match ci {
-                    1 => Some(SortCol::Pdf),
-                    2 => Some(SortCol::InLib),
-                    3 => Some(SortCol::Year),
-                    4 => Some(SortCol::Author),
-                    5 => Some(SortCol::Title),
-                    6 => Some(SortCol::Key),
-                    _ => None,
-                };
-                let mut label = base.to_string();
-                let mut style = Style::default().add_modifier(Modifier::BOLD);
-                if let Some(col) = col {
-                    let r = Rect { x: hx, y: area.y, width: cw.max(1), height: 1 };
-                    self.sort_headers.push((r, col));
-                    if sort_col == col {
-                        let arrow = if asc { "▲" } else { "▼" };
-                        label = if cw <= 2 { format!("{base}{arrow}") } else { format!("{base} {arrow}") };
-                    }
-                    if hit(r, self.hover.0, self.hover.1) {
-                        style = style.fg(Color::Cyan).add_modifier(Modifier::UNDERLINED);
-                    }
+                    None
                 }
-                let pad = (cw as usize).saturating_sub(label.chars().count());
-                header.push(Span::styled(label, style));
-                header.push(Span::raw(" ".repeat(pad.min(200) + 1)));
-                hx += cw + 1;
             }
-            f.render_widget(
-                Paragraph::new(Line::from(header)),
-                Rect { x: area.x, y: area.y, width: area.width, height: 1 },
-            );
-            f.render_widget(
-                Paragraph::new(Span::styled(
-                    "─".repeat(area.width as usize),
-                    divider(),
-                )),
-                Rect { x: area.x, y: area.y + 1, width: area.width, height: 1 },
-            );
-            let data_area = Rect {
-                x: area.x,
-                y: area.y + 2,
-                width: area.width,
-                height: area.height.saturating_sub(2),
-            };
-            let table = Table::new(
-                rows,
-                [
-                    Constraint::Length(2),
-                    Constraint::Length(2),
-                    Constraint::Length(2),
-                    Constraint::Length(6),
-                    Constraint::Length(author_w),
-                    Constraint::Min(20),
-                    Constraint::Length(20),
-                ],
-            )
-            .block(Block::default().borders(Borders::NONE));
-            f.render_stateful_widget(table, data_area, &mut self.table);
-            if self.row_count() == 0 {
-                draw_empty_hint(f, data_area, "no results — r re-runs, +/- changes n");
-            }
-            return;
         }
-        // subtle per-column palette; the terminal theme supplies the hues.
-        // cursor row: faint cool fill ("standing on a surface") + ◉;
-        // hovered row: no fill — the text lifts one level instead
-        let cursor_fill = Style::default().bg(Color::Rgb(34, 40, 52));
+    }
+
+    /// The selection gutter's glyph and style. `id` is the row's
+    /// selection key, or None for a row that cannot be selected — a
+    /// manuscript cite resolving to no paper shows no ring at all, so
+    /// "you cannot select this" is visible rather than mysterious.
+    ///
+    /// The gutter also carries the cursor: ◉ marks the cursor row, and
+    /// in selection mode the cursor's own circle brightens.
+    fn gutter(&self, id: Option<&str>, at_cursor: bool) -> (&'static str, Style) {
+        let circle = if !self.select_mode {
+            if at_cursor {
+                "◉"
+            } else {
+                ""
+            }
+        } else if id.is_some_and(|k| self.selected.contains(k)) {
+            "◉"
+        } else if id.is_some() {
+            "◯"
+        } else {
+            ""
+        };
+        // unselected rings recede almost entirely; selected dots pop
+        let style = if circle == "◯" {
+            Style::default().fg(Color::DarkGray).add_modifier(Modifier::DIM)
+        } else if self.select_mode && at_cursor {
+            Style::default().fg(Color::White).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(Color::Cyan)
+        };
+        (circle, style)
+    }
+
+    /// Manuscript: cite string, resolution state, resolved title. Its
+    /// rows are in scan order — the order the cites appear in the
+    /// manuscript — so no column sorts.
+    fn manuscript_model(&self, rows: &[MsRow]) -> table::TableModel {
+        use crate::library::CiteState;
+        use ratatui::widgets::Cell;
+        let cursor = self.table.selected();
+        let hov_row = self.hovered_table_pos();
+        let trows: Vec<Row<'static>> = rows
+            .iter()
+            .enumerate()
+            .map(|(pos, r)| {
+                let lit = hov_row == Some(pos);
+                let (icon, word, style) = match (r.uncited, r.state) {
+                    (true, _) => ("·", "uncited", Style::default().fg(Color::DarkGray)),
+                    (_, CiteState::Ok) => ("●", "ok", Style::default().fg(Color::Green)),
+                    (_, CiteState::Library) => {
+                        ("○", "library", Style::default().fg(Color::Yellow))
+                    }
+                    (_, CiteState::Ambiguous) => {
+                        ("?", "ambiguous", Style::default().fg(Color::Magenta))
+                    }
+                    (_, CiteState::Missing) => ("✗", "missing", Style::default().fg(Color::Red)),
+                };
+                let cite_style = if lit {
+                    Style::default().fg(Color::White)
+                } else {
+                    Style::default().fg(Color::Cyan)
+                };
+                let title_style = if lit {
+                    Style::default().fg(Color::White).add_modifier(Modifier::ITALIC)
+                } else {
+                    Style::default().fg(Color::Gray).add_modifier(Modifier::ITALIC)
+                };
+                let at_cursor = cursor == Some(pos);
+                let (circle, circle_style) = self.gutter(r.key.as_deref(), at_cursor);
+                let row = Row::new(vec![
+                    Cell::from(Span::styled(circle, circle_style)),
+                    Cell::from(Span::styled(icon, style)),
+                    Cell::from(Span::styled(r.cited.clone(), cite_style)),
+                    Cell::from(Span::styled(word, style)),
+                    Cell::from(Span::styled(r.title.clone(), title_style)),
+                ]);
+                if at_cursor {
+                    row.style(Style::default().bg(table::CURSOR_FILL))
+                } else {
+                    row
+                }
+            })
+            .collect();
+        table::TableModel {
+            columns: vec![
+                table::fixed(Col::Sel, "", 2, false),
+                table::fixed(Col::CiteIcon, "", 2, false),
+                table::fixed(Col::Cited, "Cited", 26, false),
+                table::fixed(Col::State, "State", 10, false),
+                table::flex(Col::Title, "Title", false),
+            ],
+            rows: trows,
+            sort: self.sort,
+            hover: self.hover,
+        }
+    }
+
+    /// ADS results: ↓ from the canonical cache key (the cite key once
+    /// imported, the bibcode otherwise), ● from paper identity.
+    fn ads_model(&self, articles: &[crate::ads::Article], width: u16) -> table::TableModel {
+        use ratatui::widgets::Cell;
+        let (author_w, _) = column_layout(width);
+        let cursor = self.table.selected();
+        let hov_row = self.hovered_table_pos();
+        let rows: Vec<Row<'static>> = articles
+            .iter()
+            .enumerate()
+            .map(|(pos, a)| {
+                let entry = self.article_entry(a);
+                let cache_key = entry.map(|e| e.key()).unwrap_or(&a.bibcode);
+                let author = a.author.join(" and ");
+                let lit = hov_row == Some(pos);
+                let (au_style, ti_style, yr_style) = if lit {
+                    (
+                        Style::default().fg(Color::White),
+                        Style::default().fg(Color::White).add_modifier(Modifier::ITALIC),
+                        Style::default().fg(Color::Green),
+                    )
+                } else {
+                    (
+                        Style::default().fg(TABLE_TEXT),
+                        Style::default().fg(TABLE_TEXT).add_modifier(Modifier::ITALIC),
+                        Style::default().fg(Color::Green).add_modifier(Modifier::DIM),
+                    )
+                };
+                let at_cursor = cursor == Some(pos);
+                let (circle, circle_style) = self.gutter(Some(&a.bibcode), at_cursor);
+                let row = Row::new(vec![
+                    Cell::from(Span::styled(circle, circle_style)),
+                    Cell::from(Span::styled(
+                        if pdf::is_cached(cache_key) { "↓" } else { "" },
+                        Style::default().fg(Color::Green),
+                    )),
+                    Cell::from(Span::styled(
+                        if entry.is_some() { "●" } else { "" },
+                        Style::default().fg(Color::Magenta),
+                    )),
+                    Cell::from(Span::styled(a.year.clone(), yr_style)),
+                    Cell::from(Span::styled(fit_authors(&author, author_w as usize), au_style)),
+                    Cell::from(Span::styled(a.title.clone(), ti_style)),
+                    Cell::from(Span::styled(
+                        self.hypothetical_key(a),
+                        Style::default().fg(Color::Cyan).add_modifier(Modifier::DIM),
+                    )),
+                ]);
+                if at_cursor {
+                    row.style(Style::default().bg(table::CURSOR_FILL))
+                } else {
+                    row
+                }
+            })
+            .collect();
+        table::TableModel {
+            columns: vec![
+                table::fixed(Col::Sel, "", 2, false),
+                table::fixed(Col::Pdf, "↓", 2, true),
+                table::fixed(Col::InLib, "●", 2, true),
+                table::fixed(Col::Year, "Year", 6, true),
+                table::fixed(Col::Author, "Author", author_w, true),
+                table::flex(Col::Title, "Title", true),
+                table::fixed(Col::Key, "Key", 20, true),
+            ],
+            rows,
+            sort: self.sort,
+            hover: self.hover,
+        }
+    }
+
+    /// The library: a subtle per-column palette, with the terminal theme
+    /// supplying the hues. The cursor row takes a faint cool fill and a
+    /// ◉; a hovered row takes no fill — its text lifts one level instead.
+    fn library_model(&self, width: u16) -> table::TableModel {
+        use ratatui::widgets::Cell;
         let palette = |lit: bool| {
             if lit {
                 (
-                    Style::default().fg(Color::Cyan),
                     Style::default().fg(Color::Green),
                     Style::default().fg(Color::Magenta),
                     Style::default().fg(Color::Green),
@@ -4590,7 +4533,6 @@ impl App {
                 )
             } else {
                 (
-                    Style::default().fg(Color::Cyan),
                     Style::default().fg(Color::Green),
                     Style::default().fg(Color::Magenta),
                     Style::default().fg(Color::Green).add_modifier(Modifier::DIM),
@@ -4602,12 +4544,12 @@ impl App {
         // responsive columns: author scales, Key drops first when tight —
         // but never while the card is shown: the Key column is the
         // hover-preview target, so the title absorbs the squeeze instead
-        let (author_w, show_key) = column_layout(area.width);
+        let (author_w, show_key) = column_layout(width);
         let show_key = show_key || self.show_detail;
         let hov_row = self.hovered_table_pos();
         let cursor = self.table.selected();
         let show_membership = self.lib.manuscript.is_some() && self.lib.global_on;
-        let rows: Vec<Row> = self
+        let rows: Vec<Row<'static>> = self
             .filtered
             .iter()
             .enumerate()
@@ -4627,25 +4569,8 @@ impl App {
                 };
                 let at_cursor = cursor == Some(pos);
                 let lit = hov_row == Some(pos);
-                let (c_ind, c_pdf, c_ms, c_year, c_author, c_key) = palette(lit);
-                // the gutter carries the cursor: ◉ marks the cursor row
-                // (no row highlight, so cell colors stay visible); in
-                // selection mode the cursor row's circle brightens
-                let circle = if !self.select_mode {
-                    if at_cursor { "◉" } else { "" }
-                } else if self.selected.contains(e.key()) {
-                    "◉"
-                } else {
-                    "◯"
-                };
-                // unselected rings recede almost entirely; selected dots pop
-                let circle_style = if circle == "◯" {
-                    Style::default().fg(Color::DarkGray).add_modifier(Modifier::DIM)
-                } else if self.select_mode && at_cursor {
-                    Style::default().fg(Color::White).add_modifier(Modifier::BOLD)
-                } else {
-                    c_ind
-                };
+                let (c_pdf, c_ms, c_year, c_author, c_key) = palette(lit);
+                let (circle, circle_style) = self.gutter(Some(e.key()), at_cursor);
                 let mut cells = vec![
                     Cell::from(Span::styled(circle, circle_style)),
                     Cell::from(Span::styled(
@@ -4675,101 +4600,26 @@ impl App {
                 }
                 let row = Row::new(cells);
                 if at_cursor {
-                    row.style(cursor_fill)
+                    row.style(Style::default().bg(table::CURSOR_FILL))
                 } else {
                     row
                 }
             })
             .collect();
-
-        // header: sortable columns get a click rect and a ▲/▼ marker
-        let mut widths: Vec<u16> = vec![2, 2, 2, 6, author_w, 0];
-        if show_key {
-            widths.push(20);
-        }
-        let ncols = widths.len() as u16;
-        let (sort_col, asc) = self.sort;
-        let mut hx = area.x;
-        let title_w = area
-            .width
-            .saturating_sub(widths.iter().sum::<u16>() + ncols);
-        let ms_header = if show_membership { "●" } else { "" };
-        let mut headers: Vec<&str> = vec!["", "↓", ms_header, "Year", "Author", "Title"];
-        if show_key {
-            headers.push("Key");
-        }
-        let mut header_spans: Vec<Span> = vec![];
-        for (ci, base) in headers.iter().enumerate() {
-            let cw = if ci == 5 { title_w } else { widths[ci] };
-            let col = match ci {
-                1 => Some(SortCol::Pdf),
-                2 if show_membership => Some(SortCol::InLib),
-                3 => Some(SortCol::Year),
-                4 => Some(SortCol::Author),
-                5 => Some(SortCol::Title),
-                6 => Some(SortCol::Key),
-                _ => None,
-            };
-            let mut label = base.to_string();
-            let mut style = Style::default().add_modifier(Modifier::BOLD);
-            if let Some(col) = col {
-                let r = Rect { x: hx, y: area.y, width: cw, height: 1 };
-                self.sort_headers.push((r, col));
-                if sort_col == col {
-                    let arrow = if asc { "▲" } else { "▼" };
-                    // narrow indicator columns fit glyph+arrow only
-                    label = if cw <= 2 { format!("{base}{arrow}") } else { format!("{base} {arrow}") };
-                }
-                if hit(r, self.hover.0, self.hover.1) {
-                    style = style.fg(Color::Cyan).add_modifier(Modifier::UNDERLINED);
-                }
-            }
-            let pad = (cw as usize).saturating_sub(label.chars().count());
-            header_spans.push(Span::styled(label, style));
-            header_spans.push(Span::raw(" ".repeat(pad + 1)));
-            hx += cw + 1;
-        }
-        f.render_widget(
-            Paragraph::new(Line::from(header_spans)),
-            Rect { x: area.x, y: area.y, width: area.width, height: 1 },
-        );
-        f.render_widget(
-            Paragraph::new(Span::styled(
-                "─".repeat(area.width as usize),
-                divider(),
-            )),
-            Rect { x: area.x, y: area.y + 1, width: area.width, height: 1 },
-        );
-        let data_area = Rect {
-            x: area.x,
-            y: area.y + 2,
-            width: area.width,
-            height: area.height.saturating_sub(2),
-        };
-
-        let mut constraints = vec![
-            Constraint::Length(2),
-            Constraint::Length(2),
-            Constraint::Length(2),
-            Constraint::Length(6),
-            Constraint::Length(author_w),
-            Constraint::Min(20),
+        // the ● column is only labelled — and only sorts — when a
+        // manuscript is active and the global tier is showing
+        let mut columns = vec![
+            table::fixed(Col::Sel, "", 2, false),
+            table::fixed(Col::Pdf, "↓", 2, true),
+            table::fixed(Col::InLib, if show_membership { "●" } else { "" }, 2, show_membership),
+            table::fixed(Col::Year, "Year", 6, true),
+            table::fixed(Col::Author, "Author", author_w, true),
+            table::flex(Col::Title, "Title", true),
         ];
         if show_key {
-            constraints.push(Constraint::Length(20));
+            columns.push(table::fixed(Col::Key, "Key", 20, true));
         }
-        let table = Table::new(rows, constraints)
-        .block(Block::default().borders(Borders::NONE));
-        f.render_stateful_widget(table, data_area, &mut self.table);
-        if self.order.is_empty() {
-            draw_empty_hint(
-                f,
-                data_area,
-                "library is empty — S searches ADS, or: astrobib add <bibcode>",
-            );
-        } else if self.filtered.is_empty() {
-            draw_empty_hint(f, data_area, "no matches — Esc clears the filter");
-        }
+        table::TableModel { columns, rows, sort: self.sort, hover: self.hover }
     }
 
     /// The pub card for an ADS result: body, links, citation count, an

@@ -1,5 +1,5 @@
 ## library w=140 card
-   ↓  ●  Year ▼ Author          Title                                  Key                  │
+   ↓  ●  Year ▼ Author          Title                                   Key                 │
 ────────────────────────────────────────────────────────────────────────────────────────────│  Cabrera, Okafor · 2024
 ◉        2024   Cabrera, +1     Turbulent magnetic amplification in bin Cabrera2024         │  arXiv e-prints, arXiv:2407.20112
          2023   Ekwueme, +4     Precursor flares from charged black hol Ekwueme2023         │  cited by ? ⟳
@@ -35,7 +35,7 @@
                                                                                             │                               ▤ card │ @ bib
 
 ## library w=140 nocard
-   ↓  ●  Year ▼ Author                  Title                                                                          Key
+   ↓  ●  Year ▼ Author                  Title                                                                           Key
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 ◉        2024   Cabrera and Okafor      Turbulent magnetic amplification in binary neutron star merger remnants         Cabrera2024
          2023   Ekwueme, Fontaine, +3   Precursor flares from charged black hole binaries: a population study           Ekwueme2023
@@ -143,7 +143,7 @@
                                                                                             │                               ▤ card │ @ bib
 
 ## library w=110 card
-   ↓  ●  Year ▼ Author         Title     Key                  │
+   ↓  ●  Year ▼ Author         Title      Key                 │
 ──────────────────────────────────────────────────────────────│  Cabrera, Okafor · 2024
 ◉        2024  Cabre Turbulent magnetic a Cabrera2024         │  arXiv e-prints, arXiv:2407.20112
          2023  Ekwue Precursor flares fro Ekwueme2023         │  cited by ? ⟳
@@ -179,7 +179,7 @@
                                                               │                               ▤ card │ @ bib
 
 ## library w=110 nocard
-   ↓  ●  Year ▼ Author             Title                                                 Key
+   ↓  ●  Year ▼ Author             Title                                                  Key
 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────
 ◉        2024   Cabrera and Okafor Turbulent magnetic amplification in binary neutron sta Cabrera2024
          2023   Ekwueme, +4        Precursor flares from charged black hole binaries: a p Ekwueme2023
@@ -569,7 +569,7 @@
                                         │       ▤ card │ @ bib
 
 ## library sort=title asc
-   ↓  ●  Year   Author          Title ▲                                Key                  │
+   ↓  ●  Year   Author          Title ▲                                 Key                 │
 ────────────────────────────────────────────────────────────────────────────────────────────│  Baxter · 2019
 ◉        2019   Baxter          A census of runaway white dwarfs in the Baxter2019          │  MNRAS 487, 1234-1250
          2018   Délacroix, +1   On the stability of self-gravitating ac Delacroix2018       │  cited by ? ⟳
@@ -605,7 +605,7 @@
                                                                                             │                               ▤ card │ @ bib
 
 ## library sort=title desc
-   ↓  ●  Year   Author          Title ▼                                Key                  │
+   ↓  ●  Year   Author          Title ▼                                 Key                 │
 ────────────────────────────────────────────────────────────────────────────────────────────│  Cabrera, Okafor · 2024
 ◉        2024   Cabrera, +1     Turbulent magnetic amplification in bin Cabrera2024         │  arXiv e-prints, arXiv:2407.20112
          2021   Andersson, +1   Relativistic jet braking in dense circu Andersson2021       │  cited by ? ⟳
@@ -641,7 +641,7 @@
                                                                                             │                               ▤ card │ @ bib
 
 ## library sort=year
-   ↓  ●  Year ▼ Author          Title                                  Key                  │
+   ↓  ●  Year ▼ Author          Title                                   Key                 │
 ────────────────────────────────────────────────────────────────────────────────────────────│  Cabrera, Okafor · 2024
 ◉        2024   Cabrera, +1     Turbulent magnetic amplification in bin Cabrera2024         │  arXiv e-prints, arXiv:2407.20112
          2023   Ekwueme, +4     Precursor flares from charged black hol Ekwueme2023         │  cited by ? ⟳
