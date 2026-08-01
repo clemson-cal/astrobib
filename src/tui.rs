@@ -238,6 +238,39 @@ struct Task {
 /// rules — uses this one quite-dim color.
 const DIVIDER_FG: Color = Color::Rgb(62, 66, 74);
 
+/// Read a stored sort ("column:asc" / "column:desc") from state.json.
+/// An absent or unparseable field means "no stored sort", which each
+/// caller resolves to its own default.
+fn load_sort(field: &str) -> Option<(Col, bool)> {
+    let raw = crate::ads::get_state_field(field)?;
+    let (col, dir) = raw.split_once(':')?;
+    Some((Col::from_tag(col), dir == "asc"))
+}
+
+/// Persist one. None writes an empty value, which reads back as absent.
+fn store_sort(field: &str, v: Option<(Col, bool)>) -> std::io::Result<()> {
+    let raw = match v {
+        Some((c, asc)) => format!("{}:{}", c.tag(), if asc { "asc" } else { "desc" }),
+        None => String::new(),
+    };
+    crate::ads::save_state_field(field, &raw)
+}
+
+/// Cite states in the order the manuscript view groups them when sorted
+/// by state: what needs attention first.
+fn ms_state_rank(r: &MsRow) -> u8 {
+    use crate::library::CiteState;
+    if r.uncited {
+        return 4;
+    }
+    match r.state {
+        CiteState::Missing => 0,
+        CiteState::Ambiguous => 1,
+        CiteState::Library => 2,
+        CiteState::Ok => 3,
+    }
+}
+
 fn divider() -> Style {
     Style::default().fg(DIVIDER_FG)
 }
@@ -634,7 +667,16 @@ struct App {
     help_rects: Vec<(Rect, KeyCode)>, // keys-panel rows → synthesized key
     ads_rx: Option<std::sync::mpsc::Receiver<AdsMsg>>,
     // table sort (clickable column headers) and their header hit rects
-    sort: (Col, bool), // (column, ascending)
+    // Sort is per scope, not per app: each query tab keeps its own
+    // (stored on the Tab, in tabs.json), and the library and manuscript
+    // keep theirs in state.json. Switching scopes therefore leaves every
+    // other scope's order alone — and, less obviously, rebuild_order can
+    // sort the library by the *library's* column even when a query scope
+    // is in front, which a single shared field could not.
+    library_sort: (Col, bool), // (column, ascending)
+    /// None while the manuscript is in scan order — the order the cites
+    /// appear in the source, which is meaningful and is the default.
+    ms_sort: Option<(Col, bool)>,
     sort_headers: Vec<(Rect, Col)>,
     // footer view badges: clickable show/hide toggles per app-wide view
     footer_badges: Vec<(Rect, Action)>,
@@ -837,7 +879,8 @@ impl App {
             scope_rects: vec![],
             help_rects: vec![],
             ads_rx: None,
-            sort: (Col::Year, false),
+            library_sort: load_sort("library_sort").unwrap_or((Col::Year, false)),
+            ms_sort: load_sort("manuscript_sort"),
             sort_headers: vec![],
             footer_badges: vec![],
             card_buttons: vec![],
@@ -920,6 +963,9 @@ impl App {
         if self.select_mode {
             self.exit_select_mode();
         }
+        // each scope keeps its own sort, so entering one re-asserts it;
+        // the library and manuscript are already in their sorted order
+        self.sort_ads_at(self.active_scope);
     }
 
     fn cycle_scope(&mut self, d: isize) {
@@ -1194,6 +1240,11 @@ impl App {
             }
             self.scopes.push(Scope::Ads { tab: t.clone(), articles });
         }
+        // the cache holds whatever order the results last arrived in;
+        // each tab's stored sort is what it should come back showing
+        for i in 0..self.scopes.len() {
+            self.sort_ads_at(i);
+        }
         self.note(
             MsgCat::Info,
             format!(
@@ -1349,15 +1400,21 @@ impl App {
                             let n = articles.len();
                             crate::tabs::save_cached_articles(&tab.id, &articles);
                             tab.refreshed = Some(crate::tabs::now_secs());
-                            tab.bibcodes = articles.iter().map(|a| a.bibcode.clone()).collect();
                             let scope = Scope::Ads { tab, articles };
-                            match refresh_of {
-                                Some(i) if i < self.scopes.len() => self.scopes[i] = scope,
+                            let idx = match refresh_of {
+                                Some(i) if i < self.scopes.len() => {
+                                    self.scopes[i] = scope;
+                                    i
+                                }
                                 _ => {
                                     self.scopes.push(scope);
                                     self.set_scope(self.scopes.len() - 1);
+                                    self.scopes.len() - 1
                                 }
-                            }
+                            };
+                            // ADS hands results back in its own order;
+                            // the tab's own sort decides what is shown
+                            self.sort_ads_at(idx);
                             self.save_tabs();
                             self.note(MsgCat::Ok, format!("{n} ADS result(s)"));
                         }
@@ -2323,10 +2380,16 @@ impl App {
             if let Some(s) = self.scopes.get_mut(1) {
                 *s = Scope::Manuscript { rows };
             }
+            // a rescan hands back scan order; re-assert the manuscript's
+            // own sort over it
+            self.sort_ms_rows();
         }
         self.order = self.lib.entries().iter().map(|e| e.key().to_string()).collect();
         let lib = &self.lib;
-        let (col, asc) = self.sort;
+        // the library's own column, never the front scope's: importing a
+        // paper while a query is showing must not reorder the library by
+        // the query's sort
+        let (col, asc) = self.library_sort;
         self.order.sort_by(|a, b| {
             let (ea, eb) = match (lib.get(a), lib.get(b)) {
                 (Some(ea), Some(eb)) => (ea, eb),
@@ -2392,34 +2455,98 @@ impl App {
         }
     }
 
-    /// Header click: same column flips direction, a new column starts
-    /// descending for Year (newest first) and ascending otherwise.
-    fn sort_by(&mut self, col: Col) {
-        self.sort = if self.sort.0 == col {
-            (col, !self.sort.1)
-        } else {
-            // bool-ish and recency columns start with the interesting side
-            // up: cached/in-library/newest first; text columns start A→Z
-            (
-                col,
-                !matches!(
-                    col,
-                    Col::Year | Col::Pdf | Col::InLib | Col::Metric
-                ),
-            )
-        };
-        if matches!(self.scopes.get(self.active_scope), Some(Scope::Ads { .. })) {
-            self.sort_ads_articles();
-        } else {
-            self.rebuild_order();
+    /// The active scope's sort, or None where its rows have an inherent
+    /// order (a manuscript in scan order).
+    fn sort(&self) -> Option<(Col, bool)> {
+        match self.scopes.get(self.active_scope) {
+            Some(Scope::Ads { tab, .. }) => Some((Col::from_tag(&tab.sort_col), tab.sort_asc)),
+            Some(Scope::Manuscript { .. }) => self.ms_sort,
+            _ => Some(self.library_sort),
         }
     }
 
-    /// Re-sort the active ADS scope's articles in place (decorate-sort:
-    /// cache/library lookups happen before the mutable put-back).
-    fn sort_ads_articles(&mut self) {
-        let (col, asc) = self.sort;
-        let Some(Scope::Ads { articles, .. }) = self.scopes.get_mut(self.active_scope) else {
+    /// Write the active scope's sort back where that scope keeps it and
+    /// persist it: a query tab into tabs.json, the library and the
+    /// manuscript into state.json.
+    fn set_sort(&mut self, v: (Col, bool)) {
+        match self.scopes.get(self.active_scope) {
+            Some(Scope::Ads { .. }) => {
+                if let Some(Scope::Ads { tab, .. }) = self.scopes.get_mut(self.active_scope) {
+                    tab.sort_col = v.0.tag().to_string();
+                    tab.sort_asc = v.1;
+                }
+                self.save_tabs();
+            }
+            Some(Scope::Manuscript { .. }) => {
+                self.ms_sort = Some(v);
+                let res = store_sort("manuscript_sort", self.ms_sort);
+                self.state_write("state.json", res.err().map(|e| e.to_string()));
+            }
+            _ => {
+                self.library_sort = v;
+                let res = store_sort("library_sort", Some(v));
+                self.state_write("state.json", res.err().map(|e| e.to_string()));
+            }
+        }
+    }
+
+    /// Header click: same column flips direction, a new column starts
+    /// descending for Year (newest first) and ascending otherwise.
+    fn sort_by(&mut self, col: Col) {
+        let next = match self.sort() {
+            Some((c, asc)) if c == col => (col, !asc),
+            // bool-ish and recency columns start with the interesting side
+            // up: cached/in-library/newest first; text columns start A→Z
+            _ => (col, !matches!(col, Col::Year | Col::Pdf | Col::InLib | Col::Metric)),
+        };
+        self.set_sort(next);
+        self.apply_sort();
+    }
+
+    /// Re-order the active scope's rows to match its sort.
+    fn apply_sort(&mut self) {
+        match self.scopes.get(self.active_scope) {
+            Some(Scope::Ads { .. }) => self.sort_ads_at(self.active_scope),
+            Some(Scope::Manuscript { .. }) => self.sort_ms_rows(),
+            _ => self.rebuild_order(),
+        }
+    }
+
+    /// Re-order the manuscript rows by the manuscript's own sort. With
+    /// none set they keep scan order — the order the cites appear in the
+    /// source, which is meaningful and is the default.
+    fn sort_ms_rows(&mut self) {
+        let Some((col, asc)) = self.ms_sort else {
+            return;
+        };
+        let Some(Scope::Manuscript { rows }) = self.scopes.get_mut(1) else {
+            return;
+        };
+        rows.sort_by(|a, b| {
+            let ord = match col {
+                Col::Cited => a.cited.to_lowercase().cmp(&b.cited.to_lowercase()),
+                // both glyph and word render the same fact, so both sort
+                // by it: attention-first, so missing cites come to the top
+                Col::CiteIcon | Col::State => ms_state_rank(a).cmp(&ms_state_rank(b)),
+                Col::Title => a.title.to_lowercase().cmp(&b.title.to_lowercase()),
+                // no other column is drawn in this scope
+                _ => std::cmp::Ordering::Equal,
+            };
+            let ord = if asc { ord } else { ord.reverse() };
+            // ties keep a stable, meaningful order rather than an arbitrary one
+            ord.then_with(|| a.cited.cmp(&b.cited))
+        });
+    }
+
+    /// Re-sort one ADS scope's articles in place, by that scope's own
+    /// sort (decorate-sort: cache and library lookups happen before the
+    /// mutable put-back). A no-op for any other kind of scope.
+    fn sort_ads_at(&mut self, idx: usize) {
+        let Some(Scope::Ads { tab, .. }) = self.scopes.get(idx) else {
+            return;
+        };
+        let (col, asc) = (Col::from_tag(&tab.sort_col), tab.sort_asc);
+        let Some(Scope::Ads { articles, .. }) = self.scopes.get_mut(idx) else {
             return;
         };
         let arts = std::mem::take(articles);
@@ -2461,7 +2588,7 @@ impl App {
             if asc { ord } else { ord.reverse() }
         });
         let sorted: Vec<crate::ads::Article> = decorated.into_iter().map(|(_, a)| a).collect();
-        if let Some(Scope::Ads { articles, .. }) = self.scopes.get_mut(self.active_scope) {
+        if let Some(Scope::Ads { articles, .. }) = self.scopes.get_mut(idx) {
             *articles = sorted;
         }
     }
@@ -3575,9 +3702,13 @@ impl App {
                 KeyCode::Char('e') => self.open_export_prompt(),
                 KeyCode::Char('M') => {
                     self.metric_col = self.metric_col.next();
-                    if self.metric_col == MetricCol::Off && self.sort.0 == Col::Metric {
-                        self.sort = (Col::Year, false);
-                        self.rebuild_order();
+                    // the metric strip is also this scope's sort target;
+                    // turning it off has to leave a column that still exists
+                    if self.metric_col == MetricCol::Off
+                        && self.sort().is_some_and(|(c, _)| c == Col::Metric)
+                    {
+                        self.set_sort((Col::Year, false));
+                        self.apply_sort();
                     }
                     let res =
                         crate::ads::save_state_field("metric", self.metric_col.state_tag());
@@ -4241,9 +4372,11 @@ impl App {
         if hit(hr, self.hover.0, self.hover.1) {
             self.hover_hint = Some(format!("sort by metric: {}", metric.name()));
         }
-        let hdr = if self.sort.0 == Col::Metric {
+        let hdr = if let Some(asc) =
+            self.sort().and_then(|(c, a)| (c == Col::Metric).then_some(a))
+        {
             Span::styled(
-                if self.sort.1 { "▲" } else { "▼" },
+                if asc { "▲" } else { "▼" },
                 Style::default().fg(metric_color(metric, 0.7)),
             )
         } else {
@@ -4382,9 +4515,10 @@ impl App {
         (circle, style)
     }
 
-    /// Manuscript: cite string, resolution state, resolved title. Its
-    /// rows are in scan order — the order the cites appear in the
-    /// manuscript — so no column sorts.
+    /// Manuscript: cite string, resolution state, resolved title. Rows
+    /// arrive in scan order — the order the cites appear in the source —
+    /// and stay there until a header is clicked; sorting by State is the
+    /// useful one, since it gathers the missing cites at the top.
     fn manuscript_model(&self, rows: &[MsRow]) -> table::TableModel {
         use crate::library::CiteState;
         use ratatui::widgets::Cell;
@@ -4435,13 +4569,15 @@ impl App {
         table::TableModel {
             columns: vec![
                 table::fixed(Col::Sel, "", 2, false),
+                // the glyph column has no label, so nothing to click; the
+                // State column beside it sorts by the same fact
                 table::fixed(Col::CiteIcon, "", 2, false),
-                table::fixed(Col::Cited, "Cited", 26, false),
-                table::fixed(Col::State, "State", 10, false),
-                table::flex(Col::Title, "Title", false),
+                table::fixed(Col::Cited, "Cited", 26, true),
+                table::fixed(Col::State, "State", 10, true),
+                table::flex(Col::Title, "Title", true),
             ],
             rows: trows,
-            sort: self.sort,
+            sort: self.sort(),
             hover: self.hover,
         }
     }
@@ -4512,7 +4648,7 @@ impl App {
                 table::fixed(Col::Key, "Key", 20, true),
             ],
             rows,
-            sort: self.sort,
+            sort: self.sort(),
             hover: self.hover,
         }
     }
@@ -4619,7 +4755,7 @@ impl App {
         if show_key {
             columns.push(table::fixed(Col::Key, "Key", 20, true));
         }
-        table::TableModel { columns, rows, sort: self.sort, hover: self.hover }
+        table::TableModel { columns, rows, sort: self.sort(), hover: self.hover }
     }
 
     /// The pub card for an ADS result: body, links, citation count, an

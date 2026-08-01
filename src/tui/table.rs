@@ -44,6 +44,48 @@ pub(super) enum Col {
     State,
 }
 
+impl Col {
+    /// The stable name a column is stored under, in tabs.json and in
+    /// state.json. Kept short and lowercase; never change one without
+    /// accepting that everyone's saved sort silently resets.
+    pub(super) fn tag(self) -> &'static str {
+        match self {
+            Col::Metric => "metric",
+            Col::Sel => "sel",
+            Col::Pdf => "pdf",
+            Col::InLib => "inlib",
+            Col::Year => "year",
+            Col::Author => "author",
+            Col::Title => "title",
+            Col::Key => "key",
+            Col::CiteIcon => "citeicon",
+            Col::Cited => "cited",
+            Col::State => "state",
+        }
+    }
+
+    /// An unrecognized tag falls back to Year rather than failing: a
+    /// state file written by a newer build should not break an older one.
+    pub(super) fn from_tag(s: &str) -> Self {
+        [
+            Col::Metric,
+            Col::Sel,
+            Col::Pdf,
+            Col::InLib,
+            Col::Year,
+            Col::Author,
+            Col::Title,
+            Col::Key,
+            Col::CiteIcon,
+            Col::Cited,
+            Col::State,
+        ]
+        .into_iter()
+        .find(|c| c.tag() == s)
+        .unwrap_or(Col::Year)
+    }
+}
+
 /// How much horizontal room a column asks for.
 #[derive(Clone, Copy)]
 pub(super) enum Width {
@@ -73,7 +115,9 @@ pub(super) fn flex(id: Col, header: &str, sortable: bool) -> ColumnSpec {
 pub(super) struct TableModel {
     pub columns: Vec<ColumnSpec>,
     pub rows: Vec<Row<'static>>,
-    pub sort: (Col, bool),
+    /// The column carrying the ▲/▼ marker, or None where the rows have
+    /// an inherent order — a freshly scanned manuscript is in cite order.
+    pub sort: Option<(Col, bool)>,
     pub hover: (u16, u16),
 }
 
@@ -118,7 +162,6 @@ pub(super) fn draw(
     state: &mut TableState,
 ) -> (Vec<(Rect, Col)>, Rect) {
     let widths = solve(&model.columns, area.width);
-    let (sort_col, asc) = model.sort;
     let mut rects: Vec<(Rect, Col)> = vec![];
     let mut spans: Vec<Span> = vec![];
     let mut hx = area.x;
@@ -128,7 +171,7 @@ pub(super) fn draw(
         if spec.sortable {
             let r = Rect { x: hx, y: area.y, width: cw.max(1), height: 1 };
             rects.push((r, spec.id));
-            if sort_col == spec.id {
+            if let Some(asc) = model.sort.and_then(|(c, a)| (c == spec.id).then_some(a)) {
                 let arrow = if asc { "▲" } else { "▼" };
                 // narrow indicator columns fit glyph+arrow only
                 label = if cw <= 2 {

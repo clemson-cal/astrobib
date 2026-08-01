@@ -12,8 +12,18 @@ pub struct Tab {
     pub limit: usize,
     pub created: i64,
     pub refreshed: Option<i64>,
-    pub bibcodes: Vec<String>,
+    /// How this tab's results are ordered on screen — one sort per tab,
+    /// so switching between queries does not disturb their orders. This
+    /// is a display sort, applied locally to results already in hand; it
+    /// is not the ADS `sort` parameter, which decides *which* records
+    /// come back and is a property of the query itself.
+    pub sort_col: String,
+    pub sort_asc: bool,
 }
+
+/// A tab with no stored sort ordered by year, newest first — what every
+/// scope did before the sort became per-tab.
+pub const DEFAULT_SORT: (&str, bool) = ("year", false);
 
 pub const DEFAULT_LIMIT: usize = 100;
 
@@ -61,15 +71,15 @@ pub fn load(ms_root: Option<&Path>) -> Vec<Tab> {
                     .unwrap_or(DEFAULT_LIMIT as u64) as usize,
                 created: t.get("created").and_then(|v| v.as_i64()).unwrap_or(0),
                 refreshed: t.get("refreshed").and_then(|v| v.as_i64()),
-                bibcodes: t
-                    .get("bibcodes")
-                    .and_then(|v| v.as_array())
-                    .map(|a| {
-                        a.iter()
-                            .filter_map(|x| x.as_str().map(str::to_string))
-                            .collect()
-                    })
-                    .unwrap_or_default(),
+                sort_col: t
+                    .get("sort_col")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or(DEFAULT_SORT.0)
+                    .to_string(),
+                sort_asc: t
+                    .get("sort_asc")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(DEFAULT_SORT.1),
             })
         })
         .collect()
@@ -91,7 +101,8 @@ pub fn save(tabs: &[Tab], ms_root: Option<&Path>) -> std::io::Result<()> {
                 "limit": t.limit,
                 "created": t.created,
                 "refreshed": t.refreshed,
-                "bibcodes": t.bibcodes,
+                "sort_col": t.sort_col,
+                "sort_asc": t.sort_asc,
             })
         })
         .collect();
@@ -163,7 +174,8 @@ pub fn make_tab(query: &str, limit: usize) -> Tab {
         limit,
         created: now_secs(),
         refreshed: None,
-        bibcodes: vec![],
+        sort_col: DEFAULT_SORT.0.to_string(),
+        sort_asc: DEFAULT_SORT.1,
     }
 }
 
