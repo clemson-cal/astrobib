@@ -314,15 +314,19 @@ impl ScopeKind {
     }
 }
 
-/// The width a column asked for, 0 if it is absent or flexible. Cell
-/// builders need it for Author, which truncates its text to fit.
-fn spec_width(cols: &[table::ColumnSpec], id: Col) -> u16 {
+/// A column's width as actually laid out, 0 if it is not drawn.
+///
+/// This has to be the *solved* width, not the declared one: the flex
+/// column's size is only known once the fixed ones have taken their
+/// share, and the flex role moves when a column is hidden. Reading the
+/// declaration instead gave the author cells a width of 0 — every one of
+/// them rendered as a bare "…" — the moment Author became the flex
+/// column.
+fn col_width(cols: &[table::ColumnSpec], total: u16, id: Col) -> u16 {
+    let solved = table::solve(cols, total);
     cols.iter()
-        .find(|c| c.id == id)
-        .and_then(|c| match c.width {
-            table::Width::Fixed(w) => Some(w),
-            table::Width::Flex => None,
-        })
+        .position(|c| c.id == id)
+        .and_then(|i| solved.get(i).copied())
         .unwrap_or(0)
 }
 
@@ -375,6 +379,14 @@ fn cursor_line(spans: Vec<Span<'static>>, on_cursor: bool) -> Line<'static> {
     }
 }
 
+/// The metric swatch: one cell beside the table rather than inside it,
+/// but a column like any other as far as the panel is concerned. Off
+/// until asked for, and never resizable — it is one cell by
+/// construction. M chooses which metric it shows.
+fn metric_column() -> table::ColumnSpec {
+    table::fixed(Col::Metric, "Metric", 1, true).default_off().fixed_size()
+}
+
 fn divider() -> Style {
     Style::default().fg(DIVIDER_FG)
 }
@@ -388,38 +400,36 @@ const ABSTRACT_TEXT: Color = Color::Rgb(170, 174, 182);
 /// by a per-metric colormap so the hue family names the metric.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum MetricCol {
-    Off,
     Priority,  // viridis — user-curated 0..1 level, decaying over time
     Citations, // magma — ADS citation count
 }
 
 impl MetricCol {
+    /// M picks *which* metric the swatch shows. Whether it shows at all
+    /// is the columns panel's business, like every other column — so
+    /// there is no "off" here to cycle through.
     fn next(self) -> Self {
         match self {
-            MetricCol::Off => MetricCol::Priority,
             MetricCol::Priority => MetricCol::Citations,
-            MetricCol::Citations => MetricCol::Off,
+            MetricCol::Citations => MetricCol::Priority,
         }
     }
     fn name(self) -> &'static str {
         match self {
-            MetricCol::Off => "off",
             MetricCol::Priority => "priority (viridis)",
             MetricCol::Citations => "citations (magma)",
         }
     }
     fn state_tag(self) -> &'static str {
         match self {
-            MetricCol::Off => "off",
             MetricCol::Priority => "priority",
             MetricCol::Citations => "citations",
         }
     }
     fn from_tag(s: &str) -> Self {
         match s {
-            "priority" => MetricCol::Priority,
             "citations" => MetricCol::Citations,
-            _ => MetricCol::Off,
+            _ => MetricCol::Priority,
         }
     }
 }
@@ -2551,7 +2561,6 @@ impl App {
                             self.metrics.get(eb.key()).and_then(|m| m.citations).unwrap_or(-1);
                         ca.cmp(&cb)
                     }
-                    MetricCol::Off => std::cmp::Ordering::Equal,
                 },
                 Col::Pdf => has_cached_pdf(ea.key()).cmp(&has_cached_pdf(eb.key())),
                 Col::InLib => lib
@@ -3883,12 +3892,9 @@ impl App {
                 KeyCode::Char('e') => self.open_export_prompt(),
                 KeyCode::Char('M') => {
                     self.metric_col = self.metric_col.next();
-                    // the metric strip is also this scope's sort target;
-                    // turning it off has to leave a column that still exists
-                    if self.metric_col == MetricCol::Off
-                        && self.sort().is_some_and(|(c, _)| c == Col::Metric)
-                    {
-                        self.set_sort((Col::Year, false));
+                    if self.sort().is_some_and(|(c, _)| c == Col::Metric) {
+                        // the sort is by "the metric", so switching which
+                        // metric that is has to reorder the rows
                         self.apply_sort();
                     }
                     let res =
@@ -4034,9 +4040,9 @@ impl App {
             (s, t)
         };
         self.draw_scope_strip(f, strip_area);
-        let table_area = if self.metric_col != MetricCol::Off
-            && !matches!(self.scopes.get(self.active_scope), Some(Scope::Manuscript { .. }))
-        {
+        // the metric swatch is a column like any other: whether it shows
+        // is the columns configuration's answer, not a mode of its own
+        let table_area = if self.column_shown(self.active_kind(), Col::Metric) {
             let [swatch, rest] =
                 Layout::horizontal([Constraint::Length(1), Constraint::Min(1)]).areas(table_area);
             self.draw_table(f, rest);
@@ -4592,7 +4598,6 @@ impl App {
                         .article_entry(a)
                         .and_then(|e| self.metrics.get(e.key()))
                         .and_then(|m| m.effective_priority(now_ts)),
-                    MetricCol::Off => None,
                 })
                 .collect(),
             _ => self
@@ -4606,7 +4611,6 @@ impl App {
                             m.and_then(|m| m.effective_priority(now_ts))
                         }
                         MetricCol::Citations => m.and_then(|m| m.citations).map(|c| c as f64),
-                        MetricCol::Off => None,
                     }
                 })
                 .collect(),
@@ -4772,7 +4776,7 @@ impl App {
     fn ads_model(&self, articles: &[crate::ads::Article], width: u16) -> table::TableModel {
         use ratatui::widgets::Cell;
         let columns = self.columns_for(ScopeKind::Query, width);
-        let author_w = spec_width(&columns, Col::Author);
+        let author_w = col_width(&columns, width, Col::Author);
         let cursor = self.table.selected();
         let hov_row = self.hovered_table_pos();
         let rows: Vec<Row<'static>> = articles
@@ -4862,7 +4866,7 @@ impl App {
             }
         };
         let columns = self.columns_for(ScopeKind::Library, width);
-        let author_w = spec_width(&columns, Col::Author);
+        let author_w = col_width(&columns, width, Col::Author);
         let hov_row = self.hovered_table_pos();
         let cursor = self.table.selected();
         let show_membership = self.lib.manuscript.is_some() && self.lib.global_on;
@@ -4934,7 +4938,8 @@ impl App {
 
     /// Every column a scope can draw, in order, shown or not — the list
     /// the columns panel offers. Widths here are the responsive
-    /// defaults; `columns_for` applies the user's overrides on top.
+    /// defaults and so is visibility; `columns_for` applies the user's
+    /// overrides on top.
     fn all_columns(&self, kind: ScopeKind, width: u16) -> Vec<table::ColumnSpec> {
         match kind {
             ScopeKind::Manuscript => vec![
@@ -4949,6 +4954,7 @@ impl App {
             ScopeKind::Query => {
                 let (author_w, _) = column_layout(width);
                 vec![
+                    metric_column(),
                     table::fixed(Col::Sel, "", 2, false),
                     table::fixed(Col::Pdf, "↓", 2, true),
                     table::fixed(Col::InLib, "●", 2, true),
@@ -4963,13 +4969,14 @@ impl App {
                 ]
             }
             ScopeKind::Library => {
-                // responsive columns: author scales, Key drops first when
+                // responsive defaults: author scales, Key drops first when
                 // tight — but never while the card is shown, since the Key
                 // column is the hover-preview target, so the title absorbs
                 // the squeeze instead
                 let (author_w, show_key) = column_layout(width);
                 let show_membership = self.lib.manuscript.is_some() && self.lib.global_on;
-                let mut cols = vec![
+                vec![
+                    metric_column(),
                     table::fixed(Col::Sel, "", 2, false),
                     table::fixed(Col::Pdf, "↓", 2, true),
                     // the ● column is only labelled — and only sorts —
@@ -4983,28 +4990,80 @@ impl App {
                     table::fixed(Col::Year, "Year", 6, true),
                     table::fixed(Col::Author, "Author", author_w, true),
                     table::flex(Col::Title, "Title", true),
-                ];
-                if show_key || self.show_detail {
-                    cols.push(table::fixed(Col::Key, "Key", 20, true));
-                }
-                cols
+                    table::fixed(Col::Key, "Key", 20, true)
+                        .default_when(show_key || self.show_detail),
+                ]
             }
         }
     }
 
-    /// The columns a scope actually draws: `all_columns` with the user's
-    /// configuration applied. The flex column is never hidden — without
-    /// one nothing absorbs the leftover width and the table strands a
-    /// blank margin — so the panel offers it as permanently on.
-    fn columns_for(&self, kind: ScopeKind, width: u16) -> Vec<table::ColumnSpec> {
-        let mut cols = self.all_columns(kind, width);
-        let Some(cfg) = self.columns.get(&kind) else {
-            return cols;
+    /// Whether one column is drawn, honouring the user's override where
+    /// there is one and the scope's default where there is not.
+    fn column_shown(&self, kind: ScopeKind, id: Col) -> bool {
+        let all = self.all_columns(kind, self.table_area.width);
+        let Some(spec) = all.iter().find(|c| c.id == id) else {
+            return false;
         };
-        cols.retain(|c| matches!(c.width, table::Width::Flex) || !cfg.hidden.contains(&c.id));
+        self.columns
+            .get(&kind)
+            .and_then(|cfg| cfg.visible.get(&id).copied())
+            .unwrap_or(spec.default_visible)
+    }
+
+    /// Which column absorbs the leftover width when the natural one is
+    /// hidden, best first. Title is the natural choice everywhere — it
+    /// is the column that benefits most from room and degrades most
+    /// gracefully without it — but nothing about it is special, so
+    /// hiding it just moves the job to the next candidate.
+    fn flex_preference(kind: ScopeKind) -> &'static [Col] {
+        match kind {
+            ScopeKind::Manuscript => &[Col::Title, Col::Cited, Col::State],
+            _ => &[Col::Title, Col::Author, Col::Key],
+        }
+    }
+
+    /// The columns the table actually draws: `all_columns` with the
+    /// user's overrides applied, the metric strip removed (it is drawn
+    /// beside the table, not inside it), and the flex role reassigned if
+    /// whichever column had it is now hidden.
+    fn columns_for(&self, kind: ScopeKind, width: u16) -> Vec<table::ColumnSpec> {
+        let cfg = self.columns.get(&kind);
+        let mut cols: Vec<table::ColumnSpec> = self
+            .all_columns(kind, width)
+            .into_iter()
+            .filter(|c| c.id != Col::Metric)
+            .filter(|c| {
+                cfg.and_then(|cfg| cfg.visible.get(&c.id).copied())
+                    .unwrap_or(c.default_visible)
+            })
+            .collect();
+        if let Some(cfg) = cfg {
+            for c in cols.iter_mut() {
+                if let (table::Width::Fixed(_), Some(&w)) = (c.width, cfg.widths.get(&c.id)) {
+                    c.width = table::Width::Fixed(w);
+                }
+            }
+        }
+        if !cols.iter().any(|c| matches!(c.width, table::Width::Flex)) {
+            // last resort is the rightmost labelled column: something has
+            // to take the slack or the table strands a blank margin, and
+            // stretching the last one looks deliberate where a gap does not
+            let pick = Self::flex_preference(kind)
+                .iter()
+                .find(|id| cols.iter().any(|c| c.id == **id))
+                .copied()
+                .or_else(|| cols.iter().rev().find(|c| !c.header.is_empty()).map(|c| c.id));
+            if let Some(id) = pick {
+                if let Some(c) = cols.iter_mut().find(|c| c.id == id) {
+                    c.width = table::Width::Flex;
+                }
+            }
+        }
+        // whatever ended up flexing has a derived width, so ←/→ mean
+        // nothing for it — wherever the role landed
         for c in cols.iter_mut() {
-            if let (table::Width::Fixed(_), Some(&w)) = (c.width, cfg.widths.get(&c.id)) {
-                c.width = table::Width::Fixed(w);
+            if matches!(c.width, table::Width::Flex) {
+                c.resizable = false;
             }
         }
         cols
@@ -5069,26 +5128,30 @@ impl App {
         true
     }
 
-    /// Show or hide one column in the active scope kind. The flex column
-    /// is exempt: with nothing to absorb the leftover width the table
-    /// would strand a blank margin.
+    /// Show or hide one column in the active scope kind. Hiding the one
+    /// that was absorbing the leftover width is allowed; the job moves
+    /// to the next candidate (see `flex_preference`).
     fn toggle_column(&mut self, id: Col) {
         let kind = self.active_kind();
-        let all = self.all_columns(kind, self.table_area.width);
-        if all
+        let now_shown = self.column_shown(kind, id);
+        let default = self
+            .all_columns(kind, self.table_area.width)
             .iter()
             .find(|c| c.id == id)
-            .is_some_and(|c| matches!(c.width, table::Width::Flex))
-        {
-            self.note(
-                MsgCat::Warn,
-                format!("{} fills the leftover width and cannot be hidden", id.tag()),
-            );
-            return;
-        }
+            .is_some_and(|c| c.default_visible);
         let cfg = self.columns.entry(kind).or_default();
-        if !cfg.hidden.remove(&id) {
-            cfg.hidden.insert(id);
+        // storing an override that agrees with the default would pin a
+        // responsive rule in place, so put the column back under it
+        if !now_shown == default {
+            cfg.visible.remove(&id);
+        } else {
+            cfg.visible.insert(id, !now_shown);
+        }
+        // the metric strip is also a sort target; hiding it while it is
+        // the sort would leave the marker on a column nobody can see
+        if now_shown && id == Col::Metric && self.sort().is_some_and(|(c, _)| c == Col::Metric) {
+            self.set_sort((Col::Year, false));
+            self.apply_sort();
         }
         self.save_column_config();
     }
@@ -5110,11 +5173,11 @@ impl App {
         if matches!(spec.width, table::Width::Flex) {
             self.note(
                 MsgCat::Warn,
-                format!("{} takes whatever the others leave", id.tag()),
+                format!("{} is taking the leftover width — its size is derived", id.tag()),
             );
             return;
         }
-        let cur = spec_width(&shown, id) as i16;
+        let cur = col_width(&shown, self.table_area.width, id) as i16;
         let next = (cur + d).clamp(table::MIN_COL_W as i16, table::MAX_COL_W as i16) as u16;
         self.columns.entry(kind).or_default().widths.insert(id, next);
         self.save_column_config();
@@ -5402,6 +5465,10 @@ impl App {
     /// Sorting is offered on hidden columns too, which is the point of
     /// listing them: a query can be ordered by entry date without
     /// spending ten columns of screen on the dates themselves.
+    ///
+    /// The column showing "—" for its width is the one absorbing the
+    /// leftover space; hide it and the "—" moves to whichever column
+    /// takes over.
     fn draw_columns_panel(&mut self, f: &mut Frame, area: Rect) {
         self.col_rects.clear();
         let kind = self.active_kind();
@@ -5449,35 +5516,36 @@ impl App {
                         break;
                     }
                     let spec = all.iter().find(|c| c.id == id);
+                    let drawn = shown.iter().find(|c| c.id == id);
                     let label = spec
                         .map(|c| c.header.clone())
                         .filter(|h| !h.is_empty())
                         .unwrap_or_else(|| id.tag().to_string());
-                    let flex = spec.is_some_and(|c| matches!(c.width, table::Width::Flex));
-                    let visible = shown.iter().any(|c| c.id == id);
+                    // asked of the configuration, not of the drawn list:
+                    // the metric swatch is shown beside the table rather
+                    // than in it, so it never appears in `shown`
+                    let visible = self.column_shown(kind, id);
+                    // resizability is read from the drawn spec, not the
+                    // declared one: the flex role moves when a column is
+                    // hidden, so which column has a derived width moves too
+                    let resizable = drawn.is_some_and(|c| c.resizable);
                     let sortable = spec.is_some_and(|c| c.sortable);
-                    let w = spec_width(&shown, id);
+                    let w = col_width(&shown, self.table_area.width, id);
                     self.col_rects.push((
                         Rect { x: inner.x, y, width: inner.width, height: 1 },
                         PanelHit::Row(i),
                     ));
-                    // the ✓ box: a flex column cannot be hidden, so it
-                    // shows a locked mark rather than a box that refuses
-                    if !flex {
-                        self.col_rects.push((
-                            Rect { x: inner.x, y, width: 2, height: 1 },
-                            PanelHit::Toggle(id),
-                        ));
-                    }
+                    self.col_rects.push((
+                        Rect { x: inner.x, y, width: 2, height: 1 },
+                        PanelHit::Toggle(id),
+                    ));
                     if sortable {
                         self.col_rects.push((
                             Rect { x: inner.x + 2, y, width: 11, height: 1 },
                             PanelHit::Sort(id),
                         ));
                     }
-                    // width nudges are meaningless on the flex column,
-                    // which is whatever the fixed ones leave over
-                    if !flex && visible {
+                    if visible && resizable {
                         self.col_rects.push((
                             Rect { x: inner.x + 13, y, width: 1, height: 1 },
                             PanelHit::Narrower(id),
@@ -5487,9 +5555,7 @@ impl App {
                             PanelHit::Wider(id),
                         ));
                     }
-                    let (mark, mark_style) = if flex {
-                        ("■", dim)
-                    } else if visible {
+                    let (mark, mark_style) = if visible {
                         ("✓", Style::default().fg(Color::Green))
                     } else {
                         ("·", dim)
@@ -5501,12 +5567,25 @@ impl App {
                     } else {
                         Style::default().fg(TABLE_TEXT)
                     };
-                    let (wtext, nudges) = if flex {
-                        ("   —".to_string(), ("  ", "  "))
-                    } else if visible {
+                    // the metric strip says which metric it is showing —
+                    // M toggles that, and nothing else on screen names it
+                    let (wtext, nudges) = if !visible {
+                        ("    ".to_string(), ("  ", "  "))
+                    } else if id == Col::Metric {
+                        (
+                            match self.metric_col {
+                                MetricCol::Priority => "prio",
+                                MetricCol::Citations => "cite",
+                            }
+                            .to_string(),
+                            ("  ", "  "),
+                        )
+                    } else if resizable {
                         (format!("{w:>4}"), ("‹ ", " ›"))
                     } else {
-                        ("    ".to_string(), ("  ", "  "))
+                        // whatever is absorbing the leftover width: its
+                        // size is derived, so there is nothing to set
+                        ("   —".to_string(), ("  ", "  "))
                     };
                     let marker = match sort {
                         Some((c, asc)) if c == id => {

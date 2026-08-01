@@ -107,27 +107,69 @@ pub(super) struct ColumnSpec {
     /// the library's ● column, for instance, is only meaningful (and
     /// only labelled) when a manuscript is active
     pub sortable: bool,
+    /// whether it is drawn when the user has expressed no preference.
+    /// This carries the responsive rules — Key drops when the terminal
+    /// is tight — and the columns that start off, like the metric strip.
+    pub default_visible: bool,
+    /// whether ←/→ mean anything for it. False where the width is
+    /// derived rather than chosen: the one-cell metric swatch, and
+    /// whichever column is currently absorbing the leftover space.
+    pub resizable: bool,
+}
+
+impl ColumnSpec {
+    /// Off unless the user asks for it.
+    pub fn default_off(mut self) -> Self {
+        self.default_visible = false;
+        self
+    }
+
+    /// On by default only under some condition — the responsive rules.
+    pub fn default_when(mut self, on: bool) -> Self {
+        self.default_visible = on;
+        self
+    }
+
+    pub fn fixed_size(mut self) -> Self {
+        self.resizable = false;
+        self
+    }
 }
 
 pub(super) fn fixed(id: Col, header: &str, w: u16, sortable: bool) -> ColumnSpec {
-    ColumnSpec { id, header: header.to_string(), width: Width::Fixed(w), sortable }
+    ColumnSpec {
+        id,
+        header: header.to_string(),
+        width: Width::Fixed(w),
+        sortable,
+        default_visible: true,
+        resizable: true,
+    }
 }
 
 pub(super) fn flex(id: Col, header: &str, sortable: bool) -> ColumnSpec {
-    ColumnSpec { id, header: header.to_string(), width: Width::Flex, sortable }
+    ColumnSpec {
+        id,
+        header: header.to_string(),
+        width: Width::Flex,
+        sortable,
+        default_visible: true,
+        resizable: true,
+    }
 }
 
 /// A user's overrides for one scope kind's columns.
 ///
-/// Empty means "auto", and auto is not a special case: with nothing
-/// stored, every column keeps the responsive width and visibility the
-/// app has always given it — the author column still scales with the
-/// terminal, the Key column still drops first when things get tight.
-/// Only a column the user has actually touched gets pinned, so opening
-/// the panel and closing it again changes nothing.
+/// Only columns the user has actually touched appear here, and the two
+/// maps are overrides rather than state: absent means "whatever the
+/// scope says by default". That is what keeps auto from being a special
+/// case — with nothing stored, the author column still scales with the
+/// terminal, Key still drops first when things get tight, and the metric
+/// strip is still off — so opening the panel and closing it again
+/// changes nothing.
 #[derive(Clone, Default)]
 pub(super) struct ColumnConfig {
-    pub hidden: std::collections::HashSet<Col>,
+    pub visible: std::collections::HashMap<Col, bool>,
     pub widths: std::collections::HashMap<Col, u16>,
 }
 
@@ -138,10 +180,14 @@ pub(super) const MAX_COL_W: u16 = 60;
 
 impl ColumnConfig {
     pub fn from_json(v: &serde_json::Value) -> Self {
-        let hidden = v
-            .get("hidden")
-            .and_then(|h| h.as_array())
-            .map(|a| a.iter().filter_map(|x| x.as_str()).map(Col::from_tag).collect())
+        let visible = v
+            .get("visible")
+            .and_then(|h| h.as_object())
+            .map(|o| {
+                o.iter()
+                    .filter_map(|(k, val)| val.as_bool().map(|b| (Col::from_tag(k), b)))
+                    .collect()
+            })
             .unwrap_or_default();
         let widths = v
             .get("widths")
@@ -155,23 +201,27 @@ impl ColumnConfig {
                     .collect()
             })
             .unwrap_or_default();
-        ColumnConfig { hidden, widths }
+        ColumnConfig { visible, widths }
     }
 
     pub fn to_json(&self) -> serde_json::Value {
-        let mut hidden: Vec<&str> = self.hidden.iter().map(|c| c.tag()).collect();
-        hidden.sort_unstable();
+        let mut visible = serde_json::Map::new();
+        let mut vis: Vec<(&str, bool)> = self.visible.iter().map(|(c, b)| (c.tag(), *b)).collect();
+        vis.sort_unstable();
+        for (tag, b) in vis {
+            visible.insert(tag.to_string(), serde_json::json!(b));
+        }
         let mut widths = serde_json::Map::new();
         let mut pairs: Vec<(&str, u16)> = self.widths.iter().map(|(c, w)| (c.tag(), *w)).collect();
         pairs.sort_unstable();
         for (tag, w) in pairs {
             widths.insert(tag.to_string(), serde_json::json!(w));
         }
-        serde_json::json!({ "hidden": hidden, "widths": widths })
+        serde_json::json!({ "visible": visible, "widths": widths })
     }
 
     pub fn is_empty(&self) -> bool {
-        self.hidden.is_empty() && self.widths.is_empty()
+        self.visible.is_empty() && self.widths.is_empty()
     }
 }
 
@@ -196,7 +246,7 @@ pub(super) const CURSOR_FILL: Color = Color::Rgb(34, 40, 52);
 /// are n−1 gaps, not n — the query view had this right and the library
 /// view did not, which is why the library's `Key` header sat one column
 /// left of the cells beneath it.
-fn solve(columns: &[ColumnSpec], total: u16) -> Vec<u16> {
+pub(super) fn solve(columns: &[ColumnSpec], total: u16) -> Vec<u16> {
     let claimed: u16 = columns
         .iter()
         .map(|c| match c.width {

@@ -48,9 +48,10 @@ def run(t):
     require(_panel_line(t, "Year"), "no Year row in the panel", t)
     require(_panel_line(t, "Key"), "no Key row in the panel", t)
 
-    # the panel has the arrows now: two downs land on Author (the rows
-    # are ↓, Year, Author, Title, Key — the ● column is left out with no
-    # manuscript, having neither a label nor anything to sort)
+    # the panel has the arrows now: three downs land on Author (the rows
+    # are Metric, ↓, Year, Author, Title, Key — the ● column is left out
+    # with no manuscript, having neither a label nor anything to sort)
+    t.key("down")
     t.key("down")
     t.key("down")
     t.send(" ")
@@ -64,8 +65,8 @@ def run(t):
     with open(os.path.join(t.state_dir, "state.json")) as f:
         cfg = json.load(f).get("columns", {})
     require(
-        cfg.get("library", {}).get("hidden") == ["author"],
-        f"expected library.hidden == ['author'], got {cfg!r}",
+        cfg.get("library", {}).get("visible") == {"author": False},
+        f"expected library.visible == {{'author': False}}, got {cfg!r}",
         t,
     )
 

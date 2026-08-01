@@ -1,20 +1,42 @@
-"""M cycles the metric swatch column (off → priority → citations → off);
-priority keys (. 0 < >) act with footer feedback."""
+"""The metric swatch is a column like any other: the columns panel says
+whether it shows, and M only picks which metric it shows.
+
+M used to cycle off → priority → citations → off, which made the strip
+the one piece of chrome with its own visibility mode. Now it is off by
+default, turned on from the panel, and M toggles between the two
+metrics; priority keys (. 0 < >) act with footer feedback either way.
+"""
 
 from driver import require
 
-DESCRIPTION = "metric column cycles; priority keys act"
+DESCRIPTION = "metric column: panel shows it, M picks the metric"
 
 
 def run(t):
+    # off by default, and M alone does not summon it
+    require("Metric" not in t.text(), "the metric strip should start hidden", t)
+
+    t.send("|")
+    t.wait_for("Columns · library", what="the columns panel")
+    # Metric is the first row, so it is already under the cursor
+    t.send(" ")
+    t.wait_for(
+        lambda: "✓ Metric" in t.text(),
+        what="the metric column switched on from the panel",
+    )
+    # the panel names the active metric, since nothing else on screen does
+    t.wait_for(lambda: "prio" in t.text(), what="the panel naming the priority metric")
+
+    t.send("M")
+    t.wait_for(lambda: "metric column: citations (magma)" in t.text(), what="citations note")
+    t.wait_for(lambda: "cite" in t.text(), what="the panel following M to citations")
     t.send("M")
     t.wait_for(lambda: "metric column: priority (viridis)" in t.text(), what="priority note")
-    t.send("M")
-    t.wait_for(
-        lambda: "metric column: citations (magma)" in t.text(), what="citations metric note"
-    )
-    t.send("M")
-    t.wait_for(lambda: "metric column: off" in t.text(), what="metric off note")
+
+    # hand the arrows back so the priority keys reach the table
+    t.send("\x1b")
+    t.wait_quiet()
+
     # . sets the cursor entry's priority to 1.0
     t.send(".")
     t.wait_for(lambda: "priority 1.00" in t.text(), what="set-to-one feedback")
@@ -24,9 +46,12 @@ def run(t):
     # 0 clears
     t.send("0")
     t.wait_for(lambda: "priority 0.00" in t.text(), what="clear feedback")
-    # the wheel over a priority swatch scales that row's level
-    t.send("M")
-    t.wait_for(lambda: "metric column: priority" in t.text(), what="priority back on")
+
+    # the wheel over a priority swatch scales that row's level. The strip
+    # sits at the table's left edge, which the open panel has pushed
+    # right, so close the panel first and put it back at column 0.
+    t.send("|")
+    t.wait_gone("Columns · library")
     header = next((i for i, l in enumerate(t.lines()) if "Year" in l[:40]), None)
     require(header is not None, "table header row not found (Year in the first 40 cols)", t)
     t.send(b"\x1b[<64;1;%dM" % (header + 3))  # wheel-up, column 0, first row
