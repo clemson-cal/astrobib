@@ -186,6 +186,21 @@ def run(t):
     t.resize(150, 40)
     t.wait_for("Table configuration", what="the heading back once the list fits")
 
+    # the sort marker is a click target, doing what s does. The panel's
+    # content starts at column 2 and the marker is the last cell of the
+    # row, so it sits at 2 + 22.
+    y = next(i for i, l in enumerate(t.lines()) if "Year" in l[:24])
+    require(
+        "▲" not in _panel_line(t, "Year") and "▼" not in _panel_line(t, "Year"),
+        f"Year should not be the sort column yet: {_panel_line(t, 'Year')!r}",
+        t,
+    )
+    t.click(2 + 22, y)
+    t.wait_for(
+        lambda: "▼" in _panel_line(t, "Year"),
+        what="clicking the sort marker cell sorting by that column",
+    )
+
     # and | closes it
     t.send("|")
     t.wait_gone("Table configuration")

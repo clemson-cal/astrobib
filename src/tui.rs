@@ -451,7 +451,17 @@ impl PanelLine {
 /// until asked for, and never resizable — it is one cell by
 /// construction. M chooses which metric it shows.
 fn metric_column() -> table::ColumnSpec {
-    table::fixed(Col::Metric, "Metric", 1, true).default_off().fixed_size()
+    table::fixed(Col::Metric, "Metric", 2, true).default_off().fixed_size()
+}
+
+/// The sort marker for a direction. One definition, so the panel's
+/// preview and the table header cannot disagree about which way is which.
+fn arrow(asc: bool) -> &'static str {
+    if asc {
+        "▲"
+    } else {
+        "▼"
+    }
 }
 
 fn divider() -> Style {
@@ -2702,7 +2712,16 @@ impl App {
     /// Header click: same column flips direction, a new column starts
     /// descending for Year (newest first) and ascending otherwise.
     fn sort_by(&mut self, col: Col) {
-        let next = match self.sort() {
+        let next = self.next_sort(col);
+        self.set_sort(next);
+        self.apply_sort();
+    }
+
+    /// What clicking a column's sort control would do. Sharing this with
+    /// the panel is what lets it preview the result on hover rather than
+    /// guess at it.
+    fn next_sort(&self, col: Col) -> (Col, bool) {
+        match self.sort() {
             Some((c, asc)) if c == col => (col, !asc),
             // bool-ish and recency columns start with the interesting side
             // up: cached/in-library/newest first; text columns start A→Z
@@ -2713,9 +2732,7 @@ impl App {
                     Col::Year | Col::Entered | Col::Pdf | Col::InLib | Col::Metric
                 ),
             ),
-        };
-        self.set_sort(next);
-        self.apply_sort();
+        }
     }
 
     /// Re-order the active scope's rows to match its sort.
@@ -4116,7 +4133,9 @@ impl App {
         // is the columns configuration's answer, not a mode of its own
         let table_area = if self.column_shown(self.active_kind(), Col::Metric) {
             let [swatch, rest] =
-                Layout::horizontal([Constraint::Length(1), Constraint::Min(1)]).areas(table_area);
+                // two cells: the swatch, and room beside it for the sort
+                // marker so the ⣿ legend does not have to give way to it
+                Layout::horizontal([Constraint::Length(2), Constraint::Min(1)]).areas(table_area);
             self.draw_table(f, rest);
             self.draw_metric_strip(f, swatch);
             rest
@@ -4636,27 +4655,35 @@ impl App {
     fn draw_metric_strip(&mut self, f: &mut Frame, area: Rect) {
         self.metric_area = area;
         let metric = self.metric_col;
-        // header swatch: legend + sort target
-        let hr = Rect { x: area.x, y: area.y, width: 1, height: 1 };
+        // header: the legend, and the sort marker beside it rather than
+        // in place of it — the legend is what names the column, so it
+        // should not disappear exactly when the column becomes the sort
+        let hr = Rect { x: area.x, y: area.y, width: 2, height: 1 };
         self.sort_headers.push((hr, Col::Metric));
         if hit(hr, self.hover.0, self.hover.1) {
             self.hover_hint = Some(format!("sort by metric: {}", metric.name()));
         }
-        let hdr = if let Some(asc) =
-            self.sort().and_then(|(c, a)| (c == Col::Metric).then_some(a))
-        {
-            Span::styled(
-                if asc { "▲" } else { "▼" },
-                Style::default().fg(metric_color(metric, 0.7)),
-            )
-        } else {
-            // the dot-matrix cell terminal gauges and sparklines use:
-            // it reads as data, where any kind of filled square just
-            // read as a stray coloured square. Dense enough that the
-            // metric's hue still comes through and names it.
-            Span::styled("⣿", Style::default().fg(metric_color(metric, 0.65)))
+        let marker = match self.sort() {
+            // the dot-matrix cell terminal gauges and sparklines are drawn
+            // from: it reads as a quantity, where a filled square of any
+            // kind just read as a stray coloured square. Dense enough that
+            // the metric's hue still comes through and names it.
+            Some((c, asc)) if c == Col::Metric => {
+                if asc {
+                    "▲"
+                } else {
+                    "▼"
+                }
+            }
+            _ => " ",
         };
-        f.render_widget(Paragraph::new(Line::from(hdr)), hr);
+        f.render_widget(
+            Paragraph::new(Line::from(vec![
+                Span::styled("⣿", Style::default().fg(metric_color(metric, 0.65))),
+                Span::styled(marker, Style::default().fg(metric_color(metric, 0.9))),
+            ])),
+            hr,
+        );
 
         // per-row values over the visible window
         let now_ts = std::time::SystemTime::now()
@@ -5642,7 +5669,12 @@ impl App {
     /// windowed: the panel is as tall as the terminal allows, and
     /// without this the cursor walked off the bottom into rows that were
     /// never drawn.
-    fn panel_lines(&self, kind: ScopeKind, focused: bool) -> Vec<PanelLine> {
+    fn panel_lines(
+        &self,
+        kind: ScopeKind,
+        focused: bool,
+        preview: Option<Col>,
+    ) -> Vec<PanelLine> {
         let shown = self.columns_for(kind, self.table_area.width);
         let all = self.all_columns(kind, self.table_area.width);
         let cfg = self.columns.get(&kind).cloned().unwrap_or_default();
@@ -5677,13 +5709,24 @@ impl App {
                     let flex = drawn.is_some_and(|c| matches!(c.width, table::Width::Flex));
                     let sortable = spec.is_some_and(|c| c.sortable);
                     let w = col_width(&shown, self.table_area.width, id);
+                    // The row's cells, as offsets from the panel's left
+                    // edge — spelled out because the click rects have to
+                    // agree with the spans built below, and drifted once:
+                    //
+                    //   0..2   "✓ "        toggle
+                    //   2..13  label       (not a target)
+                    //   13..15 "‹ "        narrower
+                    //   15..19 width       (not a target)
+                    //   19..21 " ›"        wider
+                    //   21..23 " ▲"        sort — the marker is the most
+                    //                      obvious thing to click for it
                     let mut hits = vec![(0, 2, PanelHit::Toggle(id))];
                     if sortable {
-                        hits.push((2, 11, PanelHit::Sort(id)));
+                        hits.push((21, 2, PanelHit::Sort(id)));
                     }
                     if visible && resizable {
                         hits.push((13, 1, PanelHit::Narrower(id)));
-                        hits.push((18, 1, PanelHit::Wider(id)));
+                        hits.push((20, 1, PanelHit::Wider(id)));
                     }
                     let (mark, mark_style) = if visible {
                         ("✓", Style::default().fg(Color::Green))
@@ -5720,15 +5763,15 @@ impl App {
                         // a fixed one-cell column: a real width, locked
                         (format!("{w:>4}"), ("  ", "  "))
                     };
-                    let marker = match sort {
-                        Some((c, asc)) if c == id => {
-                            if asc {
-                                "▲"
-                            } else {
-                                "▼"
-                            }
-                        }
-                        _ => " ",
+                    // the marker cell is the only sort control, so it has
+                    // to advertise itself: hovering shows, dimmed, the
+                    // arrow a click would leave behind
+                    let (marker, marker_style) = if sortable && preview == Some(id) {
+                        (arrow(self.next_sort(id).1), Style::default().fg(Color::DarkGray))
+                    } else if let Some((_, asc)) = sort.filter(|(c, _)| *c == id) {
+                        (arrow(asc), Style::default().fg(Color::Cyan))
+                    } else {
+                        (" ", Style::default())
                     };
                     out.push(PanelLine {
                         spans: vec![
@@ -5746,7 +5789,8 @@ impl App {
                                 },
                             ),
                             Span::styled(nudges.1, dim),
-                            Span::styled(format!(" {marker}"), Style::default().fg(Color::Cyan)),
+                            Span::raw(" "),
+                            Span::styled(marker, marker_style),
                         ],
                         hits,
                         row: Some(i),
@@ -5816,11 +5860,14 @@ impl App {
             width: area.width.saturating_sub(5),
             height: area.height.saturating_sub(1),
         };
-        let mut lines: Vec<PanelLine> = vec![
-            PanelLine::title("Table configuration", focused),
-            PanelLine::blank(),
-        ];
-        lines.extend(self.panel_lines(kind, focused));
+        let head = |focused: bool| {
+            vec![
+                PanelLine::title("Table configuration", focused),
+                PanelLine::blank(),
+            ]
+        };
+        let mut lines: Vec<PanelLine> = head(focused);
+        lines.extend(self.panel_lines(kind, focused, None));
 
         // window the list so the cursor is always on screen: scroll only
         // as far as it takes, so the heading stays put until the list
@@ -5834,6 +5881,26 @@ impl App {
                 .saturating_sub(h.saturating_sub(1))
                 .min(lines.len() - h)
         };
+
+        // Which sort control is the mouse on? Answering it needs the
+        // window, and the window needs the lines — but neither depends
+        // on the preview, so building twice is safe and costs a dozen
+        // lines. Reading last frame's rects instead would go stale for a
+        // frame on every resize and scroll.
+        let preview = (self.hover.0 >= inner.x + 21 && self.hover.0 < inner.x + 23)
+            .then(|| self.hover.1.checked_sub(inner.y))
+            .flatten()
+            .filter(|n| (*n as usize) < h)
+            .and_then(|n| lines.get(start + n as usize))
+            .and_then(|l| l.row)
+            .and_then(|i| match self.panel_rows().get(i) {
+                Some(&PanelRow::Column(id)) => Some(id),
+                _ => None,
+            });
+        if preview.is_some() {
+            lines = head(focused);
+            lines.extend(self.panel_lines(kind, focused, preview));
+        }
 
         let mut rendered: Vec<Line> = vec![];
         for (n, line) in lines.iter().skip(start).take(h).enumerate() {
