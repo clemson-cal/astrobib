@@ -663,7 +663,10 @@ impl App {
         }
         self.card_links.clear();
         f.render_widget(
-            Block::default().borders(Borders::LEFT).border_style(divider()),
+            Block::default()
+                .borders(Borders::LEFT)
+                .border_style(divider())
+                .style(Style::default().bg(CARD_BG)),
             area,
         );
         if self.active_ads().is_some() {

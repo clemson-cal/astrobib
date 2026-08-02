@@ -464,6 +464,16 @@ fn arrow(asc: bool) -> &'static str {
     }
 }
 
+/// Each secondary view gets a barely-there tint of its own, so which
+/// surface the eye is on is legible without a border doing the work.
+/// All of them sit within a few points of a typical dark terminal
+/// background, and the table keeps the terminal's own colour — it is the
+/// primary surface, and tinting it would fight every theme.
+const PANEL_BG: Color = Color::Rgb(24, 26, 32);
+const CARD_BG: Color = Color::Rgb(28, 25, 31);
+const LOG_BG: Color = Color::Rgb(23, 28, 29);
+const HELP_BG: Color = Color::Rgb(30, 28, 23);
+
 fn divider() -> Style {
     Style::default().fg(DIVIDER_FG)
 }
@@ -4105,7 +4115,7 @@ impl App {
             Constraint::Min(1),
             Constraint::Length(help_h),
             Constraint::Length(log_h),
-            Constraint::Length(3), // rule + air + the footer line
+            Constraint::Length(2), // the rule and the footer line
         ])
         .areas(f.area());
         let mut constraints = vec![];
@@ -4337,6 +4347,7 @@ impl App {
             Block::default()
                 .borders(Borders::ALL)
                 .border_style(divider())
+                .style(Style::default().bg(HELP_BG))
                 .title(Span::styled(" keys ", Style::default().fg(Color::DarkGray))),
         );
         f.render_widget(p, area);
@@ -5656,6 +5667,7 @@ impl App {
         let block = Block::default()
             .borders(Borders::ALL)
             .border_style(divider())
+            .style(Style::default().bg(LOG_BG))
             .title(Span::styled(title, Style::default().fg(Color::DarkGray)));
         f.render_widget(Paragraph::new(Text::from(lines)).block(block), area);
     }
@@ -5763,13 +5775,23 @@ impl App {
                         // a fixed one-cell column: a real width, locked
                         (format!("{w:>4}"), ("  ", "  "))
                     };
-                    // the marker cell is the only sort control, so it has
-                    // to advertise itself: hovering shows, dimmed, the
-                    // arrow a click would leave behind
-                    let (marker, marker_style) = if sortable && preview == Some(id) {
-                        (arrow(self.next_sort(id).1), Style::default().fg(Color::DarkGray))
-                    } else if let Some((_, asc)) = sort.filter(|(c, _)| *c == id) {
+                    // The marker cell is the only sort control, so on a
+                    // column that is not the sort column it would be
+                    // blank and advertise nothing: hovering it previews,
+                    // faintly, the arrow a click would leave behind.
+                    //
+                    // The sort column itself keeps showing its real
+                    // arrow. Previewing the flip there would mean that
+                    // the instant after clicking — mouse still on the
+                    // cell — the marker showed the opposite of what the
+                    // click had just done, which reads as the click
+                    // having gone the wrong way.
+                    let (marker, marker_style) = if let Some((_, asc)) =
+                        sort.filter(|(c, _)| *c == id)
+                    {
                         (arrow(asc), Style::default().fg(Color::Cyan))
+                    } else if sortable && preview == Some(id) {
+                        (arrow(self.next_sort(id).1), Style::default().fg(DIVIDER_FG))
                     } else {
                         (" ", Style::default())
                     };
@@ -5848,7 +5870,10 @@ impl App {
         // a single vertical rule on the inner edge, mirroring the pub
         // card's left rule on the other side of the table
         f.render_widget(
-            Block::default().borders(Borders::RIGHT).border_style(divider()),
+            Block::default()
+                .borders(Borders::RIGHT)
+                .border_style(divider())
+                .style(Style::default().bg(PANEL_BG)),
             area,
         );
         // laid out as the pub card's mirror image: the card insets its
@@ -5949,7 +5974,7 @@ impl App {
             ))),
             Rect { x: area.x, y: area.y, width: area.width, height: 1 },
         );
-        let area = Rect { x: area.x, y: area.y + 2, width: area.width, height: 1 };
+        let area = Rect { x: area.x, y: area.y + 1, width: area.width, height: 1 };
         // the badges live on this same line and are drawn after it, so
         // their hover hint has to be settled before the line is built
         if let Some(hint) = self.badge_hint(area) {

@@ -32,6 +32,7 @@
                                                                                             │
                                                                                             │
                                                                                             │
+                                                                                            │
                                                                                             │                               ▤ card │ @ bib
 
 ## library w=140 nocard
@@ -42,6 +43,7 @@
        2021   Andersson and Blomqvist Relativistic jet braking in dense circumstellar environments                      Andersson2021
        2019   Baxter                  A census of runaway white dwarfs in the galactic halo                             Baxter2019
        2018   Délacroix and Sørensen  On the stability of self-gravitating accretion tori                               Delacroix2018
+
 
 
 
@@ -104,6 +106,7 @@
                                                                                             │
                                                                                             │
                                                                                             │
+                                                                                            │
                                                                                             │                               ▤ card │ @ bib
 
 ## query w=140 card
@@ -125,6 +128,7 @@
                                                                                             │  ───────────────────────────────────────────
                                                                                             │
                                                                                             │  Cachette2020hvsjk  → import
+                                                                                            │
                                                                                             │
                                                                                             │
                                                                                             │
@@ -176,6 +180,7 @@
                                                               │
                                                               │
                                                               │
+                                                              │
                                                               │                               ▤ card │ @ bib
 
 ## library w=110 nocard
@@ -186,6 +191,7 @@
        2021   Andersson, +1      Relativistic jet braking in dense circumstellar environm Andersson2021
        2019   Baxter             A census of runaway white dwarfs in the galactic halo    Baxter2019
        2018   Délacroix, +1      On the stability of self-gravitating accretion tori      Delacroix2018
+
 
 
 
@@ -248,6 +254,7 @@
                                                               │
                                                               │
                                                               │
+                                                              │
                                                               │                               ▤ card │ @ bib
 
 ## query w=110 card
@@ -269,6 +276,7 @@
                                                               │  ───────────────────────────────────────────
                                                               │
                                                               │  Cachette2020hvsjk  → import
+                                                              │
                                                               │
                                                               │
                                                               │
@@ -319,6 +327,7 @@
                                         │
                                         │
                                         │
+                                        │
                                         │                           ▤ card │ @ bib
 
 ## library w=84 nocard
@@ -329,6 +338,7 @@
        2021   Andersson, +1  Relativistic jet braking in dense circumstellar environ
        2019   Baxter         A census of runaway white dwarfs in the galactic halo
        2018   Délacroix, +1  On the stability of self-gravitating accretion tori
+
 
 
 
@@ -390,6 +400,7 @@
                                         │  Andersson2021pombz
                                         │   ◇ add to manuscript
                                         │
+                                        │
                                         │                           ▤ card │ @ bib
 
 ## query w=84 card
@@ -425,6 +436,7 @@
                                         │
                                         │
                                         │
+                                        │
                                         │                           ▤ card │ @ bib
 
 ## library w=64 card
@@ -439,7 +451,8 @@
                                         │  We present global
                                         │  moving-mesh
                                         │  simulations of the
-                                        │↓ first hundred
+                                        │  first hundred
+                                        │↓ milliseconds of a
                                         │  ───────────────────
                                         │  → ADS     │ ⧉ cite
                                         │  → arXiv:2 │ ⧉ full
@@ -498,6 +511,7 @@
 
 
 
+
 ## manuscript w=64 card
       Cited                      State  │  environments
 ────────────────────────────────────────│
@@ -510,7 +524,8 @@
                                         │  deceleration of
                                         │  relativistic jets
                                         │  launched into dense
-                                        │↓ circumstellar
+                                        │  circumstellar
+                                        │↓ shells.
                                         │  ───────────────────
                                         │  → ADS     │ ⧉ cite
                                         │  → arXiv:2 │ ⧉ full
@@ -566,6 +581,7 @@
                                         │
                                         │
                                         │
+                                        │
                                         │       ▤ card │ @ bib
 
 ## library sort=title asc
@@ -598,6 +614,7 @@
                                                                                             │  Galactic halo
                                                                                             │
                                                                                             │  Baxter2019equxm   ◇ add to manuscript
+                                                                                            │
                                                                                             │
                                                                                             │
                                                                                             │
@@ -638,6 +655,7 @@
                                                                                             │
                                                                                             │
                                                                                             │
+                                                                                            │
                                                                                             │                               ▤ card │ @ bib
 
 ## library sort=year
@@ -670,6 +688,7 @@
                                                                                             │  Gravitational wave sources
                                                                                             │
                                                                                             │  Cabrera2024txuze   ◇ add to manuscript
+                                                                                            │
                                                                                             │
                                                                                             │
                                                                                             │
