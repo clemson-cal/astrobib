@@ -1,4 +1,4 @@
-"""The metric swatch is a column like any other: the columns panel says
+"""The metric swatch is a column like any other: the table panel says
 whether it shows, and M only picks which metric it shows.
 
 M used to cycle off → priority → citations → off, which made the strip
@@ -17,7 +17,7 @@ def run(t):
     require("Metric" not in t.text(), "the metric strip should start hidden", t)
 
     t.send("|")
-    t.wait_for("Columns · library", what="the columns panel")
+    t.wait_for("Table · library", what="the table panel")
     # Metric is the first row, so it is already under the cursor
     t.send(" ")
     t.wait_for(
@@ -51,7 +51,7 @@ def run(t):
     # sits at the table's left edge, which the open panel has pushed
     # right, so close the panel first and put it back at column 0.
     t.send("|")
-    t.wait_gone("Columns · library")
+    t.wait_gone("Table · library")
     header = next((i for i, l in enumerate(t.lines()) if "Year" in l[:40]), None)
     require(header is not None, "table header row not found (Year in the first 40 cols)", t)
     t.send(b"\x1b[<64;1;%dM" % (header + 3))  # wheel-up, column 0, first row

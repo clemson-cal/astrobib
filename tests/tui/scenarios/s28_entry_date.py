@@ -120,15 +120,15 @@ def run(t):
         t,
     )
 
-    # the selection sort is changed from the columns panel, by clicking —
+    # the selection sort is changed from the table panel, by clicking —
     # and changing it moves nothing on screen, since it decides what the
     # *next* refresh asks ADS for, so the app has to say so
     t.send("|")
-    t.wait_for("ADS selects", what="the ADS selection section of the columns panel")
+    t.wait_for("ADS returns", what="the ADS selection section of the table panel")
     x, y = t.find("newest published")
     t.click(x, y)
     t.wait_for(
-        "ADS selects by newest published",
+        "ADS returns newest published",
         what="the note explaining that a refresh is what applies it",
     )
     with open(os.path.join(t.state_dir, "tabs.json")) as f:

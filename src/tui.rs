@@ -367,15 +367,62 @@ fn ms_state_rank(r: &MsRow) -> u8 {
 /// with its ‹ › nudges, and the sort marker.
 const COLUMNS_PANEL_W: u16 = 26;
 
-/// A columns-panel line, filled like the table's cursor row when it is
-/// the one the arrow keys are on. Without it the selection is invisible
-/// on a hidden column, whose label stays dim either way.
-fn cursor_line(spans: Vec<Span<'static>>, on_cursor: bool) -> Line<'static> {
-    let line = Line::from(spans);
-    if on_cursor {
-        line.style(Style::default().bg(table::CURSOR_FILL))
-    } else {
-        line
+/// One line of the columns sidebar, built before it is placed so the
+/// list can be windowed against the pane's height.
+struct PanelLine {
+    spans: Vec<Span<'static>>,
+    /// click targets, as (x offset from the panel's left edge, width, what)
+    hits: Vec<(u16, u16, PanelHit)>,
+    /// the list row this line is, when it is selectable
+    row: Option<usize>,
+    /// the arrow keys are on this line
+    fill: bool,
+}
+
+impl PanelLine {
+    fn heading(text: &str) -> Self {
+        PanelLine {
+            spans: vec![Span::styled(
+                text.to_string(),
+                Style::default().fg(Color::DarkGray),
+            )],
+            hits: vec![],
+            row: None,
+            fill: false,
+        }
+    }
+
+    fn blank() -> Self {
+        PanelLine { spans: vec![], hits: vec![], row: None, fill: false }
+    }
+
+    fn rule() -> Self {
+        PanelLine {
+            spans: vec![Span::styled(String::new(), divider())],
+            hits: vec![],
+            row: None,
+            fill: false,
+        }
+    }
+
+    fn is_rule(&self) -> bool {
+        self.row.is_none() && self.spans.len() == 1 && self.spans[0].content.is_empty()
+    }
+
+    /// Filled like the table's cursor row when the arrow keys are on it.
+    /// Without that the selection is invisible on a hidden column, whose
+    /// label stays dim either way.
+    fn to_line(&self, width: u16) -> Line<'static> {
+        let line = if self.is_rule() {
+            Line::from(Span::styled("─".repeat(width as usize), divider()))
+        } else {
+            Line::from(self.spans.clone())
+        };
+        if self.fill {
+            line.style(Style::default().bg(table::CURSOR_FILL))
+        } else {
+            line
+        }
     }
 }
 
@@ -520,7 +567,7 @@ const HELP_ENTRIES: &[(&str, &str, Option<Action>, KeyCode)] = &[
     ("⌫", "remove…", Some(Action::Remove), KeyCode::Delete),
     ("/", "filter", Some(Action::Filter), KeyCode::Char('/')),
     ("D", "pub card", Some(Action::Card), KeyCode::Char('D')),
-    ("|", "columns…", Some(Action::Columns), KeyCode::Char('|')),
+    ("|", "table columns…", Some(Action::Columns), KeyCode::Char('|')),
     ("L", "event log", Some(Action::Log), KeyCode::Char('L')),
     ("t", "global tier", Some(Action::GlobalTier), KeyCode::Char('t')),
     ("v", "pub view", None, KeyCode::Char('v')),
@@ -5217,7 +5264,7 @@ impl App {
             .map(|(l, _)| *l)
             .unwrap_or(sort);
         self.save_tabs();
-        self.note(MsgCat::Info, format!("ADS selects by {label} — r refreshes"));
+        self.note(MsgCat::Info, format!("ADS returns {label} — r refreshes"));
     }
 
     fn active_kind(&self) -> ScopeKind {
@@ -5409,7 +5456,7 @@ impl App {
         }
         badges.extend([
             ("card", self.show_detail, Action::Card),
-            ("cols", self.show_columns, Action::Columns),
+            ("table", self.show_columns, Action::Columns),
             ("log", self.show_log, Action::Log),
             ("keys", self.show_help, Action::Help),
         ]);
@@ -5437,7 +5484,7 @@ impl App {
         let what = match action {
             Action::GlobalTier => "the global tier",
             Action::Card => "the pub card",
-            Action::Columns => "the columns panel",
+            Action::Columns => "the table panel",
             Action::Log => "the event log",
             Action::Help => "the cheat-sheet",
             _ => label,
@@ -5514,40 +5561,16 @@ impl App {
         f.render_widget(Paragraph::new(Text::from(lines)).block(block), area);
     }
 
-    /// The columns sidebar: every column the active scope can draw, with
-    /// its visibility, its width, and whether it is the sort target.
+    /// One rendered line of the columns sidebar: its spans, the click
+    /// targets it carries as offsets from the panel's left edge, and the
+    /// list row it belongs to when it is selectable (headings and rules
+    /// are not).
     ///
-    /// Sorting is offered on hidden columns too, which is the point of
-    /// listing them: a query can be ordered by entry date without
-    /// spending ten columns of screen on the dates themselves.
-    ///
-    /// The column showing "—" for its width is the one absorbing the
-    /// leftover space; hide it and the "—" moves to whichever column
-    /// takes over.
-    fn draw_columns_panel(&mut self, f: &mut Frame, area: Rect) {
-        self.col_rects.clear();
-        let kind = self.active_kind();
-        let focused = self.focus == Focus::Columns;
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .border_style(if focused {
-                Style::default().fg(Color::Cyan)
-            } else {
-                divider()
-            })
-            .title(Span::styled(
-                format!(" Columns · {} ", kind.tag()),
-                Style::default().fg(if focused { Color::Cyan } else { Color::DarkGray }),
-            ));
-        let inner = Rect {
-            x: area.x + 1,
-            y: area.y + 1,
-            width: area.width.saturating_sub(2),
-            height: area.height.saturating_sub(2),
-        };
-        f.render_widget(block, area);
-
-        let rows = self.panel_rows();
+    /// Lines are built before they are placed so the list can be
+    /// windowed: the panel is as tall as the terminal allows, and
+    /// without this the cursor walked off the bottom into rows that were
+    /// never drawn.
+    fn panel_lines(&self, kind: ScopeKind, focused: bool) -> Vec<PanelLine> {
         let shown = self.columns_for(kind, self.table_area.width);
         let all = self.all_columns(kind, self.table_area.width);
         let cfg = self.columns.get(&kind).cloned().unwrap_or_default();
@@ -5557,19 +5580,11 @@ impl App {
             _ => String::new(),
         };
         let dim = Style::default().fg(Color::DarkGray);
-        let mut lines: Vec<Line> = vec![];
-        // the render row is tracked rather than derived from the list
-        // index: the ADS section inserts a heading line of its own
-        let mut y = inner.y;
-        let bottom = inner.y + inner.height;
-        let mut heading_done = false;
-        for (i, row) in rows.iter().enumerate() {
+        let mut out: Vec<PanelLine> = vec![];
+        for (i, row) in self.panel_rows().iter().enumerate() {
             let on_cursor = focused && self.col_sel == i;
             match *row {
                 PanelRow::Column(id) => {
-                    if y >= bottom {
-                        break;
-                    }
                     let spec = all.iter().find(|c| c.id == id);
                     let drawn = shown.iter().find(|c| c.id == id);
                     let label = spec
@@ -5586,29 +5601,13 @@ impl App {
                     let resizable = drawn.is_some_and(|c| c.resizable);
                     let sortable = spec.is_some_and(|c| c.sortable);
                     let w = col_width(&shown, self.table_area.width, id);
-                    self.col_rects.push((
-                        Rect { x: inner.x, y, width: inner.width, height: 1 },
-                        PanelHit::Row(i),
-                    ));
-                    self.col_rects.push((
-                        Rect { x: inner.x, y, width: 2, height: 1 },
-                        PanelHit::Toggle(id),
-                    ));
+                    let mut hits = vec![(0, 2, PanelHit::Toggle(id))];
                     if sortable {
-                        self.col_rects.push((
-                            Rect { x: inner.x + 2, y, width: 11, height: 1 },
-                            PanelHit::Sort(id),
-                        ));
+                        hits.push((2, 11, PanelHit::Sort(id)));
                     }
                     if visible && resizable {
-                        self.col_rects.push((
-                            Rect { x: inner.x + 13, y, width: 1, height: 1 },
-                            PanelHit::Narrower(id),
-                        ));
-                        self.col_rects.push((
-                            Rect { x: inner.x + 18, y, width: 1, height: 1 },
-                            PanelHit::Wider(id),
-                        ));
+                        hits.push((13, 1, PanelHit::Narrower(id)));
+                        hits.push((18, 1, PanelHit::Wider(id)));
                     }
                     let (mark, mark_style) = if visible {
                         ("✓", Style::default().fg(Color::Green))
@@ -5652,50 +5651,42 @@ impl App {
                         }
                         _ => " ",
                     };
-                    let spans = vec![
-                        Span::styled(format!("{mark} "), mark_style),
-                        Span::styled(format!("{label:<11}"), lab_style),
-                        Span::styled(nudges.0, dim),
-                        Span::styled(
-                            wtext,
-                            // a pinned width is the user's, not the
-                            // responsive default — worth saying so
-                            if cfg.widths.contains_key(&id) {
-                                Style::default().fg(Color::Yellow)
-                            } else {
-                                dim
-                            },
-                        ),
-                        Span::styled(nudges.1, dim),
-                        Span::styled(format!(" {marker}"), Style::default().fg(Color::Cyan)),
-                    ];
-                    lines.push(cursor_line(spans, on_cursor));
-                    y += 1;
+                    out.push(PanelLine {
+                        spans: vec![
+                            Span::styled(format!("{mark} "), mark_style),
+                            Span::styled(format!("{label:<11}"), lab_style),
+                            Span::styled(nudges.0, dim),
+                            Span::styled(
+                                wtext,
+                                // a pinned width is the user's, not the
+                                // responsive default — worth saying so
+                                if cfg.widths.contains_key(&id) {
+                                    Style::default().fg(Color::Yellow)
+                                } else {
+                                    dim
+                                },
+                            ),
+                            Span::styled(nudges.1, dim),
+                            Span::styled(format!(" {marker}"), Style::default().fg(Color::Cyan)),
+                        ],
+                        hits,
+                        row: Some(i),
+                        fill: on_cursor,
+                    });
                 }
                 PanelRow::AdsSort(label, sortp) => {
-                    if !heading_done {
-                        heading_done = true;
-                        if y + 1 < bottom {
-                            lines.push(Line::from(Span::styled(" ADS selects", dim)));
-                            y += 1;
-                        }
+                    if !out.iter().any(|l| l.is_rule()) {
+                        // one rule and one label, once, before the first
+                        // option: the ADS sort is a different kind of
+                        // thing from a column and has to read as one
+                        out.push(PanelLine::rule());
+                        out.push(PanelLine::heading("ADS returns"));
                     }
-                    if y >= bottom {
-                        break;
-                    }
-                    self.col_rects.push((
-                        Rect { x: inner.x, y, width: inner.width, height: 1 },
-                        PanelHit::Row(i),
-                    ));
-                    self.col_rects.push((
-                        Rect { x: inner.x, y, width: inner.width, height: 1 },
-                        PanelHit::AdsSort(sortp),
-                    ));
                     let chosen = ads_sort == sortp;
-                    lines.push(cursor_line(
-                        vec![
+                    out.push(PanelLine {
+                        spans: vec![
                             Span::styled(
-                                if chosen { " ▸ " } else { "   " },
+                                if chosen { "▸ " } else { "  " },
                                 Style::default().fg(Color::Cyan),
                             ),
                             Span::styled(
@@ -5707,11 +5698,77 @@ impl App {
                                 },
                             ),
                         ],
-                        on_cursor,
-                    ));
-                    y += 1;
+                        hits: vec![(0, 22, PanelHit::AdsSort(sortp))],
+                        row: Some(i),
+                        fill: on_cursor,
+                    });
                 }
             }
+        }
+        out
+    }
+
+    /// The columns sidebar: every column the active scope can draw, with
+    /// its visibility, its width, and whether it is the sort target.
+    ///
+    /// Sorting is offered on hidden columns too, which is the point of
+    /// listing them: a query can be ordered by entry date without
+    /// spending ten columns of screen on the dates themselves.
+    ///
+    /// The column showing "—" for its width is the one absorbing the
+    /// leftover space; hide it and the "—" moves to whichever column
+    /// takes over.
+    fn draw_columns_panel(&mut self, f: &mut Frame, area: Rect) {
+        self.col_rects.clear();
+        let kind = self.active_kind();
+        let focused = self.focus == Focus::Columns;
+        // a single vertical rule on the inner edge, mirroring the pub
+        // card's left rule on the other side of the table
+        f.render_widget(
+            Block::default().borders(Borders::RIGHT).border_style(divider()),
+            area,
+        );
+        let inner = Rect {
+            x: area.x + 1,
+            y: area.y,
+            width: area.width.saturating_sub(3),
+            height: area.height,
+        };
+        let mut lines: Vec<PanelLine> = vec![
+            PanelLine::heading(&format!("Table · {}", kind.tag())),
+            PanelLine::blank(),
+        ];
+        lines.extend(self.panel_lines(kind, focused));
+
+        // window the list so the cursor is always on screen: scroll only
+        // as far as it takes, so the heading stays put until the list
+        // genuinely outgrows the pane
+        let h = inner.height as usize;
+        let cursor = lines.iter().position(|l| l.fill).unwrap_or(0);
+        let start = if lines.len() <= h {
+            0
+        } else {
+            cursor
+                .saturating_sub(h.saturating_sub(1))
+                .min(lines.len() - h)
+        };
+
+        let mut rendered: Vec<Line> = vec![];
+        for (n, line) in lines.iter().skip(start).take(h).enumerate() {
+            let y = inner.y + n as u16;
+            for &(dx, w, hitkind) in &line.hits {
+                self.col_rects.push((
+                    Rect { x: inner.x + dx, y, width: w, height: 1 },
+                    hitkind,
+                ));
+            }
+            if let Some(i) = line.row {
+                self.col_rects.push((
+                    Rect { x: inner.x, y, width: inner.width, height: 1 },
+                    PanelHit::Row(i),
+                ));
+            }
+            rendered.push(line.to_line(inner.width));
         }
         // rolling over a control says what it does and which key does it
         if let Some(&(_, h)) = self
@@ -5725,12 +5782,12 @@ impl App {
                 PanelHit::Narrower(id) => format!("narrow {}  ·  ←", id.tag()),
                 PanelHit::Wider(id) => format!("widen {}  ·  →", id.tag()),
                 PanelHit::AdsSort(_) => {
-                    "ADS selects these records — r refreshes  ·  ⏎".to_string()
+                    "ADS returns these records — r refreshes  ·  ⏎".to_string()
                 }
                 PanelHit::Row(_) => String::new(),
             });
         }
-        f.render_widget(Paragraph::new(Text::from(lines)), inner);
+        f.render_widget(Paragraph::new(Text::from(rendered)), inner);
     }
 
     fn draw_status(&mut self, f: &mut Frame, area: Rect) {

@@ -36,7 +36,7 @@ Both stores are plain `bib/*.bib` files, one paper per file, indistinguishable f
 
 ---
 ## TUI overview
-Scope capsules at the top switch between your library, saved ADS query tabs, and the manuscript view. Each keeps its own sort, and remembers it. An optional one-cell colour strip at the left edge shows a metric — your own decaying priority, or ADS citation counts; switch it on from the columns panel (`|`). The pub card on the right shows the highlighted paper (hover the citekey column to preview others); an event log and clickable view badges sit at the bottom. Most things are clickable; every action has a key (`?` shows the cheat-sheet).
+Scope capsules at the top switch between your library, saved ADS query tabs, and the manuscript view. Each keeps its own sort, and remembers it. An optional one-cell colour strip at the left edge shows a metric — your own decaying priority, or ADS citation counts; switch it on from the table panel (`|`). The pub card on the right shows the highlighted paper (hover the citekey column to preview others); an event log and clickable view badges sit at the bottom. Most things are clickable; every action has a key (`?` shows the cheat-sheet).
 
 ### Keys
 - `/` — live filter (query language below); `S` — new ADS query (↑/↓ sets result count; pasting a DOI or ADS URL imports directly)
@@ -47,7 +47,7 @@ Scope capsules at the top switch between your library, saved ADS query tabs, and
 - `y` — copy chord: `yy` cite key, `yY` full key, `yb` bibcode, `ya`/`yx`/`yd` ADS/arXiv/DOI URL, `yp` PDF path, `yt` title, `yA` abstract; card title/abstract/key are click-to-copy
 - `C` / `R` — open a citations / references query for the shown paper; `v` — pub view (the raw .bib); `e` — export the selection to a .bib file
 - `M` — pick the metric the swatch column shows (priority or citations, distinct colormaps; show the column itself from `|`); `.` — priority 1.0, `0` — clear, `<` `>` — scale it (decays weekly); the wheel over a swatch does the same for that row
-- `|` — columns panel: show/hide columns, `←`/`→` to resize, `s` to sort by any of them (shown or not); `Esc` gives the arrows back to the table
+- `|` — table panel: show/hide columns, `←`/`→` to resize, `s` to sort by any of them (shown or not), and for a query, what ADS returns; `Esc` gives the arrows back to the table
 - `t` — show/hide the global tier; `D` — pub card; `L` — event log; `?` — keys; `@` — about; `q` — quit
 
 ---
@@ -72,7 +72,7 @@ A half-typed query never errors. With a filter active, `S` pre-fills the equival
 `S` passes your query to the [ADS API](https://ui.adsabs.harvard.edu/help/search/search-syntax) unmodified, so the full Solr language works (`bibstem:ApJL`, `citations(...)`, boolean grouping, …). Each query becomes a scope capsule, persisted per library context in `tabs.json`.
 The pub card walks the citation graph directly: click "cited by N" (or the citations/references affordances) to open a `citations(...)` or `references(...)` scope for the shown paper.
 
-A saved query reads as a feed: ADS is asked for the newest records by *entry date* — when it indexed them — not by publication date, so `r` brings back what has appeared since you last looked rather than what was published most recently. The `Entered` column shows that date beside `Year`; the columns panel picks which of the four selection sorts a query uses. That sort chooses which records come back, so ordering a feed by citations gives the most cited among the newest n, not the most cited overall.
+A saved query reads as a feed: ADS is asked for the newest records by *entry date* — when it indexed them — not by publication date, so `r` brings back what has appeared since you last looked rather than what was published most recently. The `Entered` column shows that date beside `Year`; the table panel picks which of the four selection sorts a query uses. That sort chooses which records come back, so ordering a feed by citations gives the most cited among the newest n, not the most cited overall.
 
 ---
 ## Markdown manuscripts

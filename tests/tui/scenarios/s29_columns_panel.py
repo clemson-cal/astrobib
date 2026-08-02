@@ -1,4 +1,4 @@
-"""The columns panel: show, hide, resize, and sort — including on a
+"""The table panel: show, hide, resize, and sort — including on a
 column that is not on screen.
 
 The panel is a toggle view beside the table, not a modal, so the
@@ -16,23 +16,30 @@ import os
 
 from driver import require
 
-DESCRIPTION = "columns panel: show/hide, width, sort, focus"
+DESCRIPTION = "table panel: show/hide, width, sort, focus"
 
 COLS = 150
 
 
 def _panel_line(t, label):
-    """The panel row carrying `label`, or "" — panel rows start at the
-    left border, which the table rows never do."""
+    """The panel row carrying `label`, or "".
+
+    The panel occupies the leftmost columns and the table starts after
+    it, so a label found in the first 24 columns is the panel's — the
+    table has its own "Year" and "Title" headers further right.
+    """
     for ln in t.lines():
-        if ln.startswith("│") and label in ln[: t.cols // 4]:
+        if label in ln[:24]:
             return ln
     return ""
 
 
 def _first_data_row(t):
+    # the panel draws a rule of its own between the columns and the ADS
+    # section, so require a run only the table is wide enough to make
+    # (the table area is never narrower than 40)
     for i, ln in enumerate(t.lines()):
-        if "─" * 20 in ln:
+        if "─" * 30 in ln:
             return t.lines()[i + 1]
     raise AssertionError(f"no table header rule on screen\n{t.dump()}")
 
@@ -44,7 +51,7 @@ def run(t):
     require("Cabrera, +1" in t.text(), "expected the author column drawn at startup", t)
 
     t.send("|")
-    t.wait_for("Columns · library", what="the columns panel")
+    t.wait_for("Table · library", what="the table panel")
     require(_panel_line(t, "Year"), "no Year row in the panel", t)
     require(_panel_line(t, "Key"), "no Key row in the panel", t)
 
@@ -101,7 +108,7 @@ def run(t):
     # Esc gives the arrows back to the table without closing the panel
     t.send("\x1b")
     t.wait_quiet()
-    require("Columns · library" in t.text(), "Esc should not close the panel", t)
+    require("Table · library" in t.text(), "Esc should not close the panel", t)
     # by cite key ascending the second paper is Baxter2019; the card's
     # author line is card-only, so it witnesses the table cursor moving
     t.key("down")
@@ -110,9 +117,9 @@ def run(t):
     # a column whose width is not the user's to set says which kind of
     # not-yours it is, rather than one generic refusal for both
     t.send("|")
-    t.wait_gone("Columns · library")
+    t.wait_gone("Table · library")
     t.send("|")
-    t.wait_for("Columns · library", what="the panel reopened, focused")
+    t.wait_for("Table · library", what="the panel reopened, focused")
     for _ in range(8):
         t.key("up")  # to the top of the list, wherever the cursor was left
     t.send(" ")
@@ -132,6 +139,25 @@ def run(t):
         what="the flex column explaining that its size is derived",
     )
 
+    # the list scrolls when it outgrows the pane. Without this the cursor
+    # walked off the bottom into rows that were never drawn — it looked
+    # like the selection descending past the final row into nothing.
+    t.resize(150, 10)
+    for _ in range(8):
+        t.key("down")
+    t.wait_for(
+        lambda: _panel_line(t, "Key") != "",
+        what="the last row still drawn once the list scrolls",
+    )
+    require(
+        "Table · library" not in t.text(),
+        "the heading should have scrolled off to make room",
+        t,
+    )
+    # and back: with room again the whole list is shown from the top
+    t.resize(150, 40)
+    t.wait_for("Table · library", what="the heading back once the list fits")
+
     # and | closes it
     t.send("|")
-    t.wait_gone("Columns · library")
+    t.wait_gone("Table · library")
