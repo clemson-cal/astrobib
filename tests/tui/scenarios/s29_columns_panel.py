@@ -133,8 +133,9 @@ def run(t):
         what="the table cursor moving again once Tab hands focus back",
     )
 
-    # a column whose width is not the user's to set says which kind of
-    # not-yours it is, rather than one generic refusal for both
+    # a column with no settable width simply does not move, and says
+    # nothing about it — the panel draws those rows without the ‹ ›
+    # nudges, so there is no affordance to refuse
     t.send("|")
     t.wait_gone("Table configuration")
     t.send("|")
@@ -143,19 +144,27 @@ def run(t):
         t.key("up")  # to the top of the list, wherever the cursor was left
     t.send(" ")
     t.wait_for(lambda: "✓ Metric" in t.text(), what="the metric column switched on")
+    before = _panel_line(t, "Metric")
+    require("‹" not in before, f"the metric row should carry no nudges: {before!r}", t)
     t.key("right")
-    t.wait_for(
-        "the metric swatch is one cell wide",
-        what="the metric column explaining its fixed size",
+    t.wait_quiet()
+    require(
+        _panel_line(t, "Metric") == before,
+        f"←/→ should leave the metric row alone: {_panel_line(t, 'Metric')!r}",
+        t,
     )
     # Title still holds the leftover width — Author and Key were hidden
     # above, but it was not
     for _ in range(4):
         t.key("down")  # Metric -> ↓ -> Year -> Author -> Title
+    before = _panel_line(t, "Title")
+    require("—" in before, f"Title should be the flex column: {before!r}", t)
     t.key("right")
-    t.wait_for(
-        "taking the leftover width",
-        what="the flex column explaining that its size is derived",
+    t.wait_quiet()
+    require(
+        _panel_line(t, "Title") == before,
+        f"←/→ should leave the flex column alone: {_panel_line(t, 'Title')!r}",
+        t,
     )
 
     # the list scrolls when it outgrows the pane. Without this the cursor

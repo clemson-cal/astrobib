@@ -5266,34 +5266,20 @@ impl App {
     /// ←/→ on a column: widen or narrow it, pinning the width. Until
     /// this is used a column keeps its responsive default, which is what
     /// makes an untouched configuration indistinguishable from none.
+    /// A row with no settable width simply does not move. It says
+    /// nothing about it: the panel already draws those rows without the
+    /// ‹ › nudges, so the affordance is absent rather than refused, and
+    /// a warning for pressing an arrow at it would be noise.
     fn nudge_width(&mut self, d: i16) {
         let kind = self.active_kind();
         let rows = self.panel_rows();
         let Some(&PanelRow::Column(id)) = rows.get(self.col_sel) else {
             return;
         };
-        if !self.column_shown(kind, id) {
-            self.note(
-                MsgCat::Warn,
-                format!("{} is hidden — nothing to size", id.tag()),
-            );
-            return;
-        }
         let shown = self.columns_for(kind, self.table_area.width);
-        let Some(spec) = shown.iter().find(|c| c.id == id) else {
-            // shown, but not among the table's columns: the metric
-            // swatch is drawn in its own strip beside the table
-            self.note(
-                MsgCat::Warn,
-                "the metric swatch is one cell wide by construction".to_string(),
-            );
-            return;
-        };
-        if !spec.resizable {
-            self.note(
-                MsgCat::Warn,
-                format!("{} is taking the leftover width — its size is derived", id.tag()),
-            );
+        // hidden, or drawn outside the table (the metric swatch), or
+        // locked to a derived or one-cell width
+        if !shown.iter().any(|c| c.id == id && c.resizable) {
             return;
         }
         let cur = col_width(&shown, self.table_area.width, id) as i16;
