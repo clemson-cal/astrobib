@@ -14,14 +14,14 @@ DESCRIPTION = "metric column: panel shows it, M picks the metric"
 
 def run(t):
     # off by default, and M alone does not summon it
-    require("Metric" not in t.text(), "the metric strip should start hidden", t)
+    require("⣿" not in t.text(), "the metric strip should start hidden", t)
 
     t.send("|")
     t.wait_for("Table configuration", what="the table panel")
     # Metric is the first row, so it is already under the cursor
     t.send(" ")
     t.wait_for(
-        lambda: "✓ Metric" in t.text(),
+        lambda: "✓ ⣿ metric" in t.text(),
         what="the metric column switched on from the panel",
     )
     # the panel names the active metric, since nothing else on screen does

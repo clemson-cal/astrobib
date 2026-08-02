@@ -447,11 +447,44 @@ impl PanelLine {
 }
 
 /// The metric swatch: one cell beside the table rather than inside it,
-/// but a column like any other as far as the panel is concerned. Off
-/// until asked for, and never resizable — it is one cell by
-/// construction. M chooses which metric it shows.
-fn metric_column() -> table::ColumnSpec {
-    table::fixed(Col::Metric, "Metric", 2, true).default_off().fixed_size()
+/// but a column like any other — now literally, drawn inside the table
+/// rather than as a strip beside it, which is what gives it the same
+/// column order, header hover and click handling as the rest. Off until
+/// asked for, and never resizable. M chooses which metric it shows.
+fn metric_column(metric: MetricCol) -> table::ColumnSpec {
+    table::fixed(Col::Metric, "⣿", 2, true)
+        .default_off()
+        .fixed_size()
+        // the legend carries its colormap's hue, the only thing on
+        // screen naming which metric is showing
+        .styled_header(
+            Style::default()
+                .fg(metric_color(metric, 0.65))
+                .add_modifier(Modifier::BOLD),
+        )
+}
+
+/// One row's metric swatch. Priority IS a 0..1 level, so it is coloured
+/// absolutely and an edit recolours in place; citations rank-normalize
+/// over the scope, so the whole ramp gets used.
+fn metric_cell(
+    metric: MetricCol,
+    v: Option<f64>,
+    known: &[f64],
+) -> ratatui::widgets::Cell<'static> {
+    match v {
+        Some(v) => {
+            let t = match metric {
+                MetricCol::Priority => v,
+                _ => rank_norm(known, v),
+            };
+            ratatui::widgets::Cell::from(Span::styled(
+                " ",
+                Style::default().bg(metric_color(metric, t)),
+            ))
+        }
+        None => ratatui::widgets::Cell::from(Span::styled("·", divider())),
+    }
 }
 
 /// The sort marker for a direction. One definition, so the panel's
@@ -4139,21 +4172,7 @@ impl App {
             (s, t)
         };
         self.draw_scope_strip(f, strip_area);
-        // the metric swatch is a column like any other: whether it shows
-        // is the columns configuration's answer, not a mode of its own
-        let table_area = if self.column_shown(self.active_kind(), Col::Metric) {
-            let [swatch, rest] =
-                // two cells: the swatch, and room beside it for the sort
-                // marker so the ⣿ legend does not have to give way to it
-                Layout::horizontal([Constraint::Length(2), Constraint::Min(1)]).areas(table_area);
-            self.draw_table(f, rest);
-            self.draw_metric_strip(f, swatch);
-            rest
-        } else {
-            self.draw_table(f, table_area);
-            table_area
-        };
-        let _ = table_area;
+        self.draw_table(f, table_area);
         if let Some(area) = columns_area {
             // after the table: the panel reads the solved column widths
             self.draw_columns_panel(f, area);
@@ -4659,100 +4678,6 @@ impl App {
         );
     }
 
-    /// The one-cell metric swatch strip beside the table: each row's
-    /// scalar rank-normalized over the visible set and mapped through
-    /// the active metric's colormap. Its header cell shows the
-    /// colormap midpoint and sorts by the metric.
-    fn draw_metric_strip(&mut self, f: &mut Frame, area: Rect) {
-        self.metric_area = area;
-        let metric = self.metric_col;
-        // header: the legend, and the sort marker beside it rather than
-        // in place of it — the legend is what names the column, so it
-        // should not disappear exactly when the column becomes the sort
-        let hr = Rect { x: area.x, y: area.y, width: 2, height: 1 };
-        self.sort_headers.push((hr, Col::Metric));
-        if hit(hr, self.hover.0, self.hover.1) {
-            self.hover_hint = Some(format!("sort by metric: {}", metric.name()));
-        }
-        let marker = match self.sort() {
-            // the dot-matrix cell terminal gauges and sparklines are drawn
-            // from: it reads as a quantity, where a filled square of any
-            // kind just read as a stray coloured square. Dense enough that
-            // the metric's hue still comes through and names it.
-            Some((c, asc)) if c == Col::Metric => {
-                if asc {
-                    "▲"
-                } else {
-                    "▼"
-                }
-            }
-            _ => " ",
-        };
-        f.render_widget(
-            Paragraph::new(Line::from(vec![
-                Span::styled("⣿", Style::default().fg(metric_color(metric, 0.65))),
-                Span::styled(marker, Style::default().fg(metric_color(metric, 0.9))),
-            ])),
-            hr,
-        );
-
-        // per-row values over the visible window
-        let now_ts = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs() as i64)
-            .unwrap_or(0);
-        let offset = self.table.offset();
-        let rows = area.height.saturating_sub(2) as usize;
-        let values: Vec<Option<f64>> = match self.scopes.get(self.active_scope) {
-            Some(Scope::Ads { articles, .. }) => articles
-                .iter()
-                .map(|a| match metric {
-                    MetricCol::Citations => a.citation_count.map(|c| c as f64),
-                    MetricCol::Priority => self
-                        .article_entry(a)
-                        .and_then(|e| self.metrics.get(e.key()))
-                        .and_then(|m| m.effective_priority(now_ts)),
-                })
-                .collect(),
-            _ => self
-                .filtered
-                .iter()
-                .filter_map(|&i| self.entry_at(i))
-                .map(|e| {
-                    let m = self.metrics.get(e.key());
-                    match metric {
-                        MetricCol::Priority => {
-                            m.and_then(|m| m.effective_priority(now_ts))
-                        }
-                        MetricCol::Citations => m.and_then(|m| m.citations).map(|c| c as f64),
-                    }
-                })
-                .collect(),
-        };
-        let known: Vec<f64> = values.iter().flatten().copied().collect();
-        for (row, v) in values.iter().skip(offset).take(rows).enumerate() {
-            let y = area.y + 2 + row as u16;
-            let cell = match v {
-                Some(v) => {
-                    // priority IS a 0..1 level — color it absolutely so
-                    // edits recolor in place; citations rank-normalize
-                    let t = match metric {
-                        MetricCol::Priority => *v,
-                        _ => rank_norm(&known, *v),
-                    };
-                    Span::styled(" ", Style::default().bg(metric_color(metric, t)))
-                }
-                None => Span::styled("·", divider()),
-            };
-            f.render_widget(Paragraph::new(Line::from(cell)), Rect {
-                x: area.x,
-                y,
-                width: 1,
-                height: 1,
-            });
-        }
-    }
-
     /// Draw the active scope's table. Each scope contributes its own
     /// columns and rows; `table::draw` owns the chrome they share.
     /// Keep the cursor on a row that exists.
@@ -4778,6 +4703,18 @@ impl App {
         self.sort_headers.clear();
         self.clamp_cursor();
         let model = self.table_model(area.width);
+        // where the metric column landed, for the priority wheel: the
+        // solver is the only thing that knows, and the wheel handler
+        // wants the column's full height, header rows included
+        self.metric_area = Rect::default();
+        let widths = table::solve(&model.columns, area.width);
+        let mut mx = area.x;
+        for (spec, w) in model.columns.iter().zip(widths.iter()) {
+            if spec.id == Col::Metric {
+                self.metric_area = Rect { x: mx, y: area.y, width: *w, height: area.height };
+            }
+            mx += w + 1;
+        }
         let (rects, data_area) = table::draw(f, area, model, &mut self.table);
         // rolling over a header says what the column is and that it sorts
         if let Some(&(_, col)) = rects.iter().find(|(r, _)| hit(*r, self.hover.0, self.hover.1)) {
@@ -4917,6 +4854,7 @@ impl App {
         use ratatui::widgets::Cell;
         let columns = self.columns_for(ScopeKind::Query, width);
         let author_w = col_width(&columns, width, Col::Author);
+        let (mvals, mknown) = self.metric_values();
         let cursor = self.table.selected();
         let hov_row = self.hovered_table_pos();
         let rows: Vec<Row<'static>> = articles
@@ -4954,6 +4892,9 @@ impl App {
                             if entry.is_some() { "●" } else { "" },
                             Style::default().fg(Color::Magenta),
                         )),
+                        Col::Metric => {
+                            metric_cell(self.metric_col, mvals.get(pos).copied().flatten(), &mknown)
+                        }
                         Col::Year => Cell::from(Span::styled(a.year.clone(), yr_style)),
                         Col::Entered => {
                             Cell::from(Span::styled(a.entry_date.clone(), yr_style))
@@ -5007,6 +4948,7 @@ impl App {
         };
         let columns = self.columns_for(ScopeKind::Library, width);
         let author_w = col_width(&columns, width, Col::Author);
+        let (mvals, mknown) = self.metric_values();
         let hov_row = self.hovered_table_pos();
         let cursor = self.table.selected();
         let show_membership = self.lib.manuscript.is_some() && self.lib.global_on;
@@ -5048,6 +4990,9 @@ impl App {
                             },
                             c_ms,
                         )),
+                        Col::Metric => {
+                            metric_cell(self.metric_col, mvals.get(pos).copied().flatten(), &mknown)
+                        }
                         Col::Year => Cell::from(Span::styled(e.year(), c_year)),
                         Col::Author => Cell::from(Span::styled(
                             fit_authors(e.author(), author_w as usize),
@@ -5094,8 +5039,8 @@ impl App {
             ScopeKind::Query => {
                 let (author_w, _) = column_layout(width);
                 vec![
-                    metric_column(),
                     table::fixed(Col::Sel, "", 2, false),
+                    metric_column(self.metric_col),
                     // indicator columns carry a single glyph and are
                     // locked to one cell: there is nothing to resize
                     table::fixed(Col::Pdf, "↓", 1, true).fixed_size(),
@@ -5118,8 +5063,8 @@ impl App {
                 let (author_w, show_key) = column_layout(width);
                 let show_membership = self.lib.manuscript.is_some() && self.lib.global_on;
                 vec![
-                    metric_column(),
                     table::fixed(Col::Sel, "", 2, false),
+                    metric_column(self.metric_col),
                     table::fixed(Col::Pdf, "↓", 1, true).fixed_size(),
                     // the ● column is only labelled — and only sorts —
                     // when a manuscript is active and the global tier shows
@@ -5174,7 +5119,6 @@ impl App {
         let mut cols: Vec<table::ColumnSpec> = self
             .all_columns(kind, width)
             .into_iter()
-            .filter(|c| c.id != Col::Metric)
             .filter(|c| {
                 cfg.and_then(|cfg| cfg.visible.get(&c.id).copied())
                     .unwrap_or(c.default_visible)
@@ -5349,6 +5293,43 @@ impl App {
             .unwrap_or(sort);
         self.save_tabs();
         self.note(MsgCat::Info, format!("ADS returns {label} — r refreshes"));
+    }
+
+    /// Every row's metric value in the active scope, in row order, with
+    /// the known ones pooled for rank-normalizing. None where a paper
+    /// has no value for the metric on show.
+    fn metric_values(&self) -> (Vec<Option<f64>>, Vec<f64>) {
+        let metric = self.metric_col;
+        let now_ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+        let values: Vec<Option<f64>> = match self.scopes.get(self.active_scope) {
+            Some(Scope::Ads { articles, .. }) => articles
+                .iter()
+                .map(|a| match metric {
+                    MetricCol::Citations => a.citation_count.map(|c| c as f64),
+                    MetricCol::Priority => self
+                        .article_entry(a)
+                        .and_then(|e| self.metrics.get(e.key()))
+                        .and_then(|m| m.effective_priority(now_ts)),
+                })
+                .collect(),
+            _ => self
+                .filtered
+                .iter()
+                .filter_map(|&i| self.entry_at(i))
+                .map(|e| {
+                    let m = self.metrics.get(e.key());
+                    match metric {
+                        MetricCol::Priority => m.and_then(|m| m.effective_priority(now_ts)),
+                        MetricCol::Citations => m.and_then(|m| m.citations).map(|c| c as f64),
+                    }
+                })
+                .collect(),
+        };
+        let known: Vec<f64> = values.iter().flatten().copied().collect();
+        (values, known)
     }
 
     /// What a column header means, in words, for the footer rollover.
@@ -5703,10 +5684,18 @@ impl App {
                 PanelRow::Column(id) => {
                     let spec = all.iter().find(|c| c.id == id);
                     let drawn = shown.iter().find(|c| c.id == id);
-                    let label = spec
-                        .map(|c| c.header.clone())
-                        .filter(|h| !h.is_empty())
-                        .unwrap_or_else(|| id.tag().to_string());
+                    // an icon column's header is one glyph, which names
+                    // nothing on its own: pair it with the column's tag
+                    // so the panel row is readable and still visibly the
+                    // same column as the header in the table
+                    let head = spec.map(|c| c.header.clone()).unwrap_or_default();
+                    let label = if head.chars().count() > 1 {
+                        head
+                    } else if head.is_empty() {
+                        id.tag().to_string()
+                    } else {
+                        format!("{head} {}", id.tag())
+                    };
                     // asked of the configuration, not of the drawn list:
                     // the metric swatch is shown beside the table rather
                     // than in it, so it never appears in `shown`

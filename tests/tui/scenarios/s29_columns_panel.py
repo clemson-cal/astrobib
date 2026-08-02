@@ -143,13 +143,13 @@ def run(t):
     for _ in range(8):
         t.key("up")  # to the top of the list, wherever the cursor was left
     t.send(" ")
-    t.wait_for(lambda: "✓ Metric" in t.text(), what="the metric column switched on")
-    before = _panel_line(t, "Metric")
+    t.wait_for(lambda: "✓ ⣿ metric" in t.text(), what="the metric column switched on")
+    before = _panel_line(t, "metric")
     require("‹" not in before, f"the metric row should carry no nudges: {before!r}", t)
     t.key("right")
     t.wait_quiet()
     require(
-        _panel_line(t, "Metric") == before,
+        _panel_line(t, "metric") == before,
         f"←/→ should leave the metric row alone: {_panel_line(t, 'Metric')!r}",
         t,
     )

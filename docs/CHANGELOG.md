@@ -10,6 +10,7 @@
 - Sort is a property of the scope, not of the app. Each query tab, the library, and the manuscript keep their own sort column and direction, all of which survive a restart; sorting one no longer reorders the others. Manuscript columns sort too, and sorting by `State` is ranked attention-first, so missing cites gather at the top. With no sort set the manuscript stays in scan order, the order the cites appear in the source.
 
 ### Changed
+- The metric swatch is drawn *inside* the table rather than as a strip beside it, which is what it should have meant to call it a column. Two things follow that had to be asked for separately before: the selection gutter is the leftmost column again, with the swatch after it, and the `⣿` header highlights on rollover exactly like every other header.
 - Each secondary view — the table panel, the pub card, the event log, the cheat-sheet — carries a barely-there tint of its own, so which surface you are looking at is legible without a border doing the work. The table keeps the terminal's own background: it is the primary surface, and tinting it would fight every theme.
 - The footer band is two rows rather than three. The blank line between its rule and its text bought nothing and cost a row of table on every screen.
 - The three indicator columns — the metric swatch, the cached-PDF `↓`, and the membership `●` — are locked to a single cell, which is all a single glyph needs; the two columns that reclaims go to the title. Their headers show the sort marker alone when sorted, there being no room for both.

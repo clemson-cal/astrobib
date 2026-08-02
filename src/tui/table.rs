@@ -115,6 +115,10 @@ pub(super) struct ColumnSpec {
     /// derived rather than chosen: the one-cell metric swatch, and
     /// whichever column is currently absorbing the leftover space.
     pub resizable: bool,
+    /// the header's resting style, where the default bold is not right —
+    /// the metric legend carries its colormap's hue. Hover styling still
+    /// wins, so it highlights like every other header.
+    pub header_style: Option<Style>,
 }
 
 impl ColumnSpec {
@@ -134,6 +138,11 @@ impl ColumnSpec {
         self.resizable = false;
         self
     }
+
+    pub fn styled_header(mut self, style: Style) -> Self {
+        self.header_style = Some(style);
+        self
+    }
 }
 
 pub(super) fn fixed(id: Col, header: &str, w: u16, sortable: bool) -> ColumnSpec {
@@ -144,6 +153,7 @@ pub(super) fn fixed(id: Col, header: &str, w: u16, sortable: bool) -> ColumnSpec
         sortable,
         default_visible: true,
         resizable: true,
+        header_style: None,
     }
 }
 
@@ -155,6 +165,7 @@ pub(super) fn flex(id: Col, header: &str, sortable: bool) -> ColumnSpec {
         sortable,
         default_visible: true,
         resizable: true,
+        header_style: None,
     }
 }
 
@@ -280,7 +291,9 @@ pub(super) fn draw(
     let mut hx = area.x;
     for (spec, &cw) in model.columns.iter().zip(widths.iter()) {
         let mut label = spec.header.clone();
-        let mut style = Style::default().add_modifier(Modifier::BOLD);
+        let mut style = spec
+            .header_style
+            .unwrap_or_else(|| Style::default().add_modifier(Modifier::BOLD));
         if spec.sortable {
             let r = Rect { x: hx, y: area.y, width: cw.max(1), height: 1 };
             rects.push((r, spec.id));
