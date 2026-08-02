@@ -287,7 +287,12 @@ pub(super) fn draw(
             if let Some(asc) = model.sort.and_then(|(c, a)| (c == spec.id).then_some(a)) {
                 let arrow = if asc { "▲" } else { "▼" };
                 // narrow indicator columns fit glyph+arrow only
-                label = if cw <= 2 {
+                // a one-cell indicator column has room for the marker
+                // or its glyph, not both — and the marker is the thing
+                // that changes, so it wins
+                label = if cw <= 1 {
+                    arrow.to_string()
+                } else if cw <= 2 {
                     format!("{label}{arrow}")
                 } else {
                     format!("{label} {arrow}")

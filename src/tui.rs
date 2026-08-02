@@ -363,9 +363,10 @@ fn ms_state_rank(r: &MsRow) -> u8 {
     }
 }
 
-/// The columns sidebar's width: enough for a label, a width readout
-/// with its ‹ › nudges, and the sort marker.
-const COLUMNS_PANEL_W: u16 = 26;
+/// The table sidebar's width: enough for a label, a width readout with
+/// its ‹ › nudges, and the sort marker, inside the same 2-cell padding
+/// the pub card keeps on either side of its rule.
+const COLUMNS_PANEL_W: u16 = 28;
 
 /// One line of the columns sidebar, built before it is placed so the
 /// list can be windowed against the pane's height.
@@ -385,6 +386,25 @@ impl PanelLine {
             spans: vec![Span::styled(
                 text.to_string(),
                 Style::default().fg(Color::DarkGray),
+            )],
+            hits: vec![],
+            row: None,
+            fill: false,
+        }
+    }
+
+    /// The panel's own name, sitting where the pub card's title sits.
+    /// It carries the focus colour, since the panel has no box border
+    /// left to tint.
+    fn title(text: &str, focused: bool) -> Self {
+        PanelLine {
+            spans: vec![Span::styled(
+                text.to_string(),
+                if focused {
+                    Style::default().fg(Color::Cyan)
+                } else {
+                    Style::default().fg(Color::Gray)
+                },
             )],
             hits: vec![],
             row: None,
@@ -3934,6 +3954,11 @@ impl App {
                 KeyCode::Char('D') | KeyCode::Char('z') => self.run_action(Action::Card),
                 KeyCode::Char('?') => self.run_action(Action::Help),
                 KeyCode::Char('|') => self.run_action(Action::Columns),
+                // the other half of the focus toggle; with no panel open
+                // there is only one thing the arrows could drive
+                KeyCode::Tab | KeyCode::BackTab if self.show_columns => {
+                    self.focus = Focus::Columns
+                }
                 KeyCode::Char('t') => self.run_action(Action::GlobalTier),
                 KeyCode::Char('v') => self.show_bib_source = !self.show_bib_source,
                 KeyCode::Char('e') => self.open_export_prompt(),
@@ -4625,7 +4650,9 @@ impl App {
                 Style::default().fg(metric_color(metric, 0.7)),
             )
         } else {
-            Span::styled(" ", Style::default().bg(metric_color(metric, 0.5)))
+            // a shaded block reads as a scale of values; a solid cell
+            // just looked like a stray coloured square
+            Span::styled("▒", Style::default().fg(metric_color(metric, 0.65)))
         };
         f.render_widget(Paragraph::new(Line::from(hdr)), hr);
 
@@ -4688,11 +4715,37 @@ impl App {
 
     /// Draw the active scope's table. Each scope contributes its own
     /// columns and rows; `table::draw` owns the chrome they share.
+    /// Keep the cursor on a row that exists.
+    ///
+    /// A query refresh can hand back fewer records than the tab was
+    /// holding — a smaller `+`/`-` limit, or simply a result set that
+    /// moved — and nothing else brings the selection back into range, so
+    /// the pub card renders blank and every row action has no target.
+    /// The library has `refilter` for this; query and manuscript scopes
+    /// had nothing, so it lives here, where row_count is authoritative.
+    fn clamp_cursor(&mut self) {
+        let n = self.row_count();
+        let sel = match (self.table.selected(), n) {
+            (_, 0) => None,
+            (Some(p), n) => Some(p.min(n - 1)),
+            (None, _) => Some(0),
+        };
+        self.table.select(sel);
+    }
+
     fn draw_table(&mut self, f: &mut Frame, area: Rect) {
         self.table_area = area;
         self.sort_headers.clear();
+        self.clamp_cursor();
         let model = self.table_model(area.width);
         let (rects, data_area) = table::draw(f, area, model, &mut self.table);
+        // rolling over a header says what the column is and that it sorts
+        if let Some(&(_, col)) = rects.iter().find(|(r, _)| hit(*r, self.hover.0, self.hover.1)) {
+            let what = self.column_hint(col);
+            if !what.is_empty() {
+                self.hover_hint = Some(format!("{what}  ·  click to sort"));
+            }
+        }
         self.sort_headers.extend(rects);
         if let Some(hint) = self.empty_hint() {
             draw_empty_hint(f, data_area, hint);
@@ -5003,8 +5056,10 @@ impl App {
                 vec![
                     metric_column(),
                     table::fixed(Col::Sel, "", 2, false),
-                    table::fixed(Col::Pdf, "↓", 2, true),
-                    table::fixed(Col::InLib, "●", 2, true),
+                    // indicator columns carry a single glyph and are
+                    // locked to one cell: there is nothing to resize
+                    table::fixed(Col::Pdf, "↓", 1, true).fixed_size(),
+                    table::fixed(Col::InLib, "●", 1, true).fixed_size(),
                     table::fixed(Col::Year, "Year", 6, true),
                     // the two clocks sit side by side on purpose: Year is
                     // when the paper was published, Entered is when ADS
@@ -5025,15 +5080,16 @@ impl App {
                 vec![
                     metric_column(),
                     table::fixed(Col::Sel, "", 2, false),
-                    table::fixed(Col::Pdf, "↓", 2, true),
+                    table::fixed(Col::Pdf, "↓", 1, true).fixed_size(),
                     // the ● column is only labelled — and only sorts —
                     // when a manuscript is active and the global tier shows
                     table::fixed(
                         Col::InLib,
                         if show_membership { "●" } else { "" },
-                        2,
+                        1,
                         show_membership,
-                    ),
+                    )
+                    .fixed_size(),
                     table::fixed(Col::Year, "Year", 6, true),
                     table::fixed(Col::Author, "Author", author_w, true),
                     table::flex(Col::Title, "Title", true),
@@ -5168,8 +5224,10 @@ impl App {
                 PanelRow::Column(id) => self.sort_by(id),
                 PanelRow::AdsSort(_, sort) => self.set_ads_sort(sort),
             },
-            // Esc gives the arrows back without closing the panel
-            KeyCode::Esc => self.focus = Focus::Table,
+            // Tab and Esc both hand the arrows back without closing the
+            // panel; Tab is the reversible one, so it reads as a toggle
+            // between the two things the arrows can drive
+            KeyCode::Tab | KeyCode::BackTab | KeyCode::Esc => self.focus = Focus::Table,
             _ => return false,
         }
         true
@@ -5265,6 +5323,32 @@ impl App {
             .unwrap_or(sort);
         self.save_tabs();
         self.note(MsgCat::Info, format!("ADS returns {label} — r refreshes"));
+    }
+
+    /// What a column header means, in words, for the footer rollover.
+    /// The ● column is the clearest case for having this at all: it says
+    /// something different on a query page than in the library.
+    fn column_hint(&self, col: Col) -> &'static str {
+        let query = self.active_kind() == ScopeKind::Query;
+        match col {
+            Col::Metric => "metric",
+            Col::Pdf => "PDF cached",
+            Col::InLib => {
+                if query {
+                    "already in your library"
+                } else {
+                    "in the manuscript"
+                }
+            }
+            Col::Year => "year published",
+            Col::Entered => "when ADS indexed it",
+            Col::Author => "authors",
+            Col::Title => "title",
+            Col::Key => "cite key",
+            Col::Cited => "the cite as written",
+            Col::State => "whether the cite resolves",
+            Col::Sel | Col::CiteIcon => "",
+        }
     }
 
     fn active_kind(&self) -> ScopeKind {
@@ -5595,10 +5679,14 @@ impl App {
                     // the metric swatch is shown beside the table rather
                     // than in it, so it never appears in `shown`
                     let visible = self.column_shown(kind, id);
-                    // resizability is read from the drawn spec, not the
-                    // declared one: the flex role moves when a column is
-                    // hidden, so which column has a derived width moves too
+                    // read from the drawn spec, not the declared one:
+                    // the flex role moves when a column is hidden, so
+                    // which column has a derived width moves with it
                     let resizable = drawn.is_some_and(|c| c.resizable);
+                    // "no width to set" and "width is derived" are not
+                    // the same: a one-cell indicator column has a width,
+                    // it just is not yours
+                    let flex = drawn.is_some_and(|c| matches!(c.width, table::Width::Flex));
                     let sortable = spec.is_some_and(|c| c.sortable);
                     let w = col_width(&shown, self.table_area.width, id);
                     let mut hits = vec![(0, 2, PanelHit::Toggle(id))];
@@ -5634,12 +5722,15 @@ impl App {
                             .to_string(),
                             ("  ", "  "),
                         )
-                    } else if resizable {
-                        (format!("{w:>4}"), ("‹ ", " ›"))
-                    } else {
+                    } else if flex {
                         // whatever is absorbing the leftover width: its
                         // size is derived, so there is nothing to set
                         ("   —".to_string(), ("  ", "  "))
+                    } else if resizable {
+                        (format!("{w:>4}"), ("‹ ", " ›"))
+                    } else {
+                        // a fixed one-cell column: a real width, locked
+                        (format!("{w:>4}"), ("  ", "  "))
                     };
                     let marker = match sort {
                         Some((c, asc)) if c == id => {
@@ -5728,14 +5819,17 @@ impl App {
             Block::default().borders(Borders::RIGHT).border_style(divider()),
             area,
         );
+        // laid out as the pub card's mirror image: the card insets its
+        // text 2 cells from its rule and 2 from the far edge and starts
+        // one line down, so this does the same on the other side
         let inner = Rect {
-            x: area.x + 1,
-            y: area.y,
-            width: area.width.saturating_sub(3),
-            height: area.height,
+            x: area.x + 2,
+            y: area.y + 1,
+            width: area.width.saturating_sub(5),
+            height: area.height.saturating_sub(1),
         };
         let mut lines: Vec<PanelLine> = vec![
-            PanelLine::heading(&format!("Table · {}", kind.tag())),
+            PanelLine::title("Table configuration", focused),
             PanelLine::blank(),
         ];
         lines.extend(self.panel_lines(kind, focused));

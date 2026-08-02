@@ -51,7 +51,7 @@ def run(t):
     require("Cabrera, +1" in t.text(), "expected the author column drawn at startup", t)
 
     t.send("|")
-    t.wait_for("Table · library", what="the table panel")
+    t.wait_for("Table configuration", what="the table panel")
     require(_panel_line(t, "Year"), "no Year row in the panel", t)
     require(_panel_line(t, "Key"), "no Key row in the panel", t)
 
@@ -108,18 +108,37 @@ def run(t):
     # Esc gives the arrows back to the table without closing the panel
     t.send("\x1b")
     t.wait_quiet()
-    require("Table · library" in t.text(), "Esc should not close the panel", t)
+    require("Table configuration" in t.text(), "Esc should not close the panel", t)
     # by cite key ascending the second paper is Baxter2019; the card's
     # author line is card-only, so it witnesses the table cursor moving
     t.key("down")
     t.wait_for("Baxter · 2019", what="the table cursor moving once focus is back")
 
+    # Tab is the reversible form of the same thing: it toggles which of
+    # the two arrow-navigable areas the arrows drive
+    t.send("\t")
+    t.wait_quiet()
+    t.key("down")
+    # back in the panel, so the arrows move its cursor and leave the
+    # table's alone — the card still shows the same paper
+    t.wait_for(
+        lambda: "Baxter · 2019" in t.text(),
+        what="the table cursor staying put while the panel has focus",
+    )
+    t.send("\t")
+    t.wait_quiet()
+    t.key("down")
+    t.wait_for(
+        lambda: "Baxter · 2019" not in t.text(),
+        what="the table cursor moving again once Tab hands focus back",
+    )
+
     # a column whose width is not the user's to set says which kind of
     # not-yours it is, rather than one generic refusal for both
     t.send("|")
-    t.wait_gone("Table · library")
+    t.wait_gone("Table configuration")
     t.send("|")
-    t.wait_for("Table · library", what="the panel reopened, focused")
+    t.wait_for("Table configuration", what="the panel reopened, focused")
     for _ in range(8):
         t.key("up")  # to the top of the list, wherever the cursor was left
     t.send(" ")
@@ -150,14 +169,14 @@ def run(t):
         what="the last row still drawn once the list scrolls",
     )
     require(
-        "Table · library" not in t.text(),
+        "Table configuration" not in t.text(),
         "the heading should have scrolled off to make room",
         t,
     )
     # and back: with room again the whole list is shown from the top
     t.resize(150, 40)
-    t.wait_for("Table · library", what="the heading back once the list fits")
+    t.wait_for("Table configuration", what="the heading back once the list fits")
 
     # and | closes it
     t.send("|")
-    t.wait_gone("Table · library")
+    t.wait_gone("Table configuration")

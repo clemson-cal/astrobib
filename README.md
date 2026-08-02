@@ -47,7 +47,7 @@ Scope capsules at the top switch between your library, saved ADS query tabs, and
 - `y` — copy chord: `yy` cite key, `yY` full key, `yb` bibcode, `ya`/`yx`/`yd` ADS/arXiv/DOI URL, `yp` PDF path, `yt` title, `yA` abstract; card title/abstract/key are click-to-copy
 - `C` / `R` — open a citations / references query for the shown paper; `v` — pub view (the raw .bib); `e` — export the selection to a .bib file
 - `M` — pick the metric the swatch column shows (priority or citations, distinct colormaps; show the column itself from `|`); `.` — priority 1.0, `0` — clear, `<` `>` — scale it (decays weekly); the wheel over a swatch does the same for that row
-- `|` — table panel: show/hide columns, `←`/`→` to resize, `s` to sort by any of them (shown or not), and for a query, what ADS returns; `Esc` gives the arrows back to the table
+- `|` — table panel: show/hide columns, `←`/`→` to resize, `s` to sort by any of them (shown or not), and for a query, what ADS returns; `Tab` swaps the arrow keys between the panel and the table
 - `t` — show/hide the global tier; `D` — pub card; `L` — event log; `?` — keys; `@` — about; `q` — quit
 
 ---

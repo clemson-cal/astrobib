@@ -125,6 +125,7 @@ const INVENTORY: &[(char, Zone, Risk, &str)] = &[
     ('›', Zone::Hit, Risk::Narrow, "columns panel: widen this column"),
     ('▸', Zone::Hit, Risk::Narrow, "columns panel: the chosen ADS selection sort"),
     ('←', Zone::Flow, Risk::Ambiguous, "columns panel hover hint: narrow this column"),
+    ('▒', Zone::Hit, Risk::Ambiguous, "metric strip header: a scale of values"),
     // -- card affordances and badges -------------------------------------
     ('⧉', Zone::Hit, Risk::Narrow, "copy-row badge in the card link stack"),
     ('⌕', Zone::Hit, Risk::Narrow, "query-row badge, filter chip, task labels"),
