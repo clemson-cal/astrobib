@@ -11,7 +11,7 @@
 
 ### Changed
 - The three indicator columns — the metric swatch, the cached-PDF `↓`, and the membership `●` — are locked to a single cell, which is all a single glyph needs; the two columns that reclaims go to the title. Their headers show the sort marker alone when sorted, there being no room for both.
-- The metric strip's header is `▒` rather than a solid block of colour, which read as a stray coloured square rather than as a scale of values. It keeps the active metric's hue.
+- The metric strip's header is `⣿` — the dot-matrix cell terminal sparklines and gauges use — rather than a solid block of colour, which read as a stray coloured square instead of saying "this column is a quantity". It keeps the active metric's hue, so the colour still names which metric is showing, and gives way to the ▲/▼ marker when the table is sorted by it.
 - The metric swatch is a column like any other: the table panel decides whether it shows, and `M` now only picks which metric it shows, toggling priority ↔ citations. It used to be the one piece of chrome with a visibility mode of its own, cycling off → priority → citations → off. It is still off until you ask for it, and the panel names the active metric, which nothing else on screen did.
 
 ### Fixed

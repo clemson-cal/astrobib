@@ -4650,9 +4650,11 @@ impl App {
                 Style::default().fg(metric_color(metric, 0.7)),
             )
         } else {
-            // a shaded block reads as a scale of values; a solid cell
-            // just looked like a stray coloured square
-            Span::styled("▒", Style::default().fg(metric_color(metric, 0.65)))
+            // the dot-matrix cell terminal gauges and sparklines use:
+            // it reads as data, where any kind of filled square just
+            // read as a stray coloured square. Dense enough that the
+            // metric's hue still comes through and names it.
+            Span::styled("⣿", Style::default().fg(metric_color(metric, 0.65)))
         };
         f.render_widget(Paragraph::new(Line::from(hdr)), hr);
 
