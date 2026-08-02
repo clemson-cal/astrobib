@@ -278,15 +278,13 @@ enum PanelHit {
     /// the ‹ › nudges beside the width
     Narrower(Col),
     Wider(Col),
-    /// pick the ADS sort a query tab selects records with
-    AdsSort(&'static str),
 }
 
-/// A line in the columns panel.
+/// A line in the columns panel. Columns only — what ADS *returns* is a
+/// property of the query, set where the query is composed and cycled
+/// with `s`, not a column of the table it fills.
 enum PanelRow {
     Column(Col),
-    /// query scopes only: which records ADS sends back at all
-    AdsSort(&'static str, &'static str),
 }
 
 /// The ADS `sort` parameters a query tab can select records with, in the
@@ -386,18 +384,6 @@ struct PanelLine {
 }
 
 impl PanelLine {
-    fn heading(text: &str) -> Self {
-        PanelLine {
-            spans: vec![Span::styled(
-                text.to_string(),
-                Style::default().fg(Color::DarkGray),
-            )],
-            hits: vec![],
-            row: None,
-            fill: false,
-        }
-    }
-
     /// The panel's own name, sitting where the pub card's title sits.
     /// It carries the focus colour, since the panel has no box border
     /// left to tint.
@@ -421,28 +407,11 @@ impl PanelLine {
         PanelLine { spans: vec![], hits: vec![], row: None, fill: false }
     }
 
-    fn rule() -> Self {
-        PanelLine {
-            spans: vec![Span::styled(String::new(), divider())],
-            hits: vec![],
-            row: None,
-            fill: false,
-        }
-    }
-
-    fn is_rule(&self) -> bool {
-        self.row.is_none() && self.spans.len() == 1 && self.spans[0].content.is_empty()
-    }
-
     /// Filled like the table's cursor row when the arrow keys are on it.
     /// Without that the selection is invisible on a hidden column, whose
     /// label stays dim either way.
-    fn to_line(&self, width: u16) -> Line<'static> {
-        let line = if self.is_rule() {
-            Line::from(Span::styled("─".repeat(width as usize), divider()))
-        } else {
-            Line::from(self.spans.clone())
-        };
+    fn to_line(&self) -> Line<'static> {
+        let line = Line::from(self.spans.clone());
         if self.fill {
             line.style(Style::default().bg(table::CURSOR_FILL))
         } else {
@@ -646,6 +615,7 @@ const HELP_ENTRIES: &[(&str, &str, Option<Action>, KeyCode)] = &[
     ("/", "filter", Some(Action::Filter), KeyCode::Char('/')),
     ("D", "pub card", Some(Action::Card), KeyCode::Char('D')),
     ("|", "table columns…", Some(Action::Columns), KeyCode::Char('|')),
+    ("s", "what ADS returns", None, KeyCode::Char('s')),
     ("L", "event log", Some(Action::Log), KeyCode::Char('L')),
     ("t", "global tier", Some(Action::GlobalTier), KeyCode::Char('t')),
     ("v", "pub view", None, KeyCode::Char('v')),
@@ -3559,7 +3529,6 @@ impl App {
                 Some(PanelHit::Sort(id)) => self.sort_by(id),
                 Some(PanelHit::Narrower(_)) => self.nudge_width(-1),
                 Some(PanelHit::Wider(_)) => self.nudge_width(1),
-                Some(PanelHit::AdsSort(s)) => self.set_ads_sort(s),
                 _ => {}
             }
             return;
@@ -4046,6 +4015,7 @@ impl App {
                 KeyCode::Char('D') | KeyCode::Char('z') => self.run_action(Action::Card),
                 KeyCode::Char('?') => self.run_action(Action::Help),
                 KeyCode::Char('|') => self.run_action(Action::Columns),
+                KeyCode::Char('s') => self.cycle_ads_sort(),
                 // the other half of the focus toggle; with no panel open
                 // there is only one thing the arrows could drive
                 KeyCode::Tab | KeyCode::BackTab if self.show_columns => {
@@ -5232,14 +5202,14 @@ impl App {
             }
             KeyCode::Left => self.nudge_width(-1),
             KeyCode::Right => self.nudge_width(1),
-            KeyCode::Char(' ') => match rows[self.col_sel] {
-                PanelRow::Column(id) => self.toggle_column(id),
-                PanelRow::AdsSort(_, sort) => self.set_ads_sort(sort),
-            },
-            KeyCode::Char('s') | KeyCode::Enter => match rows[self.col_sel] {
-                PanelRow::Column(id) => self.sort_by(id),
-                PanelRow::AdsSort(_, sort) => self.set_ads_sort(sort),
-            },
+            KeyCode::Char(' ') => {
+                let PanelRow::Column(id) = rows[self.col_sel];
+                self.toggle_column(id);
+            }
+            KeyCode::Char('s') | KeyCode::Enter => {
+                let PanelRow::Column(id) = rows[self.col_sel];
+                self.sort_by(id);
+            }
             // Tab and Esc both hand the arrows back without closing the
             // panel; Tab is the reversible one, so it reads as a toggle
             // between the two things the arrows can drive
@@ -5300,6 +5270,24 @@ impl App {
         let next = (cur + d).clamp(table::MIN_COL_W as i16, table::MAX_COL_W as i16) as u16;
         self.columns.entry(kind).or_default().widths.insert(id, next);
         self.save_column_config();
+    }
+
+    /// s — step what ADS returns for the active query: newest posting,
+    /// newest published, most cited, most relevant.
+    fn cycle_ads_sort(&mut self) {
+        let cur = match self.scopes.get(self.active_scope) {
+            Some(Scope::Ads { tab, .. }) => tab.ads_sort.clone(),
+            _ => {
+                self.note(
+                    MsgCat::Warn,
+                    "what ADS returns is a property of a query — open one with S".to_string(),
+                );
+                return;
+            }
+        };
+        let i = ADS_SORTS.iter().position(|(_, v)| *v == cur).unwrap_or(0);
+        let next = ADS_SORTS[(i + 1) % ADS_SORTS.len()].1;
+        self.set_ads_sort(next);
     }
 
     /// Choose the ADS `sort` a query tab selects records with. This
@@ -5407,18 +5395,11 @@ impl App {
     /// configuring.
     fn panel_rows(&self) -> Vec<PanelRow> {
         let kind = self.active_kind();
-        let mut rows: Vec<PanelRow> = self
-            .all_columns(kind, self.table_area.width)
+        self.all_columns(kind, self.table_area.width)
             .into_iter()
             .filter(|c| !c.header.is_empty() || c.sortable)
             .map(|c| PanelRow::Column(c.id))
-            .collect();
-        if kind == ScopeKind::Query {
-            for (label, sort) in ADS_SORTS {
-                rows.push(PanelRow::AdsSort(label, sort));
-            }
-        }
-        rows
+            .collect()
     }
 
     /// The pub card for an ADS result: body, links, citation count, an
@@ -5704,10 +5685,6 @@ impl App {
         let all = self.all_columns(kind, self.table_area.width);
         let cfg = self.columns.get(&kind).cloned().unwrap_or_default();
         let sort = self.sort();
-        let ads_sort = match self.scopes.get(self.active_scope) {
-            Some(Scope::Ads { tab, .. }) => tab.ads_sort.clone(),
-            _ => String::new(),
-        };
         let dim = Style::default().fg(Color::DarkGray);
         let mut out: Vec<PanelLine> = vec![];
         for (i, row) in self.panel_rows().iter().enumerate() {
@@ -5840,35 +5817,6 @@ impl App {
                         fill: on_cursor,
                     });
                 }
-                PanelRow::AdsSort(label, sortp) => {
-                    if !out.iter().any(|l| l.is_rule()) {
-                        // one rule and one label, once, before the first
-                        // option: the ADS sort is a different kind of
-                        // thing from a column and has to read as one
-                        out.push(PanelLine::rule());
-                        out.push(PanelLine::heading("ADS returns"));
-                    }
-                    let chosen = ads_sort == sortp;
-                    out.push(PanelLine {
-                        spans: vec![
-                            Span::styled(
-                                if chosen { "▸ " } else { "  " },
-                                Style::default().fg(Color::Cyan),
-                            ),
-                            Span::styled(
-                                label,
-                                if chosen {
-                                    Style::default().fg(Color::Cyan)
-                                } else {
-                                    dim
-                                },
-                            ),
-                        ],
-                        hits: vec![(0, 22, PanelHit::AdsSort(sortp))],
-                        row: Some(i),
-                        fill: on_cursor,
-                    });
-                }
             }
         }
         out
@@ -5963,7 +5911,7 @@ impl App {
                     PanelHit::Row(i),
                 ));
             }
-            rendered.push(line.to_line(inner.width));
+            rendered.push(line.to_line());
         }
         // rolling over a control says what it does and which key does it
         if let Some(&(_, h)) = self
@@ -5976,9 +5924,6 @@ impl App {
                 PanelHit::Sort(id) => format!("sort by {} (shown or not)  ·  s", id.tag()),
                 PanelHit::Narrower(id) => format!("narrow {}  ·  ←", id.tag()),
                 PanelHit::Wider(id) => format!("widen {}  ·  →", id.tag()),
-                PanelHit::AdsSort(_) => {
-                    "ADS returns these records — r refreshes  ·  ⏎".to_string()
-                }
                 PanelHit::Row(_) => String::new(),
             });
         }

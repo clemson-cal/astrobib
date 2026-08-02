@@ -45,6 +45,7 @@ Scope capsules at the top switch between your library, saved ADS query tabs, and
 - `i` — import ADS result(s); `m` — toggle manuscript/local membership; `⌫` — remove (with confirmation)
 - `p` — download PDFs (ADS open-access, then arXiv); `B` — browser download (watches ~/Downloads); `o` — open PDF; `X` — clear PDF; double-click a row — open its PDF
 - `y` — copy chord: `yy` cite key, `yY` full key, `yb` bibcode, `ya`/`yx`/`yd` ADS/arXiv/DOI URL, `yp` PDF path, `yt` title, `yA` abstract; card title/abstract/key are click-to-copy
+- `s` — step what ADS returns for this query (newest posting / published / most cited / most relevant); `r` applies it
 - `C` / `R` — open a citations / references query for the shown paper; `v` — pub view (the raw .bib); `e` — export the selection to a .bib file
 - `M` — pick the metric the swatch column shows (priority or citations, distinct colormaps; show the column itself from `|`); `.` — priority 1.0, `0` — clear, `<` `>` — scale it (decays weekly); the wheel over a swatch does the same for that row
 - `|` — table panel: show/hide columns, `←`/`→` to resize, `s` to sort by any of them (shown or not), and for a query, what ADS returns; `Tab` swaps the arrow keys between the panel and the table

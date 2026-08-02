@@ -102,15 +102,15 @@ def run(t):
     )
     require("Year ▼" not in t.text(), "the marker should have left the Year column", t)
 
-    # the tab's ADS sort — which records come back at all — is the
-    # posting clock too, and is stored on the tab
+    # the display sort is the tab's own and is written back; what ADS
+    # *returns* is deliberately not persisted (see tabs::Tab::ads_sort)
     with open(os.path.join(t.state_dir, "tabs.json")) as f:
         tabs = json.load(f)
     saved = [tab for ctx in tabs["contexts"].values() for tab in ctx]
     require(saved, "no saved tabs written back", t)
     require(
-        all(s.get("ads_sort") == "entry_date desc" for s in saved),
-        f"tab ads_sort should select by entry date, got {[s.get('ads_sort') for s in saved]}",
+        all("ads_sort" not in s for s in saved),
+        f"the selection sort should not be persisted, got {[s.get('ads_sort') for s in saved]}",
         t,
     )
     require(
@@ -120,22 +120,12 @@ def run(t):
         t,
     )
 
-    # the selection sort is changed from the table panel, by clicking —
-    # and changing it moves nothing on screen, since it decides what the
-    # *next* refresh asks ADS for, so the app has to say so
-    t.send("|")
-    t.wait_for("ADS returns", what="the ADS selection section of the table panel")
-    x, y = t.find("newest published")
-    t.click(x, y)
+    # s steps what ADS returns. It moves nothing on screen, since it
+    # decides what the *next* refresh asks for, so the app has to say so
+    t.send("s")
     t.wait_for(
-        "ADS returns newest published",
+        "ADS returns newest published — r refreshes",
         what="the note explaining that a refresh is what applies it",
     )
-    with open(os.path.join(t.state_dir, "tabs.json")) as f:
-        tabs = json.load(f)
-    saved = [tab for ctx in tabs["contexts"].values() for tab in ctx]
-    require(
-        all(s.get("ads_sort") == "date desc" for s in saved),
-        f"tab ads_sort should now be publication date, got {[s.get('ads_sort') for s in saved]}",
-        t,
-    )
+    t.send("s")
+    t.wait_for("ADS returns most cited", what="the selection sort stepping on")
