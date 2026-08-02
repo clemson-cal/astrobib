@@ -140,6 +140,7 @@ const INVENTORY: &[(char, Zone, Risk, &str)] = &[
     ('⧗', Zone::Hit, Risk::Narrow, "pending-task count at the head of the footer"),
     // -- key legend -------------------------------------------------------
     ('⌫', Zone::Hit, Risk::Narrow, "help-sheet key legend: remove"),
+    ('⇥', Zone::Flow, Risk::Narrow, "S prompt: ⇥ cycles the ADS selection sort"),
     ('␣', Zone::Hit, Risk::Narrow, "help-sheet key legend: select"),
     ('⏎', Zone::Flow, Risk::Narrow, "modal titles and hint prose"),
     ('±', Zone::Flow, Risk::Ambiguous, "help-sheet legend: \"manuscript ± (selection)\""),

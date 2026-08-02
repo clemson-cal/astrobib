@@ -49,7 +49,12 @@ enum Mode {
     /// plain words and remove_confirmed executes exactly it.
     Confirm { plan: Vec<(String, RemovalKind)> },
     /// S — compose an ADS query; ↑/↓ steps the result limit, ⏎ runs it.
-    AdsPrompt { input: tui_input::Input, limit: usize },
+    /// S — compose an ADS query. `limit` and `sort` are properties of
+    /// the query that are not query *syntax*: they ride alongside `q` as
+    /// the `rows` and `sort` API parameters. The prompt shows them and
+    /// steps them, and the text cursor never enters them, so it stays
+    /// clear that typing into that region would not reach ADS.
+    AdsPrompt { input: tui_input::Input, limit: usize, sort: String },
     // first-run setup: collect the ADS token, then the email, into
     // state.json; resume the query prompt afterwards when asked
     Setup { input: tui_input::Input, email: bool, resume: bool },
@@ -1260,13 +1265,23 @@ impl App {
                 }
             }
         }
-        self.mode = Mode::AdsPrompt { input: tui_input::Input::from(input), limit: 20 };
+        self.mode = Mode::AdsPrompt {
+            input: tui_input::Input::from(input),
+            limit: 20,
+            sort: crate::ads::DEFAULT_ADS_SORT.to_string(),
+        };
     }
 
     /// Run a query on a worker thread into a scope. A pasted DOI or ADS
     /// abstract URL short-circuits: DOI becomes a fielded query, an ADS
     /// URL imports the paper directly.
-    fn run_ads_query_limit(&mut self, raw: String, refresh_of: Option<usize>, limit: usize) {
+    fn run_ads_query_limit(
+        &mut self,
+        raw: String,
+        refresh_of: Option<usize>,
+        limit: usize,
+        sort: Option<String>,
+    ) {
         let raw = raw.trim().to_string();
         if raw.is_empty() {
             return;
@@ -1286,7 +1301,15 @@ impl App {
                 t.limit = limit;
                 t
             }
-            _ => crate::tabs::make_tab(&query, limit),
+            _ => {
+                let mut t = crate::tabs::make_tab(&query, limit);
+                // a fresh query takes the selection sort chosen at the
+                // prompt; a refresh keeps whatever the tab already has
+                if let Some(sort) = sort {
+                    t.ads_sort = sort;
+                }
+                t
+            }
         };
         // replacing the channel orphans any in-flight ADS work: its
         // receiver drops, so those tasks can never report back
@@ -1523,13 +1546,13 @@ impl App {
         tab.limit = STEPS[idx];
         let (q, l) = (tab.query.clone(), tab.limit);
         self.note(MsgCat::Info, format!("limit → {l}"));
-        self.run_ads_query_limit(q, Some(self.active_scope), l);
+        self.run_ads_query_limit(q, Some(self.active_scope), l, None);
     }
 
     fn refresh_scope(&mut self) {
         match self.scopes.get(self.active_scope) {
             Some(Scope::Ads { tab, .. }) => {
-                self.run_ads_query_limit(tab.query.clone(), Some(self.active_scope), tab.limit)
+                self.run_ads_query_limit(tab.query.clone(), Some(self.active_scope), tab.limit, None)
             }
             Some(Scope::Manuscript { .. }) => {
                 self.rescan_manuscript();
@@ -2462,7 +2485,7 @@ impl App {
             } else {
                 format!("citations(identifier:{bc})")
             };
-            self.run_ads_query_limit(q, None, crate::tabs::DEFAULT_LIMIT);
+            self.run_ads_query_limit(q, None, crate::tabs::DEFAULT_LIMIT, None);
         }
     }
 
@@ -3949,12 +3972,21 @@ impl App {
                     input.handle_event(&ev);
                 }
             },
-            Mode::AdsPrompt { input, limit } => match code {
+            Mode::AdsPrompt { input, limit, sort } => match code {
                 KeyCode::Esc => self.mode = Mode::Normal,
                 KeyCode::Enter => {
-                    let (q, l) = (input.value().to_string(), *limit);
+                    let (q, l, so) = (input.value().to_string(), *limit, sort.clone());
                     self.mode = Mode::Normal;
-                    self.run_ads_query_limit(q, None, l);
+                    self.run_ads_query_limit(q, None, l, Some(so));
+                }
+                // ⇥ cycles what ADS selects by. ↑↓ already step the
+                // limit, so the two non-syntax properties of the query
+                // are edited the same way: from the prompt, before it runs
+                KeyCode::Tab | KeyCode::BackTab => {
+                    let i = ADS_SORTS.iter().position(|(_, v)| v == sort).unwrap_or(0);
+                    let n = ADS_SORTS.len();
+                    let step = if code == KeyCode::BackTab { n - 1 } else { 1 };
+                    *sort = ADS_SORTS[(i + step) % n].1.to_string();
                 }
                 KeyCode::Up => {
                     const STEPS: [usize; 4] = [20, 50, 100, 200];
@@ -6026,9 +6058,9 @@ impl App {
                     ),
                 ])
             }
-            Mode::AdsPrompt { ref input, limit } => {
+            Mode::AdsPrompt { ref input, limit, ref sort } => {
                 let prefix = 11u16; // "ADS query: "
-                let avail = area.width.saturating_sub(prefix + 30) as usize;
+                let avail = area.width.saturating_sub(prefix + 46) as usize;
                 let scroll = input.visual_scroll(avail.max(10));
                 let shown: String = input.value().chars().skip(scroll).collect();
                 f.set_cursor_position((
@@ -6038,12 +6070,22 @@ impl App {
                 Line::from(vec![
                 Span::styled("ADS query: ", Style::default().fg(Color::Cyan)),
                 Span::raw(shown),
+                // the API parameters, in their own colour and past the
+                // cursor's reach: they are properties of the query, not
+                // text sent to ADS, and must not invite editing
                 Span::styled(
-                    format!("   n={limit} ↑↓"),
+                    format!(
+                        "   · {} ⇥ · n={limit} ↑↓",
+                        ADS_SORTS
+                            .iter()
+                            .find(|(_, v)| *v == sort)
+                            .map(|(l, _)| *l)
+                            .unwrap_or(sort.as_str())
+                    ),
                     Style::default().fg(Color::Gray),
                 ),
                 Span::styled(
-                    "   ⏎ search · Esc cancel · paste DOI/ADS URL to import",
+                    "   ⏎ search · Esc cancel",
                     Style::default().fg(Color::DarkGray),
                 ),
                 ])

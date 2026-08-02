@@ -39,7 +39,7 @@ Both stores are plain `bib/*.bib` files, one paper per file, indistinguishable f
 Scope capsules at the top switch between your library, saved ADS query tabs, and the manuscript view. Each keeps its own sort, and remembers it. An optional one-cell colour strip at the left edge shows a metric — your own decaying priority, or ADS citation counts; switch it on from the table panel (`|`). The pub card on the right shows the highlighted paper (hover the citekey column to preview others); an event log and clickable view badges sit at the bottom. Most things are clickable; every action has a key (`?` shows the cheat-sheet).
 
 ### Keys
-- `/` — live filter (query language below); `S` — new ADS query (↑/↓ sets result count; pasting a DOI or ADS URL imports directly)
+- `/` — live filter (query language below); `S` — new ADS query (`↑`/`↓` sets the result count, `⇥` what ADS selects by; pasting a DOI or ADS URL imports directly)
 - `j k g G` — move; `[` `]` — switch scope; `ctrl+w` — close query scope; `r` — refresh; `+` `-` — result count
 - `Space` — select row (iOS-style selection mode); `a` — select visible; `A` — select all; Esc — done
 - `i` — import ADS result(s); `m` — toggle manuscript/local membership; `⌫` — remove (with confirmation)
