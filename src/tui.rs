@@ -4170,20 +4170,13 @@ impl App {
         if modal_up {
             self.hover = (u16::MAX, u16::MAX);
         }
-        let log_h = if self.show_log {
-            (self.log.len().min(8) + 2) as u16
-        } else {
-            0
-        };
-        let help_h = if self.show_help {
-            Self::help_height(f.area().width)
-        } else {
-            0
-        };
-        let [main, help_area, log_area, status] = Layout::vertical([
+        // The columns panel and the pub card run the full height; the
+        // keys sheet and the event log belong to the *table*, so they
+        // stack inside its column rather than across the whole frame.
+        // Spanning everything meant opening the log shortened the card,
+        // which has nothing to do with the log.
+        let [body, status] = Layout::vertical([
             Constraint::Min(1),
-            Constraint::Length(help_h),
-            Constraint::Length(log_h),
             // the rule and the footer line — plus an echo line above it
             // while a prompt is up, since the prompt takes the footer
             // and a note arriving then would otherwise be swallowed
@@ -4198,18 +4191,31 @@ impl App {
         if self.show_detail {
             constraints.push(Constraint::Length(48));
         }
-        let areas = Layout::horizontal(constraints).split(main);
+        let areas = Layout::horizontal(constraints).split(body);
         let mut it = areas.iter();
         let columns_area = self.show_columns.then(|| *it.next().unwrap());
-        let table_area = *it.next().unwrap();
+        let centre = *it.next().unwrap();
         let detail_area = self.show_detail.then(|| *it.next().unwrap());
 
-        let (strip_area, table_area) = {
-            let h = self.scope_strip_height(table_area.width);
-            let [s, t] = Layout::vertical([Constraint::Length(h), Constraint::Min(1)])
-                .areas(table_area);
-            (s, t)
+        let log_h = if self.show_log {
+            (self.log.len().min(8) + 2) as u16
+        } else {
+            0
         };
+        // the sheet wraps into as many columns as the table's width
+        // allows, so its height follows that width, not the frame's
+        let help_h = if self.show_help {
+            Self::help_height(centre.width)
+        } else {
+            0
+        };
+        let [strip_area, table_area, help_area, log_area] = Layout::vertical([
+            Constraint::Length(self.scope_strip_height(centre.width)),
+            Constraint::Min(1),
+            Constraint::Length(help_h),
+            Constraint::Length(log_h),
+        ])
+        .areas(centre);
         self.draw_scope_strip(f, strip_area);
         self.draw_table(f, table_area);
         if let Some(area) = columns_area {

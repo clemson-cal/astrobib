@@ -350,7 +350,13 @@ impl App {
 
         let x0 = area.x + 3; // border + 2 padding
         let w = area.width.saturating_sub(5) as usize;
-        let bottom = area.y + area.height;
+        // The view toggler is pinned to the card's last row, so the body
+        // stops one above it. Without that reservation a long keyword
+        // line simply drew over the toggler — invisible until the card
+        // was tall enough for the body to reach the bottom, which the
+        // log and keys panes used to prevent by shortening the card.
+        let card_bottom = area.y + area.height;
+        let bottom = card_bottom.saturating_sub(1);
         let mut y = area.y + 1;
         let line_at = |f: &mut Frame, y: u16, line: Line| {
             if y < bottom {
@@ -599,7 +605,7 @@ impl App {
             None => line_at(f, y, Line::from(spans)),
         }
         self.card_yanks = yanks;
-        self.draw_card_toggle(f, x0, w as u16, bottom, false);
+        self.draw_card_toggle(f, x0, w as u16, card_bottom, false);
     }
 
     /// The card for the highlighted ADS query result. Its `v` view is its

@@ -451,8 +451,7 @@
                                         │  We present global
                                         │  moving-mesh
                                         │  simulations of the
-                                        │  first hundred
-                                        │↓ milliseconds of a
+                                        │↓ first hundred
                                         │  ───────────────────
                                         │  → ADS     │ ⧉ cite
                                         │  → arXiv:2 │ ⧉ full
@@ -473,7 +472,8 @@
                                         │  wave sources
                                         │
                                         │  Cabrera2024txuze
-                                        │   ◇ ad▤ card │ @ bib
+                                        │   ◇ add to manuscrip
+                                        │       ▤ card │ @ bib
 
 ## library w=64 nocard
    ↓ ● Year ▼ Author         Title
@@ -524,8 +524,7 @@
                                         │  deceleration of
                                         │  relativistic jets
                                         │  launched into dense
-                                        │  circumstellar
-                                        │↓ shells.
+                                        │↓ circumstellar
                                         │  ───────────────────
                                         │  → ADS     │ ⧉ cite
                                         │  → arXiv:2 │ ⧉ full
@@ -546,7 +545,8 @@
                                         │  energy astrophysics
                                         │
                                         │  Andersson2021pombz
-                                        │   ◇ ad▤ card │ @ bib
+                                        │   ◇ add to manuscrip
+                                        │       ▤ card │ @ bib
 
 ## query w=64 card
    ↓ ● Year ▼ Entered    Author         │  Cachette, Zylstra ·
