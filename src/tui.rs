@@ -54,7 +54,16 @@ enum Mode {
     /// the `rows` and `sort` API parameters. The prompt shows them and
     /// steps them, and the text cursor never enters them, so it stays
     /// clear that typing into that region would not reach ADS.
-    AdsPrompt { input: tui_input::Input, limit: usize, sort: String },
+    /// `edit` is the scope this replaces, or None to open a new query.
+    /// Editing keeps the tab's identity — its id, its name, its display
+    /// sort — and swaps everything the prompt owns: text, limit, and
+    /// what ADS returns.
+    AdsPrompt {
+        input: tui_input::Input,
+        limit: usize,
+        sort: String,
+        edit: Option<usize>,
+    },
     // first-run setup: collect the ADS token, then the email, into
     // state.json; resume the query prompt afterwards when asked
     Setup { input: tui_input::Input, email: bool, resume: bool },
@@ -633,6 +642,7 @@ const HELP_ENTRIES: &[(&str, &str, Option<Action>, KeyCode)] = &[
     ("D", "pub card", Some(Action::Card), KeyCode::Char('D')),
     ("|", "table columns…", Some(Action::Columns), KeyCode::Char('|')),
     ("N", "name this query…", None, KeyCode::Char('N')),
+    ("E", "edit this query…", None, KeyCode::Char('E')),
     ("L", "event log", Some(Action::Log), KeyCode::Char('L')),
     ("t", "global tier", Some(Action::GlobalTier), KeyCode::Char('t')),
     ("v", "pub view", None, KeyCode::Char('v')),
@@ -860,9 +870,11 @@ struct App {
     focus: Focus,
     col_sel: usize,
     col_rects: Vec<(Rect, PanelHit)>,
-    /// the ADS-returns glyph in the query prompt — a click target only
+    /// the ADS-returns control in the query prompt — a click target only
     /// while the prompt is up
     prompt_sort_rect: Rect,
+    /// "edit query (E)" in the footer — a click target only on a query
+    edit_query_rect: Rect,
     /// the kind of the last coalescing note and where it landed in the
     /// log, so a repeat of the same control can replace it
     last_note: Option<(&'static str, usize)>,
@@ -1098,6 +1110,7 @@ impl App {
             col_sel: 0,
             col_rects: vec![],
             prompt_sort_rect: Rect::default(),
+            edit_query_rect: Rect::default(),
             last_note: None,
             columns: App::load_column_config(),
             show_about: false,
@@ -1264,6 +1277,7 @@ impl App {
             input: tui_input::Input::from(input),
             limit: 20,
             sort: crate::ads::DEFAULT_ADS_SORT.to_string(),
+            edit: None,
         };
     }
 
@@ -1294,6 +1308,22 @@ impl App {
             Some(Scope::Ads { tab, .. }) => {
                 let mut t = tab.clone();
                 t.limit = limit;
+                // A plain refresh passes the query back unchanged; an
+                // edit passes a new one. This used to keep the old text
+                // either way, which nothing exercised — but it would have
+                // meant searching for one thing and reporting another.
+                if t.query != query {
+                    // an unnamed tab is labelled from its query, so the
+                    // label follows the text; a name someone typed is a
+                    // decision and outlives the edit
+                    if t.label == crate::tabs::short_label(&t.query) {
+                        t.label = crate::tabs::short_label(&query);
+                    }
+                    t.query = query.clone();
+                }
+                if let Some(sort) = sort.clone() {
+                    t.ads_sort = sort;
+                }
                 t
             }
             _ => {
@@ -2061,6 +2091,26 @@ impl App {
     /// row — one convention for every bulk-capable action.
     /// e — prompt for a destination path and export the selection (or
     /// the cursor entry) as one .bib file.
+    /// E — edit the active query in place. S always composes a new one;
+    /// this reopens the same prompt over the tab you are looking at, so
+    /// every part of it the prompt owns can be changed at once without
+    /// losing the tab's name or its place in the strip.
+    fn open_edit_query_prompt(&mut self) {
+        let Some(Scope::Ads { tab, .. }) = self.scopes.get(self.active_scope) else {
+            self.note(
+                MsgCat::Warn,
+                "only a saved query can be edited — open one with S".to_string(),
+            );
+            return;
+        };
+        self.mode = Mode::AdsPrompt {
+            input: tui_input::Input::from(tab.query.clone()),
+            limit: tab.limit,
+            sort: tab.ads_sort.clone(),
+            edit: Some(self.active_scope),
+        };
+    }
+
     /// N — rename the active query. Named queries are the point of
     /// saving them: "kilonova ejecta" says what you were doing where
     /// `abs:"kilonova" year:2020-` says only what you typed.
@@ -3629,6 +3679,10 @@ impl App {
             }
             return;
         }
+        if hit(self.edit_query_rect, x, y) {
+            self.open_edit_query_prompt();
+            return;
+        }
         // footer view badges
         if let Some(&(_, action)) = self.footer_badges.iter().find(|(r, _)| hit(*r, x, y)) {
             self.run_action(action);
@@ -4092,12 +4146,13 @@ impl App {
                     input.handle_event(&ev);
                 }
             },
-            Mode::AdsPrompt { input, limit, sort } => match code {
+            Mode::AdsPrompt { input, limit, sort, edit } => match code {
                 KeyCode::Esc => self.mode = Mode::Normal,
                 KeyCode::Enter => {
-                    let (q, l, so) = (input.value().to_string(), *limit, sort.clone());
+                    let (q, l, so, ed) =
+                        (input.value().to_string(), *limit, sort.clone(), *edit);
                     self.mode = Mode::Normal;
-                    self.run_ads_query_limit(q, None, l, Some(so));
+                    self.run_ads_query_limit(q, ed, l, Some(so));
                 }
                 // ⌃r cycles what ADS returns. A chord, so it cannot be
                 // confused with typing, and ⌃s / ⌃q are avoided because
@@ -4169,6 +4224,7 @@ impl App {
                 KeyCode::Char('?') => self.run_action(Action::Help),
                 KeyCode::Char('|') => self.run_action(Action::Columns),
                 KeyCode::Char('N') => self.open_rename_prompt(),
+                KeyCode::Char('E') => self.open_edit_query_prompt(),
                 // the other half of the focus toggle; with no panel open
                 // there is only one thing the arrows could drive
                 KeyCode::Tab | KeyCode::BackTab if self.show_columns => {
@@ -5738,6 +5794,40 @@ impl App {
         Some(format!("{verb} {what}  ·  {key}"))
     }
 
+    /// "edit query (E)", left of the view badges, on a query scope only.
+    /// A saved query's text is otherwise write-once: S always composes a
+    /// new one, so without this the only way to change a query was to
+    /// replace the tab and lose its name and its results with it.
+    fn draw_edit_query(&mut self, f: &mut Frame, area: Rect) {
+        self.edit_query_rect = Rect::default();
+        // a prompt owns the whole footer line while it is up
+        let composing = !matches!(self.mode, Mode::Normal | Mode::Copy);
+        if composing || !matches!(self.scopes.get(self.active_scope), Some(Scope::Ads { .. })) {
+            return;
+        }
+        let label = "edit query (E)";
+        let w = label.chars().count() as u16;
+        let badges: u16 = self.footer_badges.iter().map(|(r, _)| r.width + 1).sum();
+        let x = (area.x + area.width).saturating_sub(badges + w + 3);
+        if x <= area.x {
+            return;
+        }
+        let r = Rect { x, y: area.y, width: w, height: 1 };
+        self.edit_query_rect = r;
+        let hov = hit(r, self.hover.0, self.hover.1);
+        f.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                label,
+                if hov {
+                    Style::default().fg(Color::Cyan).add_modifier(Modifier::UNDERLINED)
+                } else {
+                    Style::default().fg(Color::DarkGray)
+                },
+            ))),
+            r,
+        );
+    }
+
     /// Right-aligned clickable show/hide badges for each app-wide view.
     fn draw_badges(&mut self, f: &mut Frame, area: Rect) {
         let layout = self.badge_layout(area);
@@ -6161,8 +6251,9 @@ impl App {
                     ),
                 ])
             }
-            Mode::AdsPrompt { ref input, limit, ref sort } => {
-                let prefix = 11u16; // "ADS query: "
+            Mode::AdsPrompt { ref input, limit, ref sort, edit } => {
+                let label = if edit.is_some() { "edit query: " } else { "ADS query:  " };
+                let prefix = label.chars().count() as u16;
                 let avail = area.width.saturating_sub(prefix + 74) as usize;
                 let scroll = input.visual_scroll(avail.max(10));
                 let shown: String = input.value().chars().skip(scroll).collect();
@@ -6185,7 +6276,7 @@ impl App {
                 };
                 let hov = hit(sort_rect, self.hover.0, self.hover.1);
                 Line::from(vec![
-                Span::styled("ADS query: ", Style::default().fg(Color::Cyan)),
+                Span::styled(label, Style::default().fg(Color::Cyan)),
                 Span::raw(shown),
                 Span::raw("   "),
                 Span::styled(head, Style::default().fg(Color::Gray)),
@@ -6275,6 +6366,7 @@ impl App {
         self.prompt_sort_rect = sort_rect;
         f.render_widget(line, area);
         self.draw_badges(f, area);
+        self.draw_edit_query(f, area);
     }
 }
 
