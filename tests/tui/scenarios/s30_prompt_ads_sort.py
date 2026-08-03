@@ -6,9 +6,10 @@ parameters — and both belong where the query is composed. What ADS
 returns had no home at all before: it could only be reached after the
 tab existed, so a first run could never be anything but the default.
 
-It shows as one glyph, because the query text deserves the line. Rolling
-it names the mode and the chord in place of the standing hint, and the
-chord is ⌃r so it cannot be confused with typing.
+It is named in full rather than reduced to a symbol, because the name
+changing *is* the feedback that the mode changed. The prompt replaces
+the footer, minibuffer-style, so it must say everything it needs to on
+its own line.
 """
 
 import json
@@ -16,15 +17,10 @@ import os
 
 from driver import require
 
-DESCRIPTION = "query prompt: the ADS-returns glyph, its chord and its click"
+DESCRIPTION = "query prompt: what ADS returns, named, chorded and clickable"
 
-# (glyph, name) in the order ⌃r steps them, wrapping
-MODES = [
-    ("⇓", "newest posting"),
-    ("↓", "newest published"),
-    ("≫", "most cited"),
-    ("≈", "most relevant"),
-]
+# the modes in the order ⌃r steps them, wrapping
+MODES = ["newest posting", "newest published", "most cited", "most relevant"]
 CTRL_R = "\x12"
 
 
@@ -50,64 +46,42 @@ def run(t):
     )
     require("n=20" in t.lines()[footer], "the prompt should show the result limit", t)
     require(
-        MODES[0][0] in t.lines()[footer],
-        f"the prompt should open on {MODES[0][0]!r}: {t.lines()[footer]!r}",
-        t,
-    )
-    # at rest it is a glyph only — the name costs a line the query wants
-    require(
-        MODES[0][1] not in t.lines()[footer],
-        "the mode name should not be spelled out until it is rolled over",
+        f"ADS returns {MODES[0]} (⌃r)" in t.lines()[footer],
+        f"the prompt should name the mode and its chord: {t.lines()[footer]!r}",
         t,
     )
 
-    # rolling it names the mode and the chord, in place of the hint
-    gx = t.lines()[footer].index(MODES[0][0])
+    # it looks clickable when rolled over
+    gx = t.lines()[footer].index("ADS returns") + 4
     t.hover(gx, footer)
     t.wait_for(
-        f"ADS returns {MODES[0][1]}",
-        what="the rollover naming the mode",
+        lambda: t.screen.buffer[footer][gx].underscore,
+        what="the mode underlining under the pointer",
     )
-    require("⌃r" in t.lines()[footer], "the rollover should name the chord too", t)
 
-    # ⌃r steps it, and wraps
-    for glyph, name in MODES[1:] + [MODES[0]]:
+    # ⌃r steps it, and wraps. The name changing is the feedback — there
+    # is no second line to echo it to, the prompt having taken the footer
+    for name in MODES[1:] + [MODES[0]]:
         t.send(CTRL_R)
         t.wait_for(
-            lambda n=name: f"ADS returns {n}" in t.lines()[footer],
+            lambda n=name: f"ADS returns {n} (⌃r)" in t.lines()[footer],
             what=f"⌃r stepping to {name!r}",
         )
-        require(glyph in t.lines()[footer], f"expected the {name!r} glyph {glyph!r}", t)
 
-    # a changed glyph is weak feedback for a mode change, so it is said
-    # in words too — on the echo line the prompt grows above itself,
-    # since the prompt has taken the footer the note would have used
-    echo = len(t.lines()) - 2
-    t.wait_for(
-        lambda: "ADS returns" in t.lines()[echo],
-        what="the mode change echoed above the prompt",
-    )
-
-    # and it is clickable, being a thing that looks clickable when rolled
+    # and clicking does the same
     t.click(gx, footer)
     t.wait_for(
-        f"ADS returns {MODES[1][1]}",
-        what="clicking the glyph stepping the mode",
+        f"ADS returns {MODES[1]} (⌃r)",
+        what="clicking the mode stepping it",
     )
 
     # ↑ still steps the limit, so the two parameters do not fight
     t.key("up")
     t.wait_for(
-        lambda: "n=50" in t.lines()[footer] and MODES[1][0] in t.lines()[footer],
+        lambda: "n=50" in t.lines()[footer] and MODES[1] in t.lines()[footer],
         what="the limit stepping while the mode holds",
     )
 
-    # Esc leaves without querying — this scenario has no network. The
-    # echo line goes with the prompt, giving the footer back its row.
+    # Esc leaves without querying — this scenario has no network
     t.key("esc")
     t.wait_gone("ADS query:")
-    require(
-        "ADS returns" not in t.lines()[len(t.lines()) - 2],
-        "the echo line should retract with the prompt",
-        t,
-    )

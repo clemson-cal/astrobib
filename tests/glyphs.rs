@@ -139,11 +139,7 @@ const INVENTORY: &[(char, Zone, Risk, &str)] = &[
     ('⧗', Zone::Hit, Risk::Narrow, "pending-task count at the head of the footer"),
     // -- key legend -------------------------------------------------------
     ('⌫', Zone::Hit, Risk::Narrow, "help-sheet key legend: remove"),
-    // -- the query prompt's "what ADS returns" glyphs --------------------
-    ('⇓', Zone::Hit, Risk::Narrow, "ADS returns: newest posting"),
-    ('≫', Zone::Hit, Risk::Ambiguous, "ADS returns: most cited"),
-    ('≈', Zone::Hit, Risk::Ambiguous, "ADS returns: most relevant"),
-    ('⌃', Zone::Flow, Risk::Narrow, "the ⌃r chord in the query prompt's hint"),
+    ('⌃', Zone::Hit, Risk::Narrow, "the ⌃r chord named in the query prompt"),
     ('␣', Zone::Hit, Risk::Narrow, "help-sheet key legend: select"),
     ('⏎', Zone::Flow, Risk::Narrow, "modal titles and hint prose"),
     ('±', Zone::Flow, Risk::Ambiguous, "help-sheet legend: \"manuscript ± (selection)\""),

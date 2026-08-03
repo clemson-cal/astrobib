@@ -290,26 +290,24 @@ enum PanelRow {
 /// The ADS `sort` parameters a query tab can select records with, in the
 /// order the panel offers them. The first is the default and the reason
 /// the feature exists: a query tab that reads as a feed of postings.
-/// `(name, the ADS sort parameter, the glyph that stands for it)`.
-///
-/// The glyphs read as an ordering: ⇓ newest by arrival, ↓ newest by
-/// publication, ≫ most cited, ≈ best match. One cell each, because the
-/// query prompt has a line to itself and the query text should have it.
-const ADS_SORTS: [(&str, &str, &str); 4] = [
-    ("newest posting", "entry_date desc", "⇓"),
-    ("newest published", "date desc", "↓"),
-    ("most cited", "citation_count desc", "≫"),
-    ("most relevant", "score desc", "≈"),
+/// `(name, the ADS sort parameter)`. Named in full in the prompt rather
+/// than reduced to a glyph: a symbol you have to have learned is weak
+/// feedback for a mode, and the prompt has room to say it.
+const ADS_SORTS: [(&str, &str); 4] = [
+    ("newest posting", "entry_date desc"),
+    ("newest published", "date desc"),
+    ("most cited", "citation_count desc"),
+    ("most relevant", "score desc"),
 ];
 
-/// The entry in ADS_SORTS for a sort parameter, falling back to the
-/// first — a state file or a future build could name one we do not know.
-fn ads_sort_entry(sort: &str) -> (&'static str, &'static str, &'static str) {
+/// The name for a sort parameter, falling back to the first — a state
+/// file or a future build could name one we do not know.
+fn ads_sort_name(sort: &str) -> &'static str {
     ADS_SORTS
         .iter()
-        .copied()
-        .find(|(_, v, _)| *v == sort)
-        .unwrap_or(ADS_SORTS[0])
+        .find(|(_, v)| *v == sort)
+        .map(|(l, _)| *l)
+        .unwrap_or(ADS_SORTS[0].0)
 }
 
 /// Which kind of table a scope presents. Columns are configured per
@@ -3368,8 +3366,8 @@ impl App {
         if matches!(self.mode, Mode::AdsPrompt { .. }) && hit(self.prompt_sort_rect, x, y) {
             let mut named = None;
             if let Mode::AdsPrompt { sort, .. } = &mut self.mode {
-                let i = ADS_SORTS.iter().position(|(_, v, _)| v == sort).unwrap_or(0);
-                let (name, next, _) = ADS_SORTS[(i + 1) % ADS_SORTS.len()];
+                let i = ADS_SORTS.iter().position(|(_, v)| v == sort).unwrap_or(0);
+                let (name, next) = ADS_SORTS[(i + 1) % ADS_SORTS.len()];
                 *sort = next.to_string();
                 named = Some(name);
             }
@@ -3985,8 +3983,8 @@ impl App {
                 // confused with typing, and ⌃s / ⌃q are avoided because
                 // terminals still eat those as flow control.
                 KeyCode::Char('r') if mods.contains(KeyModifiers::CONTROL) => {
-                    let i = ADS_SORTS.iter().position(|(_, v, _)| v == sort).unwrap_or(0);
-                    let (name, next, _) = ADS_SORTS[(i + 1) % ADS_SORTS.len()];
+                    let i = ADS_SORTS.iter().position(|(_, v)| v == sort).unwrap_or(0);
+                    let (name, next) = ADS_SORTS[(i + 1) % ADS_SORTS.len()];
                     *sort = next.to_string();
                     // a changed glyph is a weak signal for a mode change:
                     // say it in words too, where the prompt can echo it
@@ -4177,10 +4175,7 @@ impl App {
         // which has nothing to do with the log.
         let [body, status] = Layout::vertical([
             Constraint::Min(1),
-            // the rule and the footer line — plus an echo line above it
-            // while a prompt is up, since the prompt takes the footer
-            // and a note arriving then would otherwise be swallowed
-            Constraint::Length(if self.prompt_active() { 3 } else { 2 }),
+            Constraint::Length(2), // the rule and the footer line
         ])
         .areas(f.area());
         let mut constraints = vec![];
@@ -5930,16 +5925,6 @@ impl App {
         f.render_widget(Paragraph::new(Text::from(rendered)), inner);
     }
 
-    /// Whether a text entry is holding the footer. Emacs-like: the
-    /// prompt replaces the status line rather than opening a view of its
-    /// own, so every kind of entry appears in the same place.
-    fn prompt_active(&self) -> bool {
-        matches!(
-            self.mode,
-            Mode::AdsPrompt { .. } | Mode::Filter | Mode::Setup { .. } | Mode::Export { .. }
-        )
-    }
-
     fn draw_status(&mut self, f: &mut Frame, area: Rect) {
         // a rule and a breath of space separate the footer from the
         // content above
@@ -5950,21 +5935,7 @@ impl App {
             ))),
             Rect { x: area.x, y: area.y, width: area.width, height: 1 },
         );
-        // the echo line: the newest logged message, so feedback for
-        // something done *while* composing still reaches the user
-        if self.prompt_active() {
-            if let Some((cat, _, msg)) = self.log.last() {
-                f.render_widget(
-                    Paragraph::new(Line::from(Span::styled(
-                        msg.clone(),
-                        Style::default().fg(cat.color()),
-                    ))),
-                    Rect { x: area.x, y: area.y + 1, width: area.width, height: 1 },
-                );
-            }
-        }
-        let dy = if self.prompt_active() { 2 } else { 1 };
-        let area = Rect { x: area.x, y: area.y + dy, width: area.width, height: 1 };
+        let area = Rect { x: area.x, y: area.y + 1, width: area.width, height: 1 };
         // the badges live on this same line and are drawn after it, so
         // their hover hint has to be settled before the line is built
         if let Some(hint) = self.badge_hint(area) {
@@ -6032,23 +6003,22 @@ impl App {
             }
             Mode::AdsPrompt { ref input, limit, ref sort } => {
                 let prefix = 11u16; // "ADS query: "
-                let avail = area.width.saturating_sub(prefix + 46) as usize;
+                let avail = area.width.saturating_sub(prefix + 74) as usize;
                 let scroll = input.visual_scroll(avail.max(10));
                 let shown: String = input.value().chars().skip(scroll).collect();
                 f.set_cursor_position((
                     area.x + prefix + (input.visual_cursor().saturating_sub(scroll)) as u16,
                     area.y,
                 ));
-                let (name, _, glyph) = ads_sort_entry(sort);
-                // one cell for what ADS returns, clickable, sitting just
-                // past the query text. The API parameters live here in
-                // their own colour and past the cursor's reach: they are
-                // properties of the query, not text sent to ADS, and must
-                // not read as something you could type into.
+                // What ADS returns, named in full and clickable. It is a
+                // property of the query, not text sent to ADS, so it sits
+                // past the cursor's reach in its own colour — and it says
+                // the chord, since nothing else would.
+                let label = format!("ADS returns {} (⌃r)", ads_sort_name(sort));
                 sort_rect = Rect {
                     x: area.x + prefix + shown.chars().count() as u16 + 3,
                     y: area.y,
-                    width: 1,
+                    width: label.chars().count() as u16,
                     height: 1,
                 };
                 let hov = hit(sort_rect, self.hover.0, self.hover.1);
@@ -6057,7 +6027,7 @@ impl App {
                 Span::raw(shown),
                 Span::raw("   "),
                 Span::styled(
-                    glyph,
+                    label,
                     if hov {
                         Style::default().fg(Color::Cyan).add_modifier(Modifier::UNDERLINED)
                     } else {
@@ -6068,15 +6038,9 @@ impl App {
                     format!("   n={limit} ↑↓"),
                     Style::default().fg(Color::Gray),
                 ),
-                // rolling the glyph names the mode and the chord that
-                // cycles it, in place of the standing hint
                 Span::styled(
-                    if hov {
-                        format!("   ADS returns {name}  ·  ⌃r cycles")
-                    } else {
-                        "   ⏎ search · Esc cancel".to_string()
-                    },
-                    Style::default().fg(if hov { Color::Cyan } else { Color::DarkGray }),
+                    "   ⏎ search · Esc cancel",
+                    Style::default().fg(Color::DarkGray),
                 ),
                 ])
             }
