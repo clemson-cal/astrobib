@@ -61,6 +61,10 @@ enum Mode {
     // export the selection (or cursor entry) as a .bib file; the input
     // holds the destination path
     Export { input: tui_input::Input, keys: Vec<String> },
+    /// N — rename the active query scope. The name replaces the one
+    /// derived from the query text and outlives edits to it: a name you
+    /// typed is a decision, and re-deriving would quietly discard it.
+    Rename { input: tui_input::Input },
     /// y pressed — the next key picks what to copy (the Copy panel tab
     /// shows the menu, which-key style); Esc cancels.
     Copy,
@@ -628,6 +632,7 @@ const HELP_ENTRIES: &[(&str, &str, Option<Action>, KeyCode)] = &[
     ("/", "filter", Some(Action::Filter), KeyCode::Char('/')),
     ("D", "pub card", Some(Action::Card), KeyCode::Char('D')),
     ("|", "table columns…", Some(Action::Columns), KeyCode::Char('|')),
+    ("N", "name this query…", None, KeyCode::Char('N')),
     ("L", "event log", Some(Action::Log), KeyCode::Char('L')),
     ("t", "global tier", Some(Action::GlobalTier), KeyCode::Char('t')),
     ("v", "pub view", None, KeyCode::Char('v')),
@@ -2010,6 +2015,42 @@ impl App {
     /// row — one convention for every bulk-capable action.
     /// e — prompt for a destination path and export the selection (or
     /// the cursor entry) as one .bib file.
+    /// N — rename the active query. Named queries are the point of
+    /// saving them: "kilonova ejecta" says what you were doing where
+    /// `abs:"kilonova" year:2020-` says only what you typed.
+    /// Apply a name typed at the rename prompt. An empty name restores
+    /// the one derived from the query text, which is the only way back.
+    fn rename_query(&mut self, name: String) {
+        let Some(Scope::Ads { tab, .. }) = self.scopes.get_mut(self.active_scope) else {
+            return;
+        };
+        let derived = crate::tabs::short_label(&tab.query);
+        let (label, msg) = if name.is_empty() {
+            (derived.clone(), format!("name cleared — showing '{derived}'"))
+        } else {
+            (name.clone(), format!("query named '{name}'"))
+        };
+        if tab.label == label {
+            self.note(MsgCat::Info, "name unchanged".to_string());
+            return;
+        }
+        tab.label = label;
+        self.save_tabs();
+        self.note(MsgCat::Ok, msg);
+    }
+
+    fn open_rename_prompt(&mut self) {
+        let Some(Scope::Ads { tab, .. }) = self.scopes.get(self.active_scope) else {
+            self.note(
+                MsgCat::Warn,
+                "only a saved query can be renamed — the library and manuscript are fixed"
+                    .to_string(),
+            );
+            return;
+        };
+        self.mode = Mode::Rename { input: tui_input::Input::from(tab.label.clone()) };
+    }
+
     fn open_export_prompt(&mut self) {
         let keys = self.action_keys();
         if keys.is_empty() {
@@ -3382,7 +3423,11 @@ impl App {
         // clicking a row of the filtered results must not wipe them
         if matches!(
             self.mode,
-            Mode::AdsPrompt { .. } | Mode::Filter | Mode::Setup { .. } | Mode::Export { .. }
+            Mode::AdsPrompt { .. }
+                | Mode::Filter
+                | Mode::Setup { .. }
+                | Mode::Export { .. }
+                | Mode::Rename { .. }
         ) {
             self.mode = Mode::Normal;
         }
@@ -3909,6 +3954,29 @@ impl App {
                     }
                 }
             }
+            Mode::Rename { input } => match code {
+                KeyCode::Esc => {
+                    self.mode = Mode::Normal;
+                    self.note(MsgCat::Info, "rename cancelled".to_string());
+                }
+                KeyCode::Enter => {
+                    let name = input.value().trim().to_string();
+                    // the prompt closes first: it occupies the footer, so
+                    // a confirmation raised while it is up would be drawn
+                    // over by the prompt itself and never seen
+                    self.mode = Mode::Normal;
+                    self.rename_query(name);
+                }
+                _ => {
+                    use tui_input::backend::crossterm::EventHandler;
+                    if let Some(req) = word_motion(code, mods) {
+                        input.handle(req);
+                        return;
+                    }
+                    let ev = Event::Key(ratatui::crossterm::event::KeyEvent::new(code, mods));
+                    input.handle_event(&ev);
+                }
+            },
             Mode::Export { input, keys } => match code {
                 KeyCode::Esc => self.mode = Mode::Normal,
                 KeyCode::Enter => {
@@ -4048,6 +4116,7 @@ impl App {
                 KeyCode::Char('D') | KeyCode::Char('z') => self.run_action(Action::Card),
                 KeyCode::Char('?') => self.run_action(Action::Help),
                 KeyCode::Char('|') => self.run_action(Action::Columns),
+                KeyCode::Char('N') => self.open_rename_prompt(),
                 // the other half of the focus toggle; with no panel open
                 // there is only one thing the arrows could drive
                 KeyCode::Tab | KeyCode::BackTab if self.show_columns => {
@@ -5958,6 +6027,25 @@ impl App {
                     Span::raw(shown),
                 ])
             }
+            Mode::Rename { ref input } => {
+                let label = "name this query: ";
+                let prefix = label.chars().count() as u16;
+                let avail = area.width.saturating_sub(prefix + 30) as usize;
+                let scroll = input.visual_scroll(avail.max(10));
+                let shown: String = input.value().chars().skip(scroll).collect();
+                f.set_cursor_position((
+                    area.x + prefix + (input.visual_cursor().saturating_sub(scroll)) as u16,
+                    area.y,
+                ));
+                Line::from(vec![
+                    Span::styled(label, Style::default().fg(Color::Cyan)),
+                    Span::raw(shown),
+                    Span::styled(
+                        "   ⏎ rename · Esc cancel",
+                        Style::default().fg(Color::DarkGray),
+                    ),
+                ])
+            }
             Mode::Export { ref input, ref keys } => {
                 let label = format!("export {} → ", keys.len());
                 let prefix = label.chars().count() as u16;
@@ -6010,15 +6098,17 @@ impl App {
                     area.x + prefix + (input.visual_cursor().saturating_sub(scroll)) as u16,
                     area.y,
                 ));
-                // What ADS returns, named in full and clickable. It is a
-                // property of the query, not text sent to ADS, so it sits
-                // past the cursor's reach in its own colour — and it says
-                // the chord, since nothing else would.
-                let label = format!("ADS returns {} (⌃r)", ads_sort_name(sort));
+                // One phrase for what ADS will return: how many, and by
+                // what. Only the mode is a control — the limit has ↑↓,
+                // which no pointer can press — so only the mode carries
+                // the hover and the click rect.
+                let head = format!("ADS returns {limit} (↑↓) ");
+                let action = format!("{} (⌃r)", ads_sort_name(sort));
+                let x0 = area.x + prefix + shown.chars().count() as u16 + 3;
                 sort_rect = Rect {
-                    x: area.x + prefix + shown.chars().count() as u16 + 3,
+                    x: x0 + head.chars().count() as u16,
                     y: area.y,
-                    width: label.chars().count() as u16,
+                    width: action.chars().count() as u16,
                     height: 1,
                 };
                 let hov = hit(sort_rect, self.hover.0, self.hover.1);
@@ -6026,17 +6116,14 @@ impl App {
                 Span::styled("ADS query: ", Style::default().fg(Color::Cyan)),
                 Span::raw(shown),
                 Span::raw("   "),
+                Span::styled(head, Style::default().fg(Color::Gray)),
                 Span::styled(
-                    label,
+                    action,
                     if hov {
                         Style::default().fg(Color::Cyan).add_modifier(Modifier::UNDERLINED)
                     } else {
                         Style::default().fg(Color::Gray)
                     },
-                ),
-                Span::styled(
-                    format!("   n={limit} ↑↓"),
-                    Style::default().fg(Color::Gray),
                 ),
                 Span::styled(
                     "   ⏎ search · Esc cancel",

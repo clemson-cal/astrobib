@@ -44,15 +44,24 @@ def run(t):
         lambda: "little red dots" in t.lines()[footer],
         what="the typed query",
     )
-    require("n=20" in t.lines()[footer], "the prompt should show the result limit", t)
+    # one phrase: how many records, and by what
     require(
-        f"ADS returns {MODES[0]} (⌃r)" in t.lines()[footer],
-        f"the prompt should name the mode and its chord: {t.lines()[footer]!r}",
+        f"ADS returns 20 (↑↓) {MODES[0]} (⌃r)" in t.lines()[footer],
+        f"the prompt should read as one phrase: {t.lines()[footer]!r}",
         t,
     )
 
-    # it looks clickable when rolled over
-    gx = t.lines()[footer].index("ADS returns") + 4
+    # only the mode is a control — the limit has ↑↓, which no pointer
+    # can press — so only the mode looks clickable when rolled over
+    lx = t.lines()[footer].index("20 (↑↓)")
+    t.hover(lx + 1, footer)
+    t.wait_quiet()
+    require(
+        not t.screen.buffer[footer][lx + 1].underscore,
+        "the result limit should not read as clickable",
+        t,
+    )
+    gx = t.lines()[footer].index(MODES[0]) + 2
     t.hover(gx, footer)
     t.wait_for(
         lambda: t.screen.buffer[footer][gx].underscore,
@@ -64,21 +73,19 @@ def run(t):
     for name in MODES[1:] + [MODES[0]]:
         t.send(CTRL_R)
         t.wait_for(
-            lambda n=name: f"ADS returns {n} (⌃r)" in t.lines()[footer],
+            lambda n=name: f"{n} (⌃r)" in t.lines()[footer],
             what=f"⌃r stepping to {name!r}",
         )
 
     # and clicking does the same
     t.click(gx, footer)
-    t.wait_for(
-        f"ADS returns {MODES[1]} (⌃r)",
-        what="clicking the mode stepping it",
-    )
+    t.wait_for(f"{MODES[1]} (⌃r)", what="clicking the mode stepping it")
 
     # ↑ still steps the limit, so the two parameters do not fight
     t.key("up")
     t.wait_for(
-        lambda: "n=50" in t.lines()[footer] and MODES[1] in t.lines()[footer],
+        lambda: "ADS returns 50 (↑↓)" in t.lines()[footer]
+        and MODES[1] in t.lines()[footer],
         what="the limit stepping while the mode holds",
     )
 
