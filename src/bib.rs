@@ -398,18 +398,18 @@ mod tests {
 
     #[test]
     fn parses_ads_style_entry() {
-        let text = r#"@ARTICLE{Zrake2019abcde,
-  author           = {{Zrake}, Jonathan and {MacFadyen}, Andrew},
+        let text = r#"@ARTICLE{Andersson2019abcde,
+  author           = {{Andersson}, Karin and {Blomqvist}, Nils},
   title            = {{Magnetic energy production}},
   year             = {2019},
   adsurl           = {https://ui.adsabs.harvard.edu/abs/2019ApJ...123..456Z},
 }
 "#;
         let d = parse_entry(text).unwrap();
-        assert_eq!(d["ID"], "Zrake2019abcde");
+        assert_eq!(d["ID"], "Andersson2019abcde");
         assert_eq!(d["ENTRYTYPE"], "article");
         // braces are stripped on parse
-        assert_eq!(d["author"], "Zrake, Jonathan and MacFadyen, Andrew");
+        assert_eq!(d["author"], "Andersson, Karin and Blomqvist, Nils");
         assert_eq!(d["title"], "Magnetic energy production");
         assert_eq!(d["year"], "2019");
     }

@@ -22,7 +22,7 @@ export ADS_API_TOKEN=...
 
 astrobib                     # launch the TUI
 astrobib list                # CLI: newest papers
-astrobib search '^zrake OR kw:"compact objects"'
+astrobib search '^andersson OR kw:"compact objects"'
 astrobib add 2020ApJ...123..456Z
 astrobib import refs.bib     # resolve a foreign .bib against ADS
 ```
@@ -56,8 +56,8 @@ Scope capsules at the top switch between your library, saved ADS query tabs, and
 ## Filtering the library
 Press `/` to filter as you type. Whitespace-separated terms AND together; each term is a case-insensitive partial match. Bare terms match author, title, abstract, key, keywords, and year; field prefixes narrow:
 ```
-author:sironi          author anywhere in the list
-^zrake                 first-author papers (= author:^zrake)
+author:cabrera         author anywhere in the list
+^andersson             first-author papers (= author:^andersson)
 title:magnetar         word in title
 abs:"fast radio burst" phrase in abstract
 kw:"compact objects"   keyword
@@ -65,13 +65,13 @@ year:2015-2020         ranges; year:2020- open-ended
 is:ms                  local/manuscript members;  is:pdf  cached PDFs
 pri:>0.5  cit:>100    metric comparisons (> < or bare for ≥); no metric never matches
 -abs:neutrino          leading - negates (NOT works too)
-^zrake OR ^metzger     uppercase OR separates alternatives; AND binds tighter
+^andersson OR ^baxter  uppercase OR separates alternatives; AND binds tighter
 ```
 A half-typed query never errors. With a filter active, `S` pre-fills the equivalent ADS query — filter locally, escalate in one keystroke.
 
 Pressing `/` offers these four as a starting point; click one to load it into an empty filter.
 ```
-^zrake year:2019-                     first author, open-ended years
+^andersson year:2019-                 first author, open-ended years
 abs:"fast radio burst"                phrase in the abstract
 is:pdf pri:>0.5                       has a PDF, high priority
 kw:"compact objects" -abs:neutrino    keyword, and a negation
@@ -85,7 +85,7 @@ The pub card walks the citation graph directly: click "cited by N" (or the citat
 Pressing `S` offers these four as a starting point; click one to load it into an empty prompt.
 ```
 abs:"little red dot" -doctype:abstract    phrase, minus meeting abstracts
-author:"^Zrake, J." year:2020-            first author, from a year on
+author:"^Andersson, K." year:2020-        first author, from a year on
 bibstem:ApJL abs:"magnetar"               one journal
 arxiv_class:astro-ph.HE                   an arXiv subject class
 ```
@@ -96,7 +96,7 @@ A saved query reads as a feed: ADS is asked for the newest records by *entry dat
 ---
 ## Markdown manuscripts
 Literature reviews and notes work as manuscripts too: any `.md` files beside `bib/` are scanned for citations (`main.md` is the sole root when present; Obsidian `![[embeds]]` pull in more files, like `\input`).
-Cite pandoc-style — bare `@Zrake2019` or bracketed `[@Zrake2019; @Metzger2017]` — or with Obsidian wikilinks: `[[Zrake2019]]` counts as a citation when it resolves in the library, and stays an ordinary note link when it doesn't. An unresolved `@cite` shows as missing in the Manuscript view, same as LaTeX.
+Cite pandoc-style — bare `@Andersson2021` or bracketed `[@Andersson2021; @Baxter2019]` — or with Obsidian wikilinks: `[[Andersson2021]]` counts as a citation when it resolves in the library, and stays an ordinary note link when it doesn't. An unresolved `@cite` shows as missing in the Manuscript view, same as LaTeX.
 `astrobib refs` renders the bibliography of everything cited into the manuscript — a sorted, linked reference list (authors, year, italic title, journal, ADS/arXiv/DOI links) kept between `<!-- astrobib:references -->` markers, appended as a `## References` section the first time. Regenerate any time; your prose is never touched.
 
 ---

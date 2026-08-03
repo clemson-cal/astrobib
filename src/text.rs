@@ -46,15 +46,15 @@ pub fn fit_authors(author: &str, width: usize) -> String {
 mod tests {
     #[test]
     fn fit_authors_candidates() {
-        let a3 = "{Zrake}, J. and {Clyburn}, M. and {Fearing}, S.";
-        assert_eq!(super::fit_authors(a3, 40), "Zrake, Clyburn, and Fearing");
-        assert_eq!(super::fit_authors(a3, 20), "Zrake, Clyburn, +1");
-        assert_eq!(super::fit_authors(a3, 14), "Zrake, +2");
-        assert_eq!(super::fit_authors(a3, 9), "Zrake, +2");
-        assert_eq!(super::fit_authors("{Zrake}, J.", 20), "Zrake");
+        let a3 = "{Quist}, J. and {Clyburn}, M. and {Fearing}, S.";
+        assert_eq!(super::fit_authors(a3, 40), "Quist, Clyburn, and Fearing");
+        assert_eq!(super::fit_authors(a3, 20), "Quist, Clyburn, +1");
+        assert_eq!(super::fit_authors(a3, 14), "Quist, +2");
+        assert_eq!(super::fit_authors(a3, 9), "Quist, +2");
+        assert_eq!(super::fit_authors("{Quist}, J.", 20), "Quist");
         assert_eq!(
-            super::fit_authors("{Zrake}, J. and {MacFadyen}, A.", 30),
-            "Zrake and MacFadyen"
+            super::fit_authors("{Quist}, J. and {Blomqvist}, A.", 30),
+            "Quist and Blomqvist"
         );
         let many = (0..13)
             .map(|i| format!("{{A{i}}}, X."))

@@ -479,7 +479,7 @@ mod tests {
             assert_eq!(doi_from_text(&form).as_deref(), Some(doi), "{form}");
         }
         assert_eq!(doi_from_text("kilonova doi 10.1038 x"), None);
-        assert_eq!(doi_from_text("author:^zrake year:2020-"), None);
+        assert_eq!(doi_from_text("author:^andersson year:2020-"), None);
         assert_eq!(
             doi_from_text("https://doi.org/10.3847/1538-4357%2Faa8b0e").as_deref(),
             Some("10.3847/1538-4357/aa8b0e")

@@ -382,7 +382,7 @@ fn author_initials(one: &str) -> String {
     format!("{surname}, {}", initials.join(" "))
 }
 
-/// "Zrake, J., & MacFadyen, A. I." — full list up to five names, then
+/// "Andersson, K., & Blomqvist, N. R." — full list up to five names, then
 /// first author et al.
 fn bib_authors(author: &str) -> String {
     let names: Vec<String> = author
@@ -489,9 +489,9 @@ pub fn update_md_bibliography(path: &Path, block: &str) -> std::io::Result<bool>
 mod tests {
     #[test]
     fn scans_cite_variants() {
-        let text = r"\citep[e.g.][]{Zrake2019, Metzger2017*} and \Citet{Kasen2017}
+        let text = r"\citep[e.g.][]{Andersson2019, Baxter2017*} and \Citet{Cabrera2017}
 % \cite{Commented2000}
-\citeauthor{Zrake2019}";
+\citeauthor{Andersson2019}";
         let re = super::cite_re();
         let stripped = super::strip_comments(text);
         let mut keys = vec![];
@@ -500,8 +500,8 @@ mod tests {
                 keys.push(k.trim().to_string());
             }
         }
-        assert!(keys.contains(&"Zrake2019".to_string()));
-        assert!(keys.contains(&"Kasen2017".to_string()));
+        assert!(keys.contains(&"Andersson2019".to_string()));
+        assert!(keys.contains(&"Cabrera2017".to_string()));
         assert!(!keys.iter().any(|k| k.contains("Commented")));
     }
 
@@ -530,7 +530,7 @@ mod tests {
         let p = dir.join("main.tex");
         std::fs::write(
             &p,
-            "\\citep[e.g.][]{smith_frb, Zrake2019}, \\citet{smith_frb} and prose smith_frb.\n",
+            "\\citep[e.g.][]{smith_frb, Andersson2019}, \\citet{smith_frb} and prose smith_frb.\n",
         )
         .unwrap();
         let n = super::convert_citations(&p, |k| {
@@ -539,7 +539,7 @@ mod tests {
         .unwrap();
         assert_eq!(n, 2);
         let out = std::fs::read_to_string(&p).unwrap();
-        assert!(out.contains("{Smith2019abcde, Zrake2019}"));
+        assert!(out.contains("{Smith2019abcde, Andersson2019}"));
         assert!(out.contains("\\citet{Smith2019abcde}"));
         // prose outside cite braces is never touched
         assert!(out.contains("prose smith_frb"));
@@ -548,13 +548,13 @@ mod tests {
 
     #[test]
     fn scans_md_pandoc_cites() {
-        let got = md_keys("As shown by @Zrake2019 and [@Metzger2017abcde; @Kasen2017].");
+        let got = md_keys("As shown by @Andersson2019 and [@Baxter2017abcde; @Cabrera2017].");
         assert_eq!(
             got,
             vec![
-                ("Zrake2019".to_string(), false),
-                ("Metzger2017abcde".to_string(), false),
-                ("Kasen2017".to_string(), false),
+                ("Andersson2019".to_string(), false),
+                ("Baxter2017abcde".to_string(), false),
+                ("Cabrera2017".to_string(), false),
             ]
         );
     }
@@ -567,12 +567,12 @@ mod tests {
 
     #[test]
     fn scans_md_wikilinks() {
-        let got = md_keys("See [[Zrake2019]] and [[Metzger2017|the kilonova review]], also [[notes#section]]; ![[embedded-file]] is a source.");
+        let got = md_keys("See [[Andersson2019]] and [[Baxter2017|the kilonova review]], also [[notes#section]]; ![[embedded-file]] is a source.");
         assert_eq!(
             got,
             vec![
-                ("Zrake2019".to_string(), true),
-                ("Metzger2017".to_string(), true),
+                ("Andersson2019".to_string(), true),
+                ("Baxter2017".to_string(), true),
                 ("notes".to_string(), true),
             ]
         );
@@ -581,8 +581,8 @@ mod tests {
     #[test]
     fn bib_author_formatting() {
         assert_eq!(
-            super::bib_authors("{Zrake}, Jonathan and {MacFadyen}, Andrew I."),
-            "Zrake, J., & MacFadyen, A. I."
+            super::bib_authors("{Andersson}, Karin and {Blomqvist}, Nils R."),
+            "Andersson, K., & Blomqvist, N. R."
         );
         let many = (0..8)
             .map(|i| format!("{{A{i}}}, X."))
@@ -596,7 +596,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("astrobib-mdbib-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let p = dir.join("main.md");
-        std::fs::write(&p, "# Review\n\nSee @Zrake2019.\n").unwrap();
+        std::fs::write(&p, "# Review\n\nSee @Andersson2019.\n").unwrap();
         let block = format!("{}\n- item\n{}", super::MD_BIB_BEGIN, super::MD_BIB_END);
         assert!(super::update_md_bibliography(&p, &block).unwrap());
         let once = std::fs::read_to_string(&p).unwrap();

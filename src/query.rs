@@ -249,12 +249,12 @@ mod tests {
     }
 
     fn names(q: &str) -> Vec<&'static str> {
-        let zrake = entry("Zrake", "Zrake, J.", "relativistic turbulence", "2019");
-        let metzger = entry("Metzger", "Metzger, B.", "kilonovae", "2017");
-        let sironi = entry("Sironi", "Sironi, L.", "reconnection or shocks", "2021");
+        let andersson = entry("Andersson", "Andersson, K.", "relativistic turbulence", "2019");
+        let baxter = entry("Baxter", "Baxter, R.", "kilonovae", "2017");
+        let cabrera = entry("Cabrera", "Cabrera, M.", "reconnection or shocks", "2021");
         let ctx = QueryContext::default();
         let g = tokenize(q);
-        [("zrake", zrake), ("metzger", metzger), ("sironi", sironi)]
+        [("andersson", andersson), ("baxter", baxter), ("cabrera", cabrera)]
             .into_iter()
             .filter(|(_, e)| matches(&g, e, &ctx))
             .map(|(n, _)| n)
@@ -273,66 +273,66 @@ mod tests {
 
     #[test]
     fn or_of_first_author_groups() {
-        assert_eq!(names("author:^zrake OR author:^metzger"), ["zrake", "metzger"]);
-        assert_eq!(names("^zrake OR ^metzger"), ["zrake", "metzger"]);
+        assert_eq!(names("author:^andersson OR author:^baxter"), ["andersson", "baxter"]);
+        assert_eq!(names("^andersson OR ^baxter"), ["andersson", "baxter"]);
     }
 
     #[test]
     fn and_binds_tighter_than_or() {
-        assert_eq!(names("year:2019 ^zrake OR ^sironi"), ["zrake", "sironi"]);
-        assert_eq!(names("^zrake year:2020- OR ^sironi"), ["sironi"]);
+        assert_eq!(names("year:2019 ^andersson OR ^cabrera"), ["andersson", "cabrera"]);
+        assert_eq!(names("^andersson year:2020- OR ^cabrera"), ["cabrera"]);
     }
 
     #[test]
     fn lowercase_operators_are_bare_terms() {
-        assert_eq!(names("or"), ["sironi"]);
+        assert_eq!(names("or"), ["cabrera"]);
     }
 
     #[test]
     fn explicit_and_and_not() {
-        assert_eq!(names("^sironi AND year:2021"), ["sironi"]);
-        assert_eq!(names("NOT ^zrake"), ["metzger", "sironi"]);
-        assert_eq!(names("NOT ^zrake NOT ^sironi"), ["metzger"]);
+        assert_eq!(names("^cabrera AND year:2021"), ["cabrera"]);
+        assert_eq!(names("NOT ^andersson"), ["baxter", "cabrera"]);
+        assert_eq!(names("NOT ^andersson NOT ^cabrera"), ["baxter"]);
     }
 
     #[test]
     fn dangling_operators_never_error() {
-        assert_eq!(names("^zrake OR"), ["zrake"]);
-        assert_eq!(names("OR ^zrake"), ["zrake"]);
-        assert_eq!(names("^zrake NOT"), ["zrake"]);
-        assert_eq!(names(""), ["zrake", "metzger", "sironi"]);
+        assert_eq!(names("^andersson OR"), ["andersson"]);
+        assert_eq!(names("OR ^andersson"), ["andersson"]);
+        assert_eq!(names("^andersson NOT"), ["andersson"]);
+        assert_eq!(names(""), ["andersson", "baxter", "cabrera"]);
     }
 
     #[test]
     fn negation_inside_group() {
         assert_eq!(
-            names("year:2015- -^metzger OR ^metzger"),
-            ["zrake", "metzger", "sironi"]
+            names("year:2015- -^baxter OR ^baxter"),
+            ["andersson", "baxter", "cabrera"]
         );
     }
 
     #[test]
     fn year_ranges() {
-        assert_eq!(names("year:2015-2020"), ["zrake", "metzger"]);
-        assert_eq!(names("year:-2017"), ["metzger"]);
-        assert_eq!(names("year:2019-"), ["zrake", "sironi"]);
+        assert_eq!(names("year:2015-2020"), ["andersson", "baxter"]);
+        assert_eq!(names("year:-2017"), ["baxter"]);
+        assert_eq!(names("year:2019-"), ["andersson", "cabrera"]);
     }
 
     #[test]
     fn ads_translation() {
         assert_eq!(
-            to_ads_query("^zrake OR ^metzger"),
-            r#"author:"^zrake" OR author:"^metzger""#
+            to_ads_query("^andersson OR ^baxter"),
+            r#"author:"^andersson" OR author:"^baxter""#
         );
         assert_eq!(
-            to_ads_query("author:^zrake year:2019-"),
-            r#"author:"^zrake" year:2019-"#
+            to_ads_query("author:^andersson year:2019-"),
+            r#"author:"^andersson" year:2019-"#
         );
         assert_eq!(
-            to_ads_query("^zrake year:2019- OR kw:jets"),
-            r#"(author:"^zrake" year:2019-) OR keyword:"jets""#
+            to_ads_query("^andersson year:2019- OR kw:jets"),
+            r#"(author:"^andersson" year:2019-) OR keyword:"jets""#
         );
-        assert_eq!(to_ads_query("is:starred ^zrake"), r#"author:"^zrake""#);
+        assert_eq!(to_ads_query("is:starred ^andersson"), r#"author:"^andersson""#);
         assert_eq!(to_ads_query("is:starred OR is:pdf"), "");
         assert_eq!(to_ads_query(""), "");
         assert_eq!(to_ads_query(r#""gamma ray" OR jets"#), r#""gamma ray" OR jets"#);

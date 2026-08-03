@@ -642,13 +642,13 @@ const HELP_COLW: u16 = 30;
 /// something to bake into the text.
 const ADS_SAMPLES: [(&str, &str); 4] = [
     ("abs:\"little red dot\" -doctype:abstract", "phrase, minus meeting abstracts"),
-    ("author:\"^Zrake, J.\" year:2020-", "first author, from a year on"),
+    ("author:\"^Andersson, K.\" year:2020-", "first author, from a year on"),
     ("bibstem:ApJL abs:\"magnetar\"", "one journal"),
     ("arxiv_class:astro-ph.HE", "an arXiv subject class"),
 ];
 
 const FILTER_SAMPLES: [(&str, &str); 4] = [
-    ("^zrake year:2019-", "first author, open-ended years"),
+    ("^andersson year:2019-", "first author, open-ended years"),
     ("abs:\"fast radio burst\"", "phrase in the abstract"),
     ("is:pdf pri:>0.5", "has a PDF, high priority"),
     ("kw:\"compact objects\" -abs:neutrino", "keyword, and a negation"),
@@ -6673,7 +6673,7 @@ mod tests {
             ("foob", "Zm9vYg=="),
             ("fooba", "Zm9vYmE="),
             ("foobar", "Zm9vYmFy"),
-            ("Zrake2019abcde", "WnJha2UyMDE5YWJjZGU="),
+            ("Quist2019abcde", "UXVpc3QyMDE5YWJjZGU="),
         ] {
             assert_eq!(super::base64(input.as_bytes()), want);
         }
@@ -6702,7 +6702,7 @@ fn column_layout(width: u16) -> (u16, bool) {
     (author, false)
 }
 
-/// "Zrake, J. and MacFadyen, A." → "Zrake, MacFadyen" (surnames, truncated).
+/// "Quist, J. and Blomqvist, A." → "Quist, Blomqvist" (surnames, truncated).
 fn format_authors(author: &str) -> String {
     let surnames: Vec<&str> = author
         .split(" and ")

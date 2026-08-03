@@ -654,7 +654,7 @@ mod tests {
 
     #[test]
     fn update_entry_rewrites_both_tiers_under_same_key() {
-        let key = "Zrake2024abcde";
+        let key = "Andersson2024abcde";
         let preprint = data(&[
             ("adsurl", "https://ui.adsabs.harvard.edu/abs/2024arXiv240512345Z"),
             ("eprint", "2405.12345"),

@@ -197,7 +197,7 @@ pub fn make_tab(query: &str, limit: usize) -> Tab {
 mod tests {
     #[test]
     fn short_labels() {
-        assert_eq!(super::short_label(r#"author:"^zrake" year:2019-"#), "^zrake 2019-");
+        assert_eq!(super::short_label(r#"author:"^andersson" year:2019-"#), "^andersson 2019-");
         // the 22-char truncation cuts mid-bibcode by design
         assert_eq!(
             super::short_label(r#"references(bibcode:"2020ApJ...123..456Z")"#),
