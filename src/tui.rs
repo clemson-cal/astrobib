@@ -290,12 +290,27 @@ enum PanelRow {
 /// The ADS `sort` parameters a query tab can select records with, in the
 /// order the panel offers them. The first is the default and the reason
 /// the feature exists: a query tab that reads as a feed of postings.
-const ADS_SORTS: [(&str, &str); 4] = [
-    ("newest posting", "entry_date desc"),
-    ("newest published", "date desc"),
-    ("most cited", "citation_count desc"),
-    ("most relevant", "score desc"),
+/// `(name, the ADS sort parameter, the glyph that stands for it)`.
+///
+/// The glyphs read as an ordering: ⇓ newest by arrival, ↓ newest by
+/// publication, ≫ most cited, ≈ best match. One cell each, because the
+/// query prompt has a line to itself and the query text should have it.
+const ADS_SORTS: [(&str, &str, &str); 4] = [
+    ("newest posting", "entry_date desc", "⇓"),
+    ("newest published", "date desc", "↓"),
+    ("most cited", "citation_count desc", "≫"),
+    ("most relevant", "score desc", "≈"),
 ];
+
+/// The entry in ADS_SORTS for a sort parameter, falling back to the
+/// first — a state file or a future build could name one we do not know.
+fn ads_sort_entry(sort: &str) -> (&'static str, &'static str, &'static str) {
+    ADS_SORTS
+        .iter()
+        .copied()
+        .find(|(_, v, _)| *v == sort)
+        .unwrap_or(ADS_SORTS[0])
+}
 
 /// Which kind of table a scope presents. Columns are configured per
 /// kind, not per scope: every query tab holds the same kind of record,
@@ -615,7 +630,6 @@ const HELP_ENTRIES: &[(&str, &str, Option<Action>, KeyCode)] = &[
     ("/", "filter", Some(Action::Filter), KeyCode::Char('/')),
     ("D", "pub card", Some(Action::Card), KeyCode::Char('D')),
     ("|", "table columns…", Some(Action::Columns), KeyCode::Char('|')),
-    ("s", "what ADS returns", None, KeyCode::Char('s')),
     ("L", "event log", Some(Action::Log), KeyCode::Char('L')),
     ("t", "global tier", Some(Action::GlobalTier), KeyCode::Char('t')),
     ("v", "pub view", None, KeyCode::Char('v')),
@@ -843,6 +857,9 @@ struct App {
     focus: Focus,
     col_sel: usize,
     col_rects: Vec<(Rect, PanelHit)>,
+    /// the ADS-returns glyph in the query prompt — a click target only
+    /// while the prompt is up
+    prompt_sort_rect: Rect,
     /// per scope kind: which columns are hidden and how wide the user
     /// pinned them. Absent means auto — see table::ColumnConfig.
     columns: std::collections::HashMap<ScopeKind, table::ColumnConfig>,
@@ -1074,6 +1091,7 @@ impl App {
             focus: Focus::Table,
             col_sel: 0,
             col_rects: vec![],
+            prompt_sort_rect: Rect::default(),
             columns: App::load_column_config(),
             show_about: false,
             about_links: vec![],
@@ -3345,6 +3363,15 @@ impl App {
             }
             return;
         }
+        // the prompt's ADS-returns glyph, which must be tested before the
+        // click-away dismissal below or it would close the prompt instead
+        if matches!(self.mode, Mode::AdsPrompt { .. }) && hit(self.prompt_sort_rect, x, y) {
+            if let Mode::AdsPrompt { sort, .. } = &mut self.mode {
+                let i = ADS_SORTS.iter().position(|(_, v, _)| v == sort).unwrap_or(0);
+                *sort = ADS_SORTS[(i + 1) % ADS_SORTS.len()].1.to_string();
+            }
+            return;
+        }
         // clicking away from the query prompt dismisses it, and the click
         // then performs its normal action (e.g. switching scope); the
         // filter likewise leaves entry mode, but stays applied (as ⏎) —
@@ -3948,14 +3975,12 @@ impl App {
                     self.mode = Mode::Normal;
                     self.run_ads_query_limit(q, None, l, Some(so));
                 }
-                // ⇥ cycles what ADS selects by. ↑↓ already step the
-                // limit, so the two non-syntax properties of the query
-                // are edited the same way: from the prompt, before it runs
-                KeyCode::Tab | KeyCode::BackTab => {
-                    let i = ADS_SORTS.iter().position(|(_, v)| v == sort).unwrap_or(0);
-                    let n = ADS_SORTS.len();
-                    let step = if code == KeyCode::BackTab { n - 1 } else { 1 };
-                    *sort = ADS_SORTS[(i + step) % n].1.to_string();
+                // ⌃r cycles what ADS returns. A chord, so it cannot be
+                // confused with typing, and ⌃s / ⌃q are avoided because
+                // terminals still eat those as flow control.
+                KeyCode::Char('r') if mods.contains(KeyModifiers::CONTROL) => {
+                    let i = ADS_SORTS.iter().position(|(_, v, _)| v == sort).unwrap_or(0);
+                    *sort = ADS_SORTS[(i + 1) % ADS_SORTS.len()].1.to_string();
                 }
                 KeyCode::Up => {
                     const STEPS: [usize; 4] = [20, 50, 100, 200];
@@ -4015,7 +4040,6 @@ impl App {
                 KeyCode::Char('D') | KeyCode::Char('z') => self.run_action(Action::Card),
                 KeyCode::Char('?') => self.run_action(Action::Help),
                 KeyCode::Char('|') => self.run_action(Action::Columns),
-                KeyCode::Char('s') => self.cycle_ads_sort(),
                 // the other half of the focus toggle; with no panel open
                 // there is only one thing the arrows could drive
                 KeyCode::Tab | KeyCode::BackTab if self.show_columns => {
@@ -5272,49 +5296,6 @@ impl App {
         self.save_column_config();
     }
 
-    /// s — step what ADS returns for the active query: newest posting,
-    /// newest published, most cited, most relevant.
-    fn cycle_ads_sort(&mut self) {
-        let cur = match self.scopes.get(self.active_scope) {
-            Some(Scope::Ads { tab, .. }) => tab.ads_sort.clone(),
-            _ => {
-                self.note(
-                    MsgCat::Warn,
-                    "what ADS returns is a property of a query — open one with S".to_string(),
-                );
-                return;
-            }
-        };
-        let i = ADS_SORTS.iter().position(|(_, v)| *v == cur).unwrap_or(0);
-        let next = ADS_SORTS[(i + 1) % ADS_SORTS.len()].1;
-        self.set_ads_sort(next);
-    }
-
-    /// Choose the ADS `sort` a query tab selects records with. This
-    /// changes *which* records the next refresh returns, so nothing on
-    /// screen moves until `r` runs the query again — say so, or the
-    /// keystroke looks like it did nothing.
-    fn set_ads_sort(&mut self, sort: &str) {
-        let Some(Scope::Ads { tab, .. }) = self.scopes.get_mut(self.active_scope) else {
-            self.note(
-                MsgCat::Warn,
-                "the ADS selection sort belongs to a query, not this scope".to_string(),
-            );
-            return;
-        };
-        if tab.ads_sort == sort {
-            return;
-        }
-        tab.ads_sort = sort.to_string();
-        let label = ADS_SORTS
-            .iter()
-            .find(|(_, s)| *s == sort)
-            .map(|(l, _)| *l)
-            .unwrap_or(sort);
-        self.save_tabs();
-        self.note(MsgCat::Info, format!("ADS returns {label} — r refreshes"));
-    }
-
     /// Every row's metric value in the active scope, in row order, with
     /// the known ones pooled for rank-normalizing. None where a paper
     /// has no value for the metric on show.
@@ -5946,6 +5927,9 @@ impl App {
         if let Some(hint) = self.badge_hint(area) {
             self.hover_hint = Some(hint);
         }
+        // the prompt's glyph rect, published after the match: the arm
+        // borrows self.mode, so it cannot write to self while building
+        let mut sort_rect = Rect::default();
         let line = match self.mode {
             Mode::Filter => {
                 let avail = area.width.saturating_sub(2) as usize;
@@ -6012,26 +5996,44 @@ impl App {
                     area.x + prefix + (input.visual_cursor().saturating_sub(scroll)) as u16,
                     area.y,
                 ));
+                let (name, _, glyph) = ads_sort_entry(sort);
+                // one cell for what ADS returns, clickable, sitting just
+                // past the query text. The API parameters live here in
+                // their own colour and past the cursor's reach: they are
+                // properties of the query, not text sent to ADS, and must
+                // not read as something you could type into.
+                sort_rect = Rect {
+                    x: area.x + prefix + shown.chars().count() as u16 + 3,
+                    y: area.y,
+                    width: 1,
+                    height: 1,
+                };
+                let hov = hit(sort_rect, self.hover.0, self.hover.1);
                 Line::from(vec![
                 Span::styled("ADS query: ", Style::default().fg(Color::Cyan)),
                 Span::raw(shown),
-                // the API parameters, in their own colour and past the
-                // cursor's reach: they are properties of the query, not
-                // text sent to ADS, and must not invite editing
+                Span::raw("   "),
                 Span::styled(
-                    format!(
-                        "   · {} ⇥ · n={limit} ↑↓",
-                        ADS_SORTS
-                            .iter()
-                            .find(|(_, v)| *v == sort)
-                            .map(|(l, _)| *l)
-                            .unwrap_or(sort.as_str())
-                    ),
-                    Style::default().fg(Color::Gray),
+                    glyph,
+                    if hov {
+                        Style::default().fg(Color::Cyan).add_modifier(Modifier::UNDERLINED)
+                    } else {
+                        Style::default().fg(Color::Gray)
+                    },
                 ),
                 Span::styled(
-                    "   ⏎ search · Esc cancel",
-                    Style::default().fg(Color::DarkGray),
+                    format!("   n={limit} ↑↓"),
+                    Style::default().fg(Color::Gray),
+                ),
+                // rolling the glyph names the mode and the chord that
+                // cycles it, in place of the standing hint
+                Span::styled(
+                    if hov {
+                        format!("   ADS returns {name}  ·  ⌃r cycles")
+                    } else {
+                        "   ⏎ search · Esc cancel".to_string()
+                    },
+                    Style::default().fg(if hov { Color::Cyan } else { Color::DarkGray }),
                 ),
                 ])
             }
@@ -6104,6 +6106,7 @@ impl App {
                 Line::from(spans)
             }
         };
+        self.prompt_sort_rect = sort_rect;
         f.render_widget(line, area);
         self.draw_badges(f, area);
     }

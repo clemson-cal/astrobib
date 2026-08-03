@@ -119,13 +119,3 @@ def run(t):
         f"{[(s.get('sort_col'), s.get('sort_asc')) for s in saved]}",
         t,
     )
-
-    # s steps what ADS returns. It moves nothing on screen, since it
-    # decides what the *next* refresh asks for, so the app has to say so
-    t.send("s")
-    t.wait_for(
-        "ADS returns newest published — r refreshes",
-        what="the note explaining that a refresh is what applies it",
-    )
-    t.send("s")
-    t.wait_for("ADS returns most cited", what="the selection sort stepping on")

@@ -1,15 +1,14 @@
-"""The S prompt shows and sets what ADS will select by.
+"""The query prompt shows, and sets, what ADS will return.
 
 Two properties of a query are not query *syntax* — the result limit and
-the selection sort ride alongside `q` as the `rows` and `sort` API
-parameters — and both are now surfaced where the query is composed. The
-limit already was; the sort was only reachable from the table panel,
-after the tab existed, so a first run could never use anything but the
-default.
+what ADS returns ride alongside `q` as the `rows` and `sort` API
+parameters — and both belong where the query is composed. What ADS
+returns had no home at all before: it could only be reached after the
+tab existed, so a first run could never be anything but the default.
 
-They must not read as text you could type: the prompt draws them in
-their own colour past the text cursor's reach, and ⏎ sends only the
-query string to ADS.
+It shows as one glyph, because the query text deserves the line. Rolling
+it names the mode and the chord in place of the standing hint, and the
+chord is ⌃r so it cannot be confused with typing.
 """
 
 import json
@@ -17,7 +16,16 @@ import os
 
 from driver import require
 
-DESCRIPTION = "S prompt: the ADS selection sort is shown and settable"
+DESCRIPTION = "query prompt: the ADS-returns glyph, its chord and its click"
+
+# (glyph, name) in the order ⌃r steps them, wrapping
+MODES = [
+    ("⇓", "newest posting"),
+    ("↓", "newest published"),
+    ("≫", "most cited"),
+    ("≈", "most relevant"),
+]
+CTRL_R = "\x12"
 
 
 def _pre_launch(state_dir):
@@ -28,43 +36,61 @@ def _pre_launch(state_dir):
 
 PRE_LAUNCH = _pre_launch
 
-# the ADS sorts the prompt cycles, in order, wrapping
-SORTS = ["newest posting", "newest published", "most cited", "most relevant"]
-
 
 def run(t):
+    footer = len(t.lines()) - 1
     t.send("S")
     t.wait_for("ADS query:", what="the ADS query prompt")
 
-    footer = len(t.lines()) - 1
-    require(
-        SORTS[0] in t.lines()[footer],
-        f"the prompt should open on {SORTS[0]!r}: {t.lines()[footer]!r}",
-        t,
-    )
-    require("n=20" in t.lines()[footer], "the prompt should show the result limit", t)
-
-    # typing goes to the query, not to the parameters beside it
+    # typing goes to the query; the parameters sit past it
     t.send("little red dots")
     t.wait_for(
-        lambda: "little red dots" in t.lines()[footer]
-        and SORTS[0] in t.lines()[footer],
-        what="the typed query with the parameters still shown",
+        lambda: "little red dots" in t.lines()[footer],
+        what="the typed query",
+    )
+    require("n=20" in t.lines()[footer], "the prompt should show the result limit", t)
+    require(
+        MODES[0][0] in t.lines()[footer],
+        f"the prompt should open on {MODES[0][0]!r}: {t.lines()[footer]!r}",
+        t,
+    )
+    # at rest it is a glyph only — the name costs a line the query wants
+    require(
+        MODES[0][1] not in t.lines()[footer],
+        "the mode name should not be spelled out until it is rolled over",
+        t,
     )
 
-    # ⇥ cycles the selection sort, and wraps
-    for want in SORTS[1:] + [SORTS[0]]:
-        t.send("\t")
+    # rolling it names the mode and the chord, in place of the hint
+    gx = t.lines()[footer].index(MODES[0][0])
+    t.hover(gx, footer)
+    t.wait_for(
+        f"ADS returns {MODES[0][1]}",
+        what="the rollover naming the mode",
+    )
+    require("⌃r" in t.lines()[footer], "the rollover should name the chord too", t)
+
+    # ⌃r steps it, and wraps
+    for glyph, name in MODES[1:] + [MODES[0]]:
+        t.send(CTRL_R)
         t.wait_for(
-            lambda w=want: w in t.lines()[footer],
-            what=f"the selection sort stepping to {want!r}",
+            lambda n=name: f"ADS returns {n}" in t.lines()[footer],
+            what=f"⌃r stepping to {name!r}",
         )
+        require(glyph in t.lines()[footer], f"expected the {name!r} glyph {glyph!r}", t)
+
+    # and it is clickable, being a thing that looks clickable when rolled
+    t.click(gx, footer)
+    t.wait_for(
+        f"ADS returns {MODES[1][1]}",
+        what="clicking the glyph stepping the mode",
+    )
 
     # ↑ still steps the limit, so the two parameters do not fight
     t.key("up")
     t.wait_for(
-        lambda: "n=50" in t.lines()[footer] and SORTS[0] in t.lines()[footer],
-        what="the limit stepping while the sort holds",
+        lambda: "n=50" in t.lines()[footer] and MODES[1][0] in t.lines()[footer],
+        what="the limit stepping while the mode holds",
     )
 
     # Esc leaves without querying — this scenario has no network
