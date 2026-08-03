@@ -55,6 +55,16 @@ Saved ADS query tabs live in user-local app state (e.g., `~/.local/share/astrobi
 
 Tabs are keyed by context: each manuscript database (by its root path) has its own tab set, and sessions with no active manuscript share a global set. The storage location stays user-local either way — per-manuscript tabs are never written into the manuscript repo.
 
+A tab carries the query, a name, a result limit, and how its results are ordered on screen. It does not carry what ADS *returns* — the API `sort` that decides which records come back. That is chosen while a query is being composed and matters while it is being worked, so persisting it would mean a tab restored days later silently selecting by a decision nobody remembers making.
+
+Two orderings are involved and they are never interchangeable. The ADS `sort` parameter decides *which* records arrive; the display sort reorders the ones already in hand. Ranking a feed by citations therefore gives the most cited among the newest n, not the most cited overall. Neither can be written as query syntax — `sort:"entry_date desc"` inside `q` is a Solr error, not a sort — which is why both ride alongside `q` as parameters and are surfaced where the query is composed rather than typed into it.
+
+## What is user state, and what is not
+
+Anything the user curates but that is not a paper — saved queries, per-paper priority, which columns a view shows and how wide — is user-local app state under `~/.local/share/astrobib/`, never written into a bib database. Disposable derivatives (fetched PDFs, cached query results) live under `~/.cache/astrobib/`, which is always safe to delete wholesale.
+
+Column configuration stores only what the user has actually changed. An empty configuration is not a special case: with nothing stored every column keeps its responsive default — the author column scales with the terminal, the cite-key column drops first when space is tight, the metric swatch stays off — so opening the configuration panel and closing it again changes nothing.
+
 ## Adding to the bib database format
 
 The only acceptable additions to the bib database layout are:

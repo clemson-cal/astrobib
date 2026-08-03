@@ -36,10 +36,10 @@ Both stores are plain `bib/*.bib` files, one paper per file, indistinguishable f
 
 ---
 ## TUI overview
-Scope capsules at the top switch between your library, saved ADS query tabs, and the manuscript view. Each keeps its own sort, and remembers it. An optional one-cell colour strip at the left edge shows a metric — your own decaying priority, or ADS citation counts; switch it on from the table panel (`|`). The pub card on the right shows the highlighted paper (hover the citekey column to preview others); an event log and clickable view badges sit at the bottom. Most things are clickable; every action has a key (`?` shows the cheat-sheet).
+Scope capsules at the top switch between your library, saved ADS query tabs, and the manuscript view. Each keeps its own sort, and remembers it. An optional one-cell colour swatch column shows a metric — your own decaying priority, or ADS citation counts; switch it on from the table panel (`|`), like any other column. The pub card on the right shows the highlighted paper (hover the citekey column to preview others); an event log and clickable view badges sit at the bottom. Most things are clickable; every action has a key (`?` shows the cheat-sheet).
 
 ### Keys
-- `/` — live filter (query language below); `S` — new ADS query (`↑`/`↓` sets the result count, `⌃r` what ADS returns; pasting a DOI or ADS URL imports directly)
+- `/` — live filter (query language below); `S` — new ADS query (`↑`/`↓` sets the result count, `⌃r` what ADS returns — both also clickable; pasting a DOI or ADS URL imports directly)
 - `j k g G` — move; `[` `]` — switch scope (`]` past the last one composes a new query); `ctrl+w` — close query scope; `r` — refresh; `+` `-` — result count
 - `Space` — select row (iOS-style selection mode); `a` — select visible; `A` — select all; Esc — done
 - `i` — import ADS result(s); `m` — toggle manuscript/local membership; `⌫` — remove (with confirmation)
@@ -49,7 +49,7 @@ Scope capsules at the top switch between your library, saved ADS query tabs, and
 - `N` — name the active query (the capsule label; persists across edits to the query, empty restores the derived name)
 - `C` / `R` — open a citations / references query for the shown paper; `v` — pub view (the raw .bib); `e` — export the selection to a .bib file
 - `M` — pick the metric the swatch column shows (priority or citations, distinct colormaps; show the column itself from `|`); `.` — priority 1.0, `0` — clear, `<` `>` — scale it (decays weekly); the wheel over a swatch does the same for that row
-- `|` — table panel: show/hide columns, `←`/`→` to resize, `s` to sort by any of them (shown or not), and for a query, what ADS returns; `Tab` swaps the arrow keys between the panel and the table
+- `|` — table panel: show/hide columns, `←`/`→` to resize, `s` to sort by any of them (shown or not); `Tab` swaps the arrow keys between the panel and the table, `Esc` hands them back
 - `t` — show/hide the global tier; `D` — pub card; `L` — event log; `?` — keys; `@` — about; `q` — quit
 
 ---
