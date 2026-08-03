@@ -863,6 +863,9 @@ struct App {
     /// the ADS-returns glyph in the query prompt — a click target only
     /// while the prompt is up
     prompt_sort_rect: Rect,
+    /// the kind of the last coalescing note and where it landed in the
+    /// log, so a repeat of the same control can replace it
+    last_note: Option<(&'static str, usize)>,
     /// per scope kind: which columns are hidden and how wide the user
     /// pinned them. Absent means auto — see table::ColumnConfig.
     columns: std::collections::HashMap<ScopeKind, table::ColumnConfig>,
@@ -1095,6 +1098,7 @@ impl App {
             col_sel: 0,
             col_rects: vec![],
             prompt_sort_rect: Rect::default(),
+            last_note: None,
             columns: App::load_column_config(),
             show_about: false,
             about_links: vec![],
@@ -1862,6 +1866,38 @@ impl App {
         }
     }
 
+    /// A note that supersedes its own previous one.
+    ///
+    /// Holding ← on a column width, or cycling a sort, would otherwise
+    /// leave a line per keystroke saying nothing the line before it did
+    /// not. The log should record that you resized the column, not how
+    /// many times you pressed the key — so a repeat of the same `kind`
+    /// within a few seconds replaces its own last entry instead of
+    /// appending. Anything the user did not directly cause (a download
+    /// finishing, a query landing) always appends, and so uses `note`.
+    fn note_latest(&mut self, cat: MsgCat, kind: &'static str, msg: String) {
+        const WINDOW_SECS: u64 = 6;
+        if let Some((k, i)) = self.last_note {
+            // only if it is still the newest entry: anything logged since
+            // would be silently eaten otherwise
+            let fresh = self
+                .log
+                .get(i)
+                .is_some_and(|(_, t, _)| self.started.elapsed().as_secs().saturating_sub(*t) < WINDOW_SECS);
+            if k == kind && i + 1 == self.log.len() && fresh {
+                self.log.pop();
+            }
+        }
+        self.note(cat, msg);
+        self.last_note = Some((kind, self.log.len() - 1));
+    }
+
+    /// A view came or went. One-shot, so it always appends.
+    fn note_view(&mut self, name: &str, on: bool) {
+        let what = if on { "shown" } else { "hidden" };
+        self.note(MsgCat::Info, format!("{name} {what}"));
+    }
+
     /// PageUp/PageDown while the log pane is open: page through history,
     /// clamped to the stored entries (positive = older).
     fn scroll_log(&mut self, delta: isize) {
@@ -1995,15 +2031,25 @@ impl App {
                     self.note(MsgCat::Warn, "the filter applies to the Library scope".to_string());
                 }
             }
-            Action::Card => self.show_detail = !self.show_detail,
-            Action::Log => self.show_log = !self.show_log,
-            Action::Help => self.show_help = !self.show_help,
+            Action::Card => {
+                self.show_detail = !self.show_detail;
+                self.note_view("pub card", self.show_detail);
+            }
+            Action::Log => {
+                self.show_log = !self.show_log;
+                self.note_view("event log", self.show_log);
+            }
+            Action::Help => {
+                self.show_help = !self.show_help;
+                self.note_view("cheat-sheet", self.show_help);
+            }
             Action::Columns => {
                 self.show_columns = !self.show_columns;
                 // opening it hands over the arrow keys, closing it gives
                 // them back — otherwise the table would go quietly dead
                 self.focus = if self.show_columns { Focus::Columns } else { Focus::Table };
                 self.col_sel = self.col_sel.min(self.panel_rows().len().saturating_sub(1));
+                self.note_view("table configuration", self.show_columns);
             }
             Action::GlobalTier => self.toggle_global(),
             Action::Quit => self.quit = true,
@@ -2808,6 +2854,12 @@ impl App {
         let next = self.next_sort(col);
         self.set_sort(next);
         self.apply_sort();
+        let dir = if next.1 { "ascending" } else { "descending" };
+        self.note_latest(
+            MsgCat::Info,
+            "sort",
+            format!("sorted by {} {dir}", self.column_hint(col)),
+        );
     }
 
     /// What clicking a column's sort control would do. Sharing this with
@@ -3413,7 +3465,7 @@ impl App {
                 named = Some(name);
             }
             if let Some(name) = named {
-                self.note(MsgCat::Info, format!("ADS returns {name}"));
+                self.note_latest(MsgCat::Info, "ads-returns", format!("ADS returns {name}"));
             }
             return;
         }
@@ -4056,7 +4108,7 @@ impl App {
                     *sort = next.to_string();
                     // a changed glyph is a weak signal for a mode change:
                     // say it in words too, where the prompt can echo it
-                    self.note(MsgCat::Info, format!("ADS returns {name}"));
+                    self.note_latest(MsgCat::Info, "ads-returns", format!("ADS returns {name}"));
                 }
                 KeyCode::Up => {
                     const STEPS: [usize; 4] = [20, 50, 100, 200];
@@ -4123,7 +4175,11 @@ impl App {
                     self.focus = Focus::Columns
                 }
                 KeyCode::Char('t') => self.run_action(Action::GlobalTier),
-                KeyCode::Char('v') => self.show_bib_source = !self.show_bib_source,
+                KeyCode::Char('v') => {
+                    self.show_bib_source = !self.show_bib_source;
+                    let what = if self.show_bib_source { "verbatim .bib" } else { "pub card" };
+                    self.note(MsgCat::Info, format!("card showing the {what}"));
+                }
                 KeyCode::Char('e') => self.open_export_prompt(),
                 KeyCode::Char('M') => {
                     self.metric_col = self.metric_col.next();
@@ -4135,8 +4191,9 @@ impl App {
                     let res =
                         crate::ads::save_state_field("metric", self.metric_col.state_tag());
                     self.state_write("state.json", res.err().map(|e| e.to_string()));
-                    self.note(
+                    self.note_latest(
                         MsgCat::Info,
+                        "metric",
                         format!("metric column: {}", self.metric_col.name()),
                     );
                 }
@@ -5345,6 +5402,7 @@ impl App {
         } else {
             cfg.visible.insert(id, !now_shown);
         }
+        let shown_after = !now_shown;
         // the metric strip is also a sort target; hiding it while it is
         // the sort would leave the marker on a column nobody can see
         if now_shown && id == Col::Metric && self.sort().is_some_and(|(c, _)| c == Col::Metric) {
@@ -5352,6 +5410,15 @@ impl App {
             self.apply_sort();
         }
         self.save_column_config();
+        self.note_latest(
+            MsgCat::Info,
+            "column",
+            format!(
+                "{} column {}",
+                self.column_hint(id),
+                if shown_after { "shown" } else { "hidden" }
+            ),
+        );
     }
 
     /// ←/→ on a column: widen or narrow it, pinning the width. Until
@@ -5377,6 +5444,11 @@ impl App {
         let next = (cur + d).clamp(table::MIN_COL_W as i16, table::MAX_COL_W as i16) as u16;
         self.columns.entry(kind).or_default().widths.insert(id, next);
         self.save_column_config();
+        self.note_latest(
+            MsgCat::Info,
+            "width",
+            format!("{} column {next} wide", self.column_hint(id)),
+        );
     }
 
     /// Every row's metric value in the active scope, in row order, with
