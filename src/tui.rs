@@ -1233,6 +1233,15 @@ impl App {
     fn cycle_scope(&mut self, d: isize) {
         let n = self.scopes.len() as isize;
         let cur = self.active_scope as isize;
+        // The strip ends with the "+ new" affordance, so stepping right
+        // off the last scope reaches *that* rather than wrapping round
+        // to the library — which is what the strip already shows, and
+        // makes ] read as "keep going right" all the way to composing a
+        // new query. ] wraps as before: there is nothing beyond Library.
+        if d > 0 && cur + d >= n {
+            self.open_ads_prompt();
+            return;
+        }
         self.set_scope(((cur + d).rem_euclid(n)) as usize);
     }
 
@@ -1922,12 +1931,6 @@ impl App {
         self.last_note = Some((kind, self.log.len() - 1));
     }
 
-    /// A view came or went. One-shot, so it always appends.
-    fn note_view(&mut self, name: &str, on: bool) {
-        let what = if on { "shown" } else { "hidden" };
-        self.note(MsgCat::Info, format!("{name} {what}"));
-    }
-
     /// PageUp/PageDown while the log pane is open: page through history,
     /// clamped to the stored entries (positive = older).
     fn scroll_log(&mut self, delta: isize) {
@@ -2061,25 +2064,18 @@ impl App {
                     self.note(MsgCat::Warn, "the filter applies to the Library scope".to_string());
                 }
             }
-            Action::Card => {
-                self.show_detail = !self.show_detail;
-                self.note_view("pub card", self.show_detail);
-            }
-            Action::Log => {
-                self.show_log = !self.show_log;
-                self.note_view("event log", self.show_log);
-            }
-            Action::Help => {
-                self.show_help = !self.show_help;
-                self.note_view("cheat-sheet", self.show_help);
-            }
+            // showing or hiding a view is its own confirmation: the view
+            // appears. Logging it only pushes out the messages that are
+            // there because you would otherwise have missed them.
+            Action::Card => self.show_detail = !self.show_detail,
+            Action::Log => self.show_log = !self.show_log,
+            Action::Help => self.show_help = !self.show_help,
             Action::Columns => {
                 self.show_columns = !self.show_columns;
                 // opening it hands over the arrow keys, closing it gives
                 // them back — otherwise the table would go quietly dead
                 self.focus = if self.show_columns { Focus::Columns } else { Focus::Table };
                 self.col_sel = self.col_sel.min(self.panel_rows().len().saturating_sub(1));
-                self.note_view("table configuration", self.show_columns);
             }
             Action::GlobalTier => self.toggle_global(),
             Action::Quit => self.quit = true,
@@ -3680,7 +3676,11 @@ impl App {
             return;
         }
         if hit(self.edit_query_rect, x, y) {
-            self.open_edit_query_prompt();
+            if matches!(self.scopes.get(self.active_scope), Some(Scope::Ads { .. })) {
+                self.open_edit_query_prompt();
+            } else {
+                self.open_ads_prompt();
+            }
             return;
         }
         // footer view badges
@@ -4231,11 +4231,7 @@ impl App {
                     self.focus = Focus::Columns
                 }
                 KeyCode::Char('t') => self.run_action(Action::GlobalTier),
-                KeyCode::Char('v') => {
-                    self.show_bib_source = !self.show_bib_source;
-                    let what = if self.show_bib_source { "verbatim .bib" } else { "pub card" };
-                    self.note(MsgCat::Info, format!("card showing the {what}"));
-                }
+                KeyCode::Char('v') => self.show_bib_source = !self.show_bib_source,
                 KeyCode::Char('e') => self.open_export_prompt(),
                 KeyCode::Char('M') => {
                     self.metric_col = self.metric_col.next();
@@ -5794,40 +5790,6 @@ impl App {
         Some(format!("{verb} {what}  ·  {key}"))
     }
 
-    /// "edit query (E)", left of the view badges, on a query scope only.
-    /// A saved query's text is otherwise write-once: S always composes a
-    /// new one, so without this the only way to change a query was to
-    /// replace the tab and lose its name and its results with it.
-    fn draw_edit_query(&mut self, f: &mut Frame, area: Rect) {
-        self.edit_query_rect = Rect::default();
-        // a prompt owns the whole footer line while it is up
-        let composing = !matches!(self.mode, Mode::Normal | Mode::Copy);
-        if composing || !matches!(self.scopes.get(self.active_scope), Some(Scope::Ads { .. })) {
-            return;
-        }
-        let label = "edit query (E)";
-        let w = label.chars().count() as u16;
-        let badges: u16 = self.footer_badges.iter().map(|(r, _)| r.width + 1).sum();
-        let x = (area.x + area.width).saturating_sub(badges + w + 3);
-        if x <= area.x {
-            return;
-        }
-        let r = Rect { x, y: area.y, width: w, height: 1 };
-        self.edit_query_rect = r;
-        let hov = hit(r, self.hover.0, self.hover.1);
-        f.render_widget(
-            Paragraph::new(Line::from(Span::styled(
-                label,
-                if hov {
-                    Style::default().fg(Color::Cyan).add_modifier(Modifier::UNDERLINED)
-                } else {
-                    Style::default().fg(Color::DarkGray)
-                },
-            ))),
-            r,
-        );
-    }
-
     /// Right-aligned clickable show/hide badges for each app-wide view.
     fn draw_badges(&mut self, f: &mut Frame, area: Rect) {
         let layout = self.badge_layout(area);
@@ -6172,9 +6134,12 @@ impl App {
         if let Some(hint) = self.badge_hint(area) {
             self.hover_hint = Some(hint);
         }
-        // the prompt's glyph rect, published after the match: the arm
+        // the prompt's control rect, published after the match: the arm
         // borrows self.mode, so it cannot write to self while building
         let mut sort_rect = Rect::default();
+        // cleared every frame; the Normal arm re-publishes it when the
+        // line has room for the affordance
+        self.edit_query_rect = Rect::default();
         let line = match self.mode {
             Mode::Filter => {
                 let avail = area.width.saturating_sub(2) as usize;
@@ -6348,25 +6313,50 @@ impl App {
                 };
                 let pending = self.tasks.len();
                 let mut spans = vec![];
+                let mut x = area.x;
                 if pending > 0 {
                     let label = format!("⧗{pending} ");
+                    x += label.chars().count() as u16;
                     spans.push(Span::styled(label, Style::default().fg(Color::Yellow)));
                 }
-                spans.extend([
-                    Span::styled(
-                        format!("{n}/{total}  ·  "),
-                        Style::default().fg(Color::DarkGray),
-                    ),
-                    Span::styled(msg, Style::default().fg(msg_color)),
-                    Span::styled(filt, Style::default().fg(Color::DarkGray)),
-                ]);
+                let counts = format!("{n}/{total}  ·  ");
+                x += counts.chars().count() as u16;
+                spans.push(Span::styled(counts, Style::default().fg(Color::DarkGray)));
+                // With nothing to report, offer the thing this scope is
+                // for. A prompt or a fresh message outranks it: they are
+                // here because you would have missed them, and this is
+                // only here because the line was going to be blank.
+                if msg.is_empty() {
+                    let label = match self.scopes.get(self.active_scope) {
+                        Some(Scope::Ads { .. }) => "edit query (E)",
+                        _ => "new ADS query (S)",
+                    };
+                    let r = Rect {
+                        x,
+                        y: area.y,
+                        width: label.chars().count() as u16,
+                        height: 1,
+                    };
+                    self.edit_query_rect = r;
+                    let hov = hit(r, self.hover.0, self.hover.1);
+                    spans.push(Span::styled(
+                        label,
+                        if hov {
+                            Style::default().fg(Color::Cyan).add_modifier(Modifier::UNDERLINED)
+                        } else {
+                            Style::default().fg(Color::DarkGray)
+                        },
+                    ));
+                } else {
+                    spans.push(Span::styled(msg, Style::default().fg(msg_color)));
+                }
+                spans.push(Span::styled(filt, Style::default().fg(Color::DarkGray)));
                 Line::from(spans)
             }
         };
         self.prompt_sort_rect = sort_rect;
         f.render_widget(line, area);
         self.draw_badges(f, area);
-        self.draw_edit_query(f, area);
     }
 }
 

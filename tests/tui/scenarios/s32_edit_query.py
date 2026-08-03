@@ -58,6 +58,12 @@ def run(t):
     footer = len(t.lines()) - 1
 
     # the affordance is a property of a query page, so the library has none
+    # the library offers the thing the library is for
+    t.wait_for(
+        lambda: "new ADS query (S)" in t.lines()[footer],
+        timeout=12,
+        what="the new-query affordance on the library scope",
+    )
     require(
         "edit query (E)" not in t.lines()[footer],
         "the library scope should offer no query editor",
@@ -68,8 +74,11 @@ def run(t):
 
     t.send("]")
     t.wait_for("A cached result", what="the restored query scope")
+    # the affordance only takes the footer when there is nothing to
+    # report there, so it appears once the startup note has aged out
     t.wait_for(
         lambda: "edit query (E)" in t.lines()[footer],
+        timeout=12,
         what="the editor affordance on a query page",
     )
 
@@ -128,3 +137,17 @@ def run(t):
         t,
     )
     t.key("esc")
+    t.wait_gone("ADS query:")
+
+    # the strip ends with "+ new", so ] off the last scope reaches that
+    # rather than wrapping round to the library
+    t.send("]")
+    t.wait_for("ADS query:", what="] off the last capsule composing a new query")
+    t.key("esc")
+    t.wait_gone("ADS query:")
+    # [ steps left as before — from the query back to the library
+    t.send("[")
+    t.wait_for(
+        lambda: "A census of runaway white dwarfs" in t.text(),
+        what="[ stepping back to the library",
+    )

@@ -40,7 +40,7 @@ Scope capsules at the top switch between your library, saved ADS query tabs, and
 
 ### Keys
 - `/` — live filter (query language below); `S` — new ADS query (`↑`/`↓` sets the result count, `⌃r` what ADS returns; pasting a DOI or ADS URL imports directly)
-- `j k g G` — move; `[` `]` — switch scope; `ctrl+w` — close query scope; `r` — refresh; `+` `-` — result count
+- `j k g G` — move; `[` `]` — switch scope (`]` past the last one composes a new query); `ctrl+w` — close query scope; `r` — refresh; `+` `-` — result count
 - `Space` — select row (iOS-style selection mode); `a` — select visible; `A` — select all; Esc — done
 - `i` — import ADS result(s); `m` — toggle manuscript/local membership; `⌫` — remove (with confirmation)
 - `p` — download PDFs (ADS open-access, then arXiv); `B` — browser download (watches ~/Downloads); `o` — open PDF; `X` — clear PDF; double-click a row — open its PDF
