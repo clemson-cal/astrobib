@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+### Added
+- Both query languages offer examples while you compose. Pressing `S` or `/` puts four samples for that language in a band above the prompt; clicking one loads it. A reference card would not do: the syntax is needed *while* typing, and a modal has to be dismissed to reach the prompt — and a TUI has no copy-paste to carry an example across. A sample replaces the whole query, so it acts only on an empty prompt; once you have typed, the rows dim and the band says `clear the query to use one`, the footer being occupied by the prompt itself. The ADS samples are run against the live API before shipping and the filter samples are checked by a unit test against the tokenizer, since a sample naming a field the parser does not know would not error — it would degrade to a bare term and quietly match nothing. No sample carries an absolute upper year: recency is the prompt's own control, and a baked-in end year would silently exclude the newest work once it passed.
+
 ## 0.10.0 — 2026-08-03
 
 ### Added

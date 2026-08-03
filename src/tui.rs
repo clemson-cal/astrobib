@@ -624,6 +624,35 @@ const FILTER_CHIP: usize = usize::MAX - 1;
 
 /// The keys panel's entries and fixed column width.
 const HELP_COLW: u16 = 30;
+
+/// `(query, what it demonstrates)`. Four of each, chosen to span the
+/// language rather than to be individually useful — between them they
+/// show every shape of term the syntax has.
+///
+/// The ADS set is passed to ADS unmodified, so each one is a claim about
+/// Solr that has to hold: all four were run against the live API and
+/// return results (checked 2026-08-03). The filter set is checked by a
+/// unit test against `src/query.rs`: an example using a field the
+/// tokenizer does not know degrades to a bare term and quietly matches
+/// nothing, which is the one way a sample can lie without erroring.
+///
+/// No sample carries an absolute upper year. `year:2020-2026` would go
+/// on looking authoritative while silently excluding the newest work
+/// from 2027 on; recency is the prompt's own control (⌃r), not
+/// something to bake into the text.
+const ADS_SAMPLES: [(&str, &str); 4] = [
+    ("abs:\"little red dot\" -doctype:abstract", "phrase, minus meeting abstracts"),
+    ("author:\"^Zrake, J.\" year:2020-", "first author, from a year on"),
+    ("bibstem:ApJL abs:\"magnetar\"", "one journal"),
+    ("arxiv_class:astro-ph.HE", "an arXiv subject class"),
+];
+
+const FILTER_SAMPLES: [(&str, &str); 4] = [
+    ("^zrake year:2019-", "first author, open-ended years"),
+    ("abs:\"fast radio burst\"", "phrase in the abstract"),
+    ("is:pdf pri:>0.5", "has a PDF, high priority"),
+    ("kw:\"compact objects\" -abs:neutrino", "keyword, and a negation"),
+];
 // (shown key, label, availability probe, key a click synthesizes)
 const HELP_ENTRIES: &[(&str, &str, Option<Action>, KeyCode)] = &[
     ("␣", "select / toggle row", Some(Action::Select), KeyCode::Char(' ')),
@@ -875,6 +904,8 @@ struct App {
     prompt_sort_rect: Rect,
     /// "edit query (E)" in the footer — a click target only on a query
     edit_query_rect: Rect,
+    /// the sample-query rows, live only while a prompt is up
+    sample_rects: Vec<(Rect, &'static str)>,
     /// the kind of the last coalescing note and where it landed in the
     /// log, so a repeat of the same control can replace it
     last_note: Option<(&'static str, usize)>,
@@ -1111,6 +1142,7 @@ impl App {
             col_rects: vec![],
             prompt_sort_rect: Rect::default(),
             edit_query_rect: Rect::default(),
+            sample_rects: vec![],
             last_note: None,
             columns: App::load_column_config(),
             show_about: false,
@@ -2105,6 +2137,22 @@ impl App {
             sort: tab.ads_sort.clone(),
             edit: Some(self.active_scope),
         };
+    }
+
+    /// Load a sample into the prompt being composed. The two prompts
+    /// keep their text in different places: an ADS query lives on the
+    /// mode, while the filter is an App field the mode does not own.
+    fn use_sample(&mut self, sample: &'static str) {
+        match &mut self.mode {
+            Mode::AdsPrompt { input, .. } => {
+                *input = tui_input::Input::from(sample.to_string());
+            }
+            Mode::Filter => {
+                self.filter = tui_input::Input::from(sample.to_string());
+                self.refilter();
+            }
+            _ => {}
+        }
     }
 
     /// N — rename the active query. Named queries are the point of
@@ -3515,6 +3563,16 @@ impl App {
             }
             return;
         }
+        // a sample row, which must be tested before the click-away
+        // dismissal below — reaching that would close the very prompt
+        // the sample is meant to fill. Consumed either way: a row that
+        // cannot act must not fall through and close the prompt instead.
+        if let Some(&(_, sample)) = self.sample_rects.iter().find(|(r, _)| hit(*r, x, y)) {
+            if self.prompt_is_empty() {
+                self.use_sample(sample);
+            }
+            return;
+        }
         // clicking away from the query prompt dismisses it, and the click
         // then performs its normal action (e.g. switching scope); the
         // filter likewise leaves entry mode, but stays applied (as ⏎) —
@@ -4382,11 +4440,19 @@ impl App {
         } else {
             0
         };
-        let [strip_area, table_area, help_area, log_area] = Layout::vertical([
-            Constraint::Length(self.scope_strip_height(centre.width)),
+        // last in the stack, so the samples sit against the footer they
+        // are helping you fill; they take only what the table can spare
+        let strip_h = self.scope_strip_height(centre.width);
+        let samples_h = self.samples_height(
+            centre.height.saturating_sub(strip_h + help_h + log_h),
+            centre.width,
+        );
+        let [strip_area, table_area, help_area, log_area, samples_area] = Layout::vertical([
+            Constraint::Length(strip_h),
             Constraint::Min(1),
             Constraint::Length(help_h),
             Constraint::Length(log_h),
+            Constraint::Length(samples_h),
         ])
         .areas(centre);
         self.draw_scope_strip(f, strip_area);
@@ -4408,6 +4474,7 @@ impl App {
         if self.show_log {
             self.draw_log(f, log_area);
         }
+        self.draw_samples(f, samples_area);
         self.draw_status(f, status);
         // Modals draw last (topmost) with the real mouse position back in
         // place so their own hover styling works.
@@ -4538,6 +4605,116 @@ impl App {
 
     /// The keys cheat-sheet, a non-modal panel above the log: keys keep
     /// working while it shows; ? (or Esc, or the footer badge) closes.
+    /// The samples for whichever prompt is up, or None when none is.
+    fn active_samples(&self) -> Option<&'static [(&'static str, &'static str); 4]> {
+        match self.mode {
+            Mode::AdsPrompt { .. } => Some(&ADS_SAMPLES),
+            Mode::Filter => Some(&FILTER_SAMPLES),
+            _ => None,
+        }
+    }
+
+    /// Whether the prompt being composed is still blank. A sample loads
+    /// only into an empty prompt: it replaces the whole query, and doing
+    /// that to something half-typed would destroy work on a stray click.
+    fn prompt_is_empty(&self) -> bool {
+        match &self.mode {
+            Mode::AdsPrompt { input, .. } => input.value().trim().is_empty(),
+            Mode::Filter => self.filter.value().trim().is_empty(),
+            _ => false,
+        }
+    }
+
+    /// Rows the samples band wants, given what the centre column has
+    /// left after the strip, the keys sheet and the log. Zero unless a
+    /// prompt is up — and zero when taking them would leave the table
+    /// too short to read, since a reference aid that hides the results
+    /// it is helping you find is worse than none.
+    /// Deliberately independent of whether the prompt is empty: the
+    /// armed/inert flip happens on the first keystroke, and a height
+    /// that moved with it would jump the table one row into every query
+    /// you type.
+    fn samples_height(&self, spare: u16, width: u16) -> u16 {
+        let Some(rows) = self.active_samples() else {
+            return 0;
+        };
+        let want = rows.len() as u16 + 3; // instruction line + two borders
+        let qw = rows.iter().map(|(q, _)| q.chars().count()).max().unwrap_or(0) as u16;
+        // never truncate a query: what is shown must be what a click
+        // loads, so the band stands down rather than lie about it
+        if spare < want + 4 || width.saturating_sub(2) < qw + 2 {
+            0
+        } else {
+            want
+        }
+    }
+
+    /// One row per sample, each loading itself into the prompt.
+    ///
+    /// This exists because the syntax is needed *while* you type, which
+    /// a modal cannot do — you would have to dismiss it to reach the
+    /// prompt — and because a TUI has no copy-paste to carry an example
+    /// across. Clicking sidesteps both.
+    fn draw_samples(&mut self, f: &mut Frame, area: Rect) {
+        self.sample_rects.clear();
+        // stood down for want of room: without this the rows would still
+        // be registered, over the footer, and clicking the footer would
+        // load a sample
+        if area.height == 0 {
+            return;
+        }
+        let Some(rows) = self.active_samples() else {
+            return;
+        };
+        let empty = self.prompt_is_empty();
+        let dim = Style::default().fg(Color::DarkGray);
+        // the instruction has to live here: the footer would normally
+        // carry it, and the prompt is in the footer
+        let mut lines = vec![Line::from(Span::styled(
+            if empty {
+                " click one to use it"
+            } else {
+                " clear the query to use one"
+            },
+            dim,
+        ))];
+        let qw = rows.iter().map(|(q, _)| q.chars().count()).max().unwrap_or(0);
+        let pw = rows.iter().map(|(_, p)| p.chars().count()).max().unwrap_or(0);
+        // the purpose is what gives way when the column is tight
+        let show_purpose = (area.width.saturating_sub(2) as usize) >= qw + 3 + pw;
+        for (i, (query, purpose)) in rows.iter().enumerate() {
+            let y = area.y + 2 + i as u16;
+            let r = Rect { x: area.x + 1, y, width: area.width.saturating_sub(2), height: 1 };
+            // registered whether or not it can act: an unregistered row
+            // would let the click through to the click-away dismissal,
+            // which closes the prompt — worse than doing nothing
+            self.sample_rects.push((r, query));
+            let hov = empty && hit(r, self.hover.0, self.hover.1);
+            let style = if hov {
+                Style::default().fg(Color::Cyan).add_modifier(Modifier::UNDERLINED)
+            } else if empty {
+                Style::default().fg(TABLE_TEXT)
+            } else {
+                dim
+            };
+            let mut spans = vec![Span::styled(format!(" {query:<qw$}"), style)];
+            if show_purpose {
+                spans.push(Span::styled(format!("   {purpose}"), dim));
+            }
+            lines.push(Line::from(spans));
+        }
+        f.render_widget(
+            Paragraph::new(Text::from(lines)).block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(divider())
+                    .style(Style::default().bg(HELP_BG))
+                    .title(Span::styled(" examples ", dim)),
+            ),
+            area,
+        );
+    }
+
     fn draw_help(&mut self, f: &mut Frame, area: Rect) {
         self.help_rects.clear();
         let cols = (area.width.saturating_sub(2) / HELP_COLW).max(1) as usize;
@@ -6433,6 +6610,43 @@ fn base64(data: &[u8]) -> String {
 
 #[cfg(test)]
 mod tests {
+    /// A filter sample using a field the tokenizer does not know does
+    /// not error — it degrades to a bare term and matches nothing,
+    /// silently. That is the one way one of these can lie, so the check
+    /// is mechanical rather than remembered.
+    #[test]
+    fn filter_samples_use_fields_the_tokenizer_knows() {
+        for (q, _) in super::FILTER_SAMPLES {
+            let groups = crate::query::tokenize(q);
+            assert!(!groups.is_empty(), "{q}: tokenized to nothing");
+            for t in groups.iter().flatten() {
+                // a colon can only survive into a value by degrading
+                assert!(
+                    t.field.is_some() || !t.value.contains(':'),
+                    "{q}: `{}` degraded to a bare term — unknown field?",
+                    t.value
+                );
+                if t.field == Some(crate::query::Field::Is) {
+                    assert!(
+                        matches!(t.value.as_str(), "ms" | "pdf"),
+                        "{q}: is:{} matches nothing",
+                        t.value
+                    );
+                }
+            }
+        }
+    }
+
+    /// The samples shown in the app and the ones documented in the
+    /// README are the same list, or one of them is wrong.
+    #[test]
+    fn readme_documents_every_sample() {
+        let readme = include_str!("../README.md");
+        for (q, _) in super::ADS_SAMPLES.iter().chain(super::FILTER_SAMPLES.iter()) {
+            assert!(readme.contains(q), "README does not document the sample `{q}`");
+        }
+    }
+
     #[test]
     fn column_layout_priorities() {
         // wide: scaled author, Key visible

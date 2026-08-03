@@ -69,10 +69,27 @@ pri:>0.5  cit:>100    metric comparisons (> < or bare for ≥); no metric never 
 ```
 A half-typed query never errors. With a filter active, `S` pre-fills the equivalent ADS query — filter locally, escalate in one keystroke.
 
+Pressing `/` offers these four as a starting point; click one to load it into an empty filter.
+```
+^zrake year:2019-                     first author, open-ended years
+abs:"fast radio burst"                phrase in the abstract
+is:pdf pri:>0.5                       has a PDF, high priority
+kw:"compact objects" -abs:neutrino    keyword, and a negation
+```
+
 ---
 ## ADS queries
 `S` passes your query to the [ADS API](https://ui.adsabs.harvard.edu/help/search/search-syntax) unmodified, so the full Solr language works (`bibstem:ApJL`, `citations(...)`, boolean grouping, …). Each query becomes a scope capsule, persisted per library context in `tabs.json`.
 The pub card walks the citation graph directly: click "cited by N" (or the citations/references affordances) to open a `citations(...)` or `references(...)` scope for the shown paper.
+
+Pressing `S` offers these four as a starting point; click one to load it into an empty prompt.
+```
+abs:"little red dot" -doctype:abstract    phrase, minus meeting abstracts
+author:"^Zrake, J." year:2020-            first author, from a year on
+bibstem:ApJL abs:"magnetar"               one journal
+arxiv_class:astro-ph.HE                   an arXiv subject class
+```
+Samples never carry an absolute upper year: recency is the prompt's own control (`⌃r`), and a baked-in end year would silently exclude the newest work once it passed.
 
 A saved query reads as a feed: ADS is asked for the newest records by *entry date* — when it indexed them — not by publication date, so `r` brings back what has appeared since you last looked rather than what was published most recently. The `Entered` column shows that date beside `Year`; the table panel picks which of the four selection sorts a query uses. That sort chooses which records come back, so ordering a feed by citations gives the most cited among the newest n, not the most cited overall.
 
