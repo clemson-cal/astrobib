@@ -3366,9 +3366,15 @@ impl App {
         // the prompt's ADS-returns glyph, which must be tested before the
         // click-away dismissal below or it would close the prompt instead
         if matches!(self.mode, Mode::AdsPrompt { .. }) && hit(self.prompt_sort_rect, x, y) {
+            let mut named = None;
             if let Mode::AdsPrompt { sort, .. } = &mut self.mode {
                 let i = ADS_SORTS.iter().position(|(_, v, _)| v == sort).unwrap_or(0);
-                *sort = ADS_SORTS[(i + 1) % ADS_SORTS.len()].1.to_string();
+                let (name, next, _) = ADS_SORTS[(i + 1) % ADS_SORTS.len()];
+                *sort = next.to_string();
+                named = Some(name);
+            }
+            if let Some(name) = named {
+                self.note(MsgCat::Info, format!("ADS returns {name}"));
             }
             return;
         }
@@ -3980,7 +3986,11 @@ impl App {
                 // terminals still eat those as flow control.
                 KeyCode::Char('r') if mods.contains(KeyModifiers::CONTROL) => {
                     let i = ADS_SORTS.iter().position(|(_, v, _)| v == sort).unwrap_or(0);
-                    *sort = ADS_SORTS[(i + 1) % ADS_SORTS.len()].1.to_string();
+                    let (name, next, _) = ADS_SORTS[(i + 1) % ADS_SORTS.len()];
+                    *sort = next.to_string();
+                    // a changed glyph is a weak signal for a mode change:
+                    // say it in words too, where the prompt can echo it
+                    self.note(MsgCat::Info, format!("ADS returns {name}"));
                 }
                 KeyCode::Up => {
                     const STEPS: [usize; 4] = [20, 50, 100, 200];
@@ -4174,7 +4184,10 @@ impl App {
             Constraint::Min(1),
             Constraint::Length(help_h),
             Constraint::Length(log_h),
-            Constraint::Length(2), // the rule and the footer line
+            // the rule and the footer line — plus an echo line above it
+            // while a prompt is up, since the prompt takes the footer
+            // and a note arriving then would otherwise be swallowed
+            Constraint::Length(if self.prompt_active() { 3 } else { 2 }),
         ])
         .areas(f.area());
         let mut constraints = vec![];
@@ -5911,6 +5924,16 @@ impl App {
         f.render_widget(Paragraph::new(Text::from(rendered)), inner);
     }
 
+    /// Whether a text entry is holding the footer. Emacs-like: the
+    /// prompt replaces the status line rather than opening a view of its
+    /// own, so every kind of entry appears in the same place.
+    fn prompt_active(&self) -> bool {
+        matches!(
+            self.mode,
+            Mode::AdsPrompt { .. } | Mode::Filter | Mode::Setup { .. } | Mode::Export { .. }
+        )
+    }
+
     fn draw_status(&mut self, f: &mut Frame, area: Rect) {
         // a rule and a breath of space separate the footer from the
         // content above
@@ -5921,7 +5944,21 @@ impl App {
             ))),
             Rect { x: area.x, y: area.y, width: area.width, height: 1 },
         );
-        let area = Rect { x: area.x, y: area.y + 1, width: area.width, height: 1 };
+        // the echo line: the newest logged message, so feedback for
+        // something done *while* composing still reaches the user
+        if self.prompt_active() {
+            if let Some((cat, _, msg)) = self.log.last() {
+                f.render_widget(
+                    Paragraph::new(Line::from(Span::styled(
+                        msg.clone(),
+                        Style::default().fg(cat.color()),
+                    ))),
+                    Rect { x: area.x, y: area.y + 1, width: area.width, height: 1 },
+                );
+            }
+        }
+        let dy = if self.prompt_active() { 2 } else { 1 };
+        let area = Rect { x: area.x, y: area.y + dy, width: area.width, height: 1 };
         // the badges live on this same line and are drawn after it, so
         // their hover hint has to be settled before the line is built
         if let Some(hint) = self.badge_hint(area) {

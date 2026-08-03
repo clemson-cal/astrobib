@@ -79,6 +79,15 @@ def run(t):
         )
         require(glyph in t.lines()[footer], f"expected the {name!r} glyph {glyph!r}", t)
 
+    # a changed glyph is weak feedback for a mode change, so it is said
+    # in words too — on the echo line the prompt grows above itself,
+    # since the prompt has taken the footer the note would have used
+    echo = len(t.lines()) - 2
+    t.wait_for(
+        lambda: "ADS returns" in t.lines()[echo],
+        what="the mode change echoed above the prompt",
+    )
+
     # and it is clickable, being a thing that looks clickable when rolled
     t.click(gx, footer)
     t.wait_for(
@@ -93,6 +102,12 @@ def run(t):
         what="the limit stepping while the mode holds",
     )
 
-    # Esc leaves without querying — this scenario has no network
+    # Esc leaves without querying — this scenario has no network. The
+    # echo line goes with the prompt, giving the footer back its row.
     t.key("esc")
     t.wait_gone("ADS query:")
+    require(
+        "ADS returns" not in t.lines()[len(t.lines()) - 2],
+        "the echo line should retract with the prompt",
+        t,
+    )
