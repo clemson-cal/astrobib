@@ -54,6 +54,12 @@ def _pre_launch(state_dir):
 PRE_LAUNCH = _pre_launch
 
 
+def _capsule_bg(t, name):
+    """The scope strip's background under a capsule's label."""
+    strip = next(i for i, l in enumerate(t.lines()) if "+ new" in l)
+    return t.screen.buffer[strip][t.lines()[strip].index(name)].bg
+
+
 def run(t):
     footer = len(t.lines()) - 1
 
@@ -91,6 +97,14 @@ def run(t):
     )
     t.click(ex, footer)
     t.wait_for("edit query:", what="the editor opened by clicking")
+
+    # editing leaves the highlight on the query being changed
+    active = _capsule_bg(t, "kilonova")
+    require(
+        active != _capsule_bg(t, "+ new"),
+        "editing should not move the highlight to the new-query capsule",
+        t,
+    )
 
     # pre-filled with every part of the query the prompt owns, and the
     # limit proves it is the tab's rather than the default for a new one
@@ -134,6 +148,18 @@ def run(t):
     require(
         "ADS returns 20 (↑↓)" in t.lines()[footer],
         f"a new query should start at the default limit: {t.lines()[footer]!r}",
+        t,
+    )
+    # composing a new query puts you on the "+ new" slot, so that is what
+    # is highlighted — and the scope you came from is not
+    require(
+        _capsule_bg(t, "+ new") == active,
+        "the new-query capsule should be highlighted while composing",
+        t,
+    )
+    require(
+        _capsule_bg(t, "kilonova") != active,
+        "the scope composed from should give up the highlight",
         t,
     )
     t.key("esc")

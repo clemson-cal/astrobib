@@ -4864,13 +4864,20 @@ impl App {
                 self.hover_hint =
                     Some("⌕ active filter — click to edit  ·  /  (Esc clears)".to_string());
             }
+            // composing a *new* query puts you on the "+ new" slot, so the
+            // highlight moves there and off the scope you came from —
+            // editing an existing one leaves it where it is, since that
+            // is the query being changed
+            let composing_new = matches!(self.mode, Mode::AdsPrompt { edit: None, .. });
             let (bg, fg) = if idx == FILTER_CHIP {
                 if hov {
                     (Color::Rgb(70, 62, 30), Color::Yellow)
                 } else {
                     (Color::Rgb(52, 47, 26), Color::Yellow)
                 }
-            } else if idx == self.active_scope {
+            } else if composing_new && idx == usize::MAX {
+                (Color::Cyan, Color::Black)
+            } else if idx == self.active_scope && !composing_new {
                 (Color::Cyan, Color::Black)
             } else if hov {
                 (Color::Rgb(58, 63, 72), Color::White)
