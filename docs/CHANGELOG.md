@@ -1,11 +1,13 @@
 # Changelog
 
-## Unreleased
+## 0.12.0 — 2026-08-04
 
 ### Changed
 - Panels are separated by their tint alone, with no border lines. The pub card, the columns sidebar, the keys sheet, the event log and the examples band each already carried a faint background of their own, and a rule drawn beside a tint says the same thing twice — so the rules are gone and each panel's first row now carries its heading, where the border used to hold its title. The footer becomes a tinted surface on the same principle and drops the rule above it, which hands the row back to the table. Rules *within* a panel stay: the table's header rule and the card's section rules divide content on one surface rather than separating two. Modals keep their borders, since they float above the surfaces rather than sitting beside them.
 - Chip, hover and region fills are named constants rather than inline RGB values. The same pair of colours was written out at six places across two files, and had already drifted into a third near-identical value — which is what naming them prevents. The rendered colours are unchanged.
 - Unselected row rings and unavailable keys dim their active colour instead of dimming grey a second time. Doubly-dimmed grey disappears into the background on lighter terminal themes, and both of these still have to read as things you can click.
+
+## 0.11.0 — 2026-08-03
 
 ### Fixed
 - An empty citations/references query warns instead of opening a dead tab. `C` and `R` on a paper ADS has no graph edges for used to leave a scope reading "no results — r re-runs", which invites you to wait for something that is not going to change: a recent preprint simply has no extracted reference list yet, and nothing has cited it. There is no query to refine either — the argument is a bibcode — so there is nothing for the tab to be. A refresh of an existing graph tab still keeps it, and its empty state says the same thing. `C` and `R` on a paper ADS has no graph edges for opened a scope reading "no results — r re-runs", which invites you to wait for something that is not going to change: a recent preprint simply has no extracted reference list yet, and nothing has cited it. The two cases now say so, and `C` on a paper already known to have no citations says it without spending a round trip to be told.
