@@ -4,7 +4,7 @@
 
 ## About this tutorial
 
-Who it's for: astrophysics researchers and grad students who live in LaTeX, ADS, and arXiv, are comfortable in a terminal, and are new to astrobib. It assumes you can install a command-line tool, have (or can create) a free ADS account, and write papers with `\cite` — nothing else. Feature reference lives in the README; this book teaches workflows.
+Who it's for: astrophysics researchers and grad students who frequently use LaTeX, ADS, and arXiv, are comfortable in a terminal, and are new to astrobib. It assumes you can install a command-line tool, have (or can create) a free ADS account, and write papers using the bibtex system. Feature reference lives in the README, whereas this book illustrates useful workflows.
 
 **Running example, threaded through the book:** you're starting a paper on magnetar engines for fast radio bursts. You build a library around the topic, start the paper's git repo with its own `bib/`, write `main.tex` against auto-generated `refs.bib`, hand the repo to a co-author who doesn't use astrobib, and tidy up before submission — while your personal library quietly accrues everything you touched.
 
@@ -14,12 +14,12 @@ Who it's for: astrophysics researchers and grad students who live in LaTeX, ADS,
 
 *After this chapter you can explain what astrobib stores on disk and why you'd trust it with your references.*
 
-- **Just BibTeX files** — the library is a directory of `bib/*.bib`, one paper per file, indistinguishable from hand-written BibTeX; no database, no lock-in.
-- **Cite keys for life** — keys derive from a paper's stable identity (arXiv ID or bibcode), so any two copies fetched by anyone, ever, agree on the key.
-- **ADS-native** — search, fetch, citation graphs, and metadata refresh all speak directly to the NASA/Harvard ADS.
-- **One fast binary** — instant startup and quit; a TUI when you want to browse, a CLI when you want to script.
+- **Plain text everything** — the library is a directory of `bib/*.bib`, one paper per file; use git for version control.
+- **Stable and universal cite keys** — keys are derive from a paper's stable identity (arXiv ID or bibcode), so references to the same paper generate a stable, universal, and memorable key.
+- **ADS-native** — search, fetch, citation graphs, and metadata refresh all interact directly with the NASA/Harvard ADS.
+- **Fast** — instant startup and quit; astrobib is a TUI and a CLI at the same time.
 
-## 2. Installation and first contact
+## 2. Installation and first use
 
 *After this chapter you have astrobib installed, an ADS token saved, and your first paper in the library.*
 
