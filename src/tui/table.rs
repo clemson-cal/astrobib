@@ -298,7 +298,7 @@ pub(super) fn draw(
             let r = Rect { x: hx, y: area.y, width: cw.max(1), height: 1 };
             rects.push((r, spec.id));
             if let Some(asc) = model.sort.and_then(|(c, a)| (c == spec.id).then_some(a)) {
-                let arrow = if asc { "▲" } else { "▼" };
+                let arrow = super::arrow(asc);
                 // narrow indicator columns fit glyph+arrow only
                 // a one-cell indicator column has room for the marker
                 // or its glyph, not both — and the marker is the thing

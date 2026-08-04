@@ -48,8 +48,11 @@ PRE_LAUNCH = _pre_launch
 def run(t):
     t.send("]")
     t.wait_for(lambda: "Relativistic jet braking" in t.text(), what="drifted query row")
-    # the table is left of the card divider; the card repeats the title
-    table = [l.split("│")[0] for l in t.lines()]
+    # the card repeats the title, so the table has to be isolated before
+    # looking for the row. The card is a fixed 48 columns on the right and
+    # no longer draws an edge rule — its tint is its boundary now — so the
+    # split is by column, not by a divider glyph.
+    table = [l[: t.screen.columns - 48] for l in t.lines()]
     row = next(l for l in table if "Relativistic jet braking" in l)
     # ● says "in your library" and ↓ says "PDF cached" — both are found
     # through the cite key, which is stable across the bibcode change

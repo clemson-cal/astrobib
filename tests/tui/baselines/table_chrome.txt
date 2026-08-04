@@ -1,39 +1,40 @@
 ## library w=140 card
-   ↓ ● Year ▼ Author          Title                                     Key                 │
-────────────────────────────────────────────────────────────────────────────────────────────│  Cabrera, Okafor · 2024
-◉      2024   Cabrera, +1     Turbulent magnetic amplification in binar Cabrera2024         │  arXiv e-prints, arXiv:2407.20112
-       2023   Ekwueme, +4     Precursor flares from charged black hole  Ekwueme2023         │  cited by ? ⟳
-       2021   Andersson, +1   Relativistic jet braking in dense circums Andersson2021       │
-       2019   Baxter          A census of runaway white dwarfs in the g Baxter2019          │  We present global moving-mesh simulations
-       2018   Délacroix, +1   On the stability of self-gravitating accr Delacroix2018       │  of the first hundred milliseconds of a
-                                                                                            │  binary neutron star merger remnant.
-                                                                                            │  Small-scale dynamo action amplifies the
-                                                                                            │  seed field to magnetar strength, and we
-                                                                                            │  discuss implications for jet launching.
-                                                                                            │  ───────────────────────────────────────────
-                                                                                            │  → ADS              │ ⧉ cite key
-                                                                                            │  → arXiv:2407.20112 │ ⧉ full key
-                                                                                            │  → DOI              │ ⧉ bibcode
-                                                                                            │  ⌕ citations        │ ⧉ ADS URL
-                                                                                            │  ⌕ references       │ ⧉ arXiv URL
-                                                                                            │                     │ ⧉ DOI URL
-                                                                                            │                     │ ⧉ PDF path
-                                                                                            │                     │ ⧉ title
-                                                                                            │                     │ ⧉ abstract
-                                                                                            │  ───────────────────────────────────────────
-                                                                                            │
-                                                                                            │   arXiv ↓   ADS OA ↓   browser ↓   pick …
-                                                                                            │
-                                                                                            │  Neutron stars · Magnetohydrodynamics ·
-                                                                                            │  Gravitational wave sources
-                                                                                            │
-                                                                                            │  Cabrera2024txuze   ◇ add to manuscript
-                                                                                            │
-                                                                                            │
-                                                                                            │
-                                                                                            │
-                                                                                            │
-                                                                                            │                               ▤ card │ @ bib
+   ↓ ● Year ▼ Author          Title                                     Key
+────────────────────────────────────────────────────────────────────────────────────────────   Cabrera, Okafor · 2024
+◉      2024   Cabrera, +1     Turbulent magnetic amplification in binar Cabrera2024            arXiv e-prints, arXiv:2407.20112
+       2023   Ekwueme, +4     Precursor flares from charged black hole  Ekwueme2023            cited by ? ⟳
+       2021   Andersson, +1   Relativistic jet braking in dense circums Andersson2021
+       2019   Baxter          A census of runaway white dwarfs in the g Baxter2019             We present global moving-mesh simulations
+       2018   Délacroix, +1   On the stability of self-gravitating accr Delacroix2018          of the first hundred milliseconds of a
+                                                                                               binary neutron star merger remnant.
+                                                                                               Small-scale dynamo action amplifies the
+                                                                                               seed field to magnetar strength, and we
+                                                                                               discuss implications for jet launching.
+                                                                                               ───────────────────────────────────────────
+                                                                                               → ADS              │ ⧉ cite key
+                                                                                               → arXiv:2407.20112 │ ⧉ full key
+                                                                                               → DOI              │ ⧉ bibcode
+                                                                                               ⌕ citations        │ ⧉ ADS URL
+                                                                                               ⌕ references       │ ⧉ arXiv URL
+                                                                                                                  │ ⧉ DOI URL
+                                                                                                                  │ ⧉ PDF path
+                                                                                                                  │ ⧉ title
+                                                                                                                  │ ⧉ abstract
+                                                                                               ───────────────────────────────────────────
+
+                                                                                                arXiv ↓   ADS OA ↓   browser ↓   pick …
+
+                                                                                               Neutron stars · Magnetohydrodynamics ·
+                                                                                               Gravitational wave sources
+
+                                                                                               Cabrera2024txuze   ◇ add to manuscript
+
+
+
+
+
+
+                                                                                                                            ▤ card │ @ bib
 
 ## library w=140 nocard
    ↓ ● Year ▼ Author                  Title                                                                             Key
@@ -72,116 +73,120 @@
 
 
 
+
 ## manuscript w=140 card
-      Cited                      State      Title                                           │
-────────────────────────────────────────────────────────────────────────────────────────────│  Andersson, Blomqvist · 2021
-◉  ○  Andersson2021              library    Relativistic jet braking in dense circumstellar │  ApJ 912, 77
-   ○  Baxter2019                 library    A census of runaway white dwarfs in the galactic│  cited by ? ⟳
-   ✗  Nowhere2020                missing                                                    │
-                                                                                            │  We study the deceleration of relativistic
-                                                                                            │  jets launched into dense circumstellar
-                                                                                            │  shells. Semi-analytic models are compared
-                                                                                            │  with two-dimensional simulations, and we
-                                                                                            │  find that jet braking imprints a
-                                                                                            │  characteristic break in the afterglow light
-                                                                                            │  curve.
-                                                                                            │  ───────────────────────────────────────────
-                                                                                            │  → ADS              │ ⧉ cite key
-                                                                                            │  → arXiv:2103.04156 │ ⧉ full key
-                                                                                            │  → DOI              │ ⧉ bibcode
-                                                                                            │  ⌕ citations        │ ⧉ ADS URL
-                                                                                            │  ⌕ references       │ ⧉ arXiv URL
-                                                                                            │                     │ ⧉ DOI URL
-                                                                                            │                     │ ⧉ PDF path
-                                                                                            │                     │ ⧉ title
-                                                                                            │                     │ ⧉ abstract
-                                                                                            │  ───────────────────────────────────────────
-                                                                                            │
-                                                                                            │   arXiv ↓   ADS OA ↓   browser ↓   pick …
-                                                                                            │
-                                                                                            │  Relativistic jets · Circumstellar matter ·
-                                                                                            │  High energy astrophysics
-                                                                                            │
-                                                                                            │  Andersson2021pombz   ◇ add to manuscript
-                                                                                            │
-                                                                                            │
-                                                                                            │
-                                                                                            │
-                                                                                            │                               ▤ card │ @ bib
+      Cited                      State      Title
+────────────────────────────────────────────────────────────────────────────────────────────   Andersson, Blomqvist · 2021
+◉  ○  Andersson2021              library    Relativistic jet braking in dense circumstellar    ApJ 912, 77
+   ○  Baxter2019                 library    A census of runaway white dwarfs in the galactic   cited by ? ⟳
+   ✗  Nowhere2020                missing
+                                                                                               We study the deceleration of relativistic
+                                                                                               jets launched into dense circumstellar
+                                                                                               shells. Semi-analytic models are compared
+                                                                                               with two-dimensional simulations, and we
+                                                                                               find that jet braking imprints a
+                                                                                               characteristic break in the afterglow light
+                                                                                               curve.
+                                                                                               ───────────────────────────────────────────
+                                                                                               → ADS              │ ⧉ cite key
+                                                                                               → arXiv:2103.04156 │ ⧉ full key
+                                                                                               → DOI              │ ⧉ bibcode
+                                                                                               ⌕ citations        │ ⧉ ADS URL
+                                                                                               ⌕ references       │ ⧉ arXiv URL
+                                                                                                                  │ ⧉ DOI URL
+                                                                                                                  │ ⧉ PDF path
+                                                                                                                  │ ⧉ title
+                                                                                                                  │ ⧉ abstract
+                                                                                               ───────────────────────────────────────────
+
+                                                                                                arXiv ↓   ADS OA ↓   browser ↓   pick …
+
+                                                                                               Relativistic jets · Circumstellar matter ·
+                                                                                               High energy astrophysics
+
+                                                                                               Andersson2021pombz   ◇ add to manuscript
+
+
+
+
+
+                                                                                                                            ▤ card │ @ bib
 
 ## query w=140 card
-   ↓ ● Year ▼ Entered    Author          Title                          Key                 │  Cachette, Zylstra · 2020
-────────────────────────────────────────────────────────────────────────────────────────────│  TestJ 1, 1
-◉      2020   2024-03-02 Cachette, +1    A cached result about kilonova Cachette2020hvsjk   │  cited by 7 ⟳
-       2015   2026-01-19 Quist           Older cached companion paper   Quist2015kfjlg      │
-                                                                                            │  From the cache, not the network.
-                                                                                            │  ───────────────────────────────────────────
-                                                                                            │  → ADS               │ ⧉ cite key
-                                                                                            │  → arXiv             │ ⧉ full key
-                                                                                            │  → DOI               │ ⧉ bibcode
-                                                                                            │  ⌕ citations         │ ⧉ ADS URL
-                                                                                            │  ⌕ references        │ ⧉ arXiv URL
-                                                                                            │  ⌕ add to manuscript │ ⧉ DOI URL
-                                                                                            │                      │ ⧉ PDF path
-                                                                                            │                      │ ⧉ title
-                                                                                            │                      │ ⧉ abstract
-                                                                                            │  ───────────────────────────────────────────
-                                                                                            │
-                                                                                            │  Cachette2020hvsjk  → import
-                                                                                            │
-                                                                                            │
-                                                                                            │
-                                                                                            │
-                                                                                            │
-                                                                                            │
-                                                                                            │
-                                                                                            │
-                                                                                            │
-                                                                                            │
-                                                                                            │
-                                                                                            │
-                                                                                            │
-                                                                                            │
-                                                                                            │
-                                                                                            │
-                                                                                            │                               ▤ card │ @ bib
+   ↓ ● Year ▼ Entered    Author          Title                          Key                    Cachette, Zylstra · 2020
+────────────────────────────────────────────────────────────────────────────────────────────   TestJ 1, 1
+◉      2020   2024-03-02 Cachette, +1    A cached result about kilonova Cachette2020hvsjk      cited by 7 ⟳
+       2015   2026-01-19 Quist           Older cached companion paper   Quist2015kfjlg
+                                                                                               From the cache, not the network.
+                                                                                               ───────────────────────────────────────────
+                                                                                               → ADS               │ ⧉ cite key
+                                                                                               → arXiv             │ ⧉ full key
+                                                                                               → DOI               │ ⧉ bibcode
+                                                                                               ⌕ citations         │ ⧉ ADS URL
+                                                                                               ⌕ references        │ ⧉ arXiv URL
+                                                                                               ⌕ add to manuscript │ ⧉ DOI URL
+                                                                                                                   │ ⧉ PDF path
+                                                                                                                   │ ⧉ title
+                                                                                                                   │ ⧉ abstract
+                                                                                               ───────────────────────────────────────────
+
+                                                                                               Cachette2020hvsjk  → import
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+                                                                                                                            ▤ card │ @ bib
 
 ## library w=110 card
-   ↓ ● Year ▼ Author         Title        Key                 │
-──────────────────────────────────────────────────────────────│  Cabrera, Okafor · 2024
-◉     2024   Cabrera Turbulent magnetic a Cabrera2024         │  arXiv e-prints, arXiv:2407.20112
-      2023   Ekwueme Precursor flares fro Ekwueme2023         │  cited by ? ⟳
-      2021   Anderss Relativistic jet bra Andersson2021       │
-      2019   Baxter  A census of runaway  Baxter2019          │  We present global moving-mesh simulations
-      2018   Délacro On the stability of  Delacroix2018       │  of the first hundred milliseconds of a
-                                                              │  binary neutron star merger remnant.
-                                                              │  Small-scale dynamo action amplifies the
-                                                              │  seed field to magnetar strength, and we
-                                                              │  discuss implications for jet launching.
-                                                              │  ───────────────────────────────────────────
-                                                              │  → ADS              │ ⧉ cite key
-                                                              │  → arXiv:2407.20112 │ ⧉ full key
-                                                              │  → DOI              │ ⧉ bibcode
-                                                              │  ⌕ citations        │ ⧉ ADS URL
-                                                              │  ⌕ references       │ ⧉ arXiv URL
-                                                              │                     │ ⧉ DOI URL
-                                                              │                     │ ⧉ PDF path
-                                                              │                     │ ⧉ title
-                                                              │                     │ ⧉ abstract
-                                                              │  ───────────────────────────────────────────
-                                                              │
-                                                              │   arXiv ↓   ADS OA ↓   browser ↓   pick …
-                                                              │
-                                                              │  Neutron stars · Magnetohydrodynamics ·
-                                                              │  Gravitational wave sources
-                                                              │
-                                                              │  Cabrera2024txuze   ◇ add to manuscript
-                                                              │
-                                                              │
-                                                              │
-                                                              │
-                                                              │
-                                                              │                               ▤ card │ @ bib
+   ↓ ● Year ▼ Author         Title        Key
+──────────────────────────────────────────────────────────────   Cabrera, Okafor · 2024
+◉     2024   Cabrera Turbulent magnetic a Cabrera2024            arXiv e-prints, arXiv:2407.20112
+      2023   Ekwueme Precursor flares fro Ekwueme2023            cited by ? ⟳
+      2021   Anderss Relativistic jet bra Andersson2021
+      2019   Baxter  A census of runaway  Baxter2019             We present global moving-mesh simulations
+      2018   Délacro On the stability of  Delacroix2018          of the first hundred milliseconds of a
+                                                                 binary neutron star merger remnant.
+                                                                 Small-scale dynamo action amplifies the
+                                                                 seed field to magnetar strength, and we
+                                                                 discuss implications for jet launching.
+                                                                 ───────────────────────────────────────────
+                                                                 → ADS              │ ⧉ cite key
+                                                                 → arXiv:2407.20112 │ ⧉ full key
+                                                                 → DOI              │ ⧉ bibcode
+                                                                 ⌕ citations        │ ⧉ ADS URL
+                                                                 ⌕ references       │ ⧉ arXiv URL
+                                                                                    │ ⧉ DOI URL
+                                                                                    │ ⧉ PDF path
+                                                                                    │ ⧉ title
+                                                                                    │ ⧉ abstract
+                                                                 ───────────────────────────────────────────
+
+                                                                  arXiv ↓   ADS OA ↓   browser ↓   pick …
+
+                                                                 Neutron stars · Magnetohydrodynamics ·
+                                                                 Gravitational wave sources
+
+                                                                 Cabrera2024txuze   ◇ add to manuscript
+
+
+
+
+
+
+                                                                                              ▤ card │ @ bib
 
 ## library w=110 nocard
    ↓ ● Year ▼ Author             Title                                                    Key
@@ -220,115 +225,119 @@
 
 
 
+
 ## manuscript w=110 card
-      Cited                      State      Title             │
-──────────────────────────────────────────────────────────────│  Andersson, Blomqvist · 2021
-◉  ○  Andersson2021            library    Relativistic jet bra│  ApJ 912, 77
-   ○  Baxter2019               library    A census of runaway │  cited by ? ⟳
-   ✗  Nowhere2020              missing                        │
-                                                              │  We study the deceleration of relativistic
-                                                              │  jets launched into dense circumstellar
-                                                              │  shells. Semi-analytic models are compared
-                                                              │  with two-dimensional simulations, and we
-                                                              │  find that jet braking imprints a
-                                                              │  characteristic break in the afterglow light
-                                                              │  curve.
-                                                              │  ───────────────────────────────────────────
-                                                              │  → ADS              │ ⧉ cite key
-                                                              │  → arXiv:2103.04156 │ ⧉ full key
-                                                              │  → DOI              │ ⧉ bibcode
-                                                              │  ⌕ citations        │ ⧉ ADS URL
-                                                              │  ⌕ references       │ ⧉ arXiv URL
-                                                              │                     │ ⧉ DOI URL
-                                                              │                     │ ⧉ PDF path
-                                                              │                     │ ⧉ title
-                                                              │                     │ ⧉ abstract
-                                                              │  ───────────────────────────────────────────
-                                                              │
-                                                              │   arXiv ↓   ADS OA ↓   browser ↓   pick …
-                                                              │
-                                                              │  Relativistic jets · Circumstellar matter ·
-                                                              │  High energy astrophysics
-                                                              │
-                                                              │  Andersson2021pombz   ◇ add to manuscript
-                                                              │
-                                                              │
-                                                              │
-                                                              │
-                                                              │                               ▤ card │ @ bib
+      Cited                      State      Title
+──────────────────────────────────────────────────────────────   Andersson, Blomqvist · 2021
+◉  ○  Andersson2021            library    Relativistic jet bra   ApJ 912, 77
+   ○  Baxter2019               library    A census of runaway    cited by ? ⟳
+   ✗  Nowhere2020              missing
+                                                                 We study the deceleration of relativistic
+                                                                 jets launched into dense circumstellar
+                                                                 shells. Semi-analytic models are compared
+                                                                 with two-dimensional simulations, and we
+                                                                 find that jet braking imprints a
+                                                                 characteristic break in the afterglow light
+                                                                 curve.
+                                                                 ───────────────────────────────────────────
+                                                                 → ADS              │ ⧉ cite key
+                                                                 → arXiv:2103.04156 │ ⧉ full key
+                                                                 → DOI              │ ⧉ bibcode
+                                                                 ⌕ citations        │ ⧉ ADS URL
+                                                                 ⌕ references       │ ⧉ arXiv URL
+                                                                                    │ ⧉ DOI URL
+                                                                                    │ ⧉ PDF path
+                                                                                    │ ⧉ title
+                                                                                    │ ⧉ abstract
+                                                                 ───────────────────────────────────────────
+
+                                                                  arXiv ↓   ADS OA ↓   browser ↓   pick …
+
+                                                                 Relativistic jets · Circumstellar matter ·
+                                                                 High energy astrophysics
+
+                                                                 Andersson2021pombz   ◇ add to manuscript
+
+
+
+
+
+                                                                                              ▤ card │ @ bib
 
 ## query w=110 card
-   ↓ ● Year ▼ Entered    Author         Title Key             │  Cachette, Zylstra · 2020
-──────────────────────────────────────────────────────────────│  TestJ 1, 1
-◉     2020 2024 Cach A cached result abou Cachette2020hvsjk   │  cited by 7 ⟳
-      2015 2026 Quis Older cached compani Quist2015kfjlg      │
-                                                              │  From the cache, not the network.
-                                                              │  ───────────────────────────────────────────
-                                                              │  → ADS               │ ⧉ cite key
-                                                              │  → arXiv             │ ⧉ full key
-                                                              │  → DOI               │ ⧉ bibcode
-                                                              │  ⌕ citations         │ ⧉ ADS URL
-                                                              │  ⌕ references        │ ⧉ arXiv URL
-                                                              │  ⌕ add to manuscript │ ⧉ DOI URL
-                                                              │                      │ ⧉ PDF path
-                                                              │                      │ ⧉ title
-                                                              │                      │ ⧉ abstract
-                                                              │  ───────────────────────────────────────────
-                                                              │
-                                                              │  Cachette2020hvsjk  → import
-                                                              │
-                                                              │
-                                                              │
-                                                              │
-                                                              │
-                                                              │
-                                                              │
-                                                              │
-                                                              │
-                                                              │
-                                                              │
-                                                              │
-                                                              │
-                                                              │
-                                                              │
-                                                              │
-                                                              │                               ▤ card │ @ bib
+   ↓ ● Year ▼ Entered    Author         Title Key                Cachette, Zylstra · 2020
+──────────────────────────────────────────────────────────────   TestJ 1, 1
+◉     2020 2024 Cach A cached result abou Cachette2020hvsjk      cited by 7 ⟳
+      2015 2026 Quis Older cached compani Quist2015kfjlg
+                                                                 From the cache, not the network.
+                                                                 ───────────────────────────────────────────
+                                                                 → ADS               │ ⧉ cite key
+                                                                 → arXiv             │ ⧉ full key
+                                                                 → DOI               │ ⧉ bibcode
+                                                                 ⌕ citations         │ ⧉ ADS URL
+                                                                 ⌕ references        │ ⧉ arXiv URL
+                                                                 ⌕ add to manuscript │ ⧉ DOI URL
+                                                                                     │ ⧉ PDF path
+                                                                                     │ ⧉ title
+                                                                                     │ ⧉ abstract
+                                                                 ───────────────────────────────────────────
+
+                                                                 Cachette2020hvsjk  → import
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+                                                                                              ▤ card │ @ bib
 
 ## library w=84 card
-   ↓ ● Year ▼ Author         Title Key  │  Cabrera, Okafor · 2024
-────────────────────────────────────────│  arXiv e-prints, arXiv:2407.20112
-     Turbulent magnetic a Cabrera2024   │  cited by ? ⟳
-     Precursor flares fro Ekwueme2023   │
-     Relativistic jet bra Andersson2021 │  We present global moving-mesh
-     A census of runaway  Baxter2019    │  simulations of the first hundred
-     On the stability of  Delacroix2018 │  milliseconds of a binary neutron star
-                                        │  merger remnant. Small-scale dynamo
-                                        │  action amplifies the seed field to
-                                        │  magnetar strength, and we discuss
-                                        │  implications for jet launching.
-                                        │  ───────────────────────────────────────
-                                        │  → ADS              │ ⧉ cite key
-                                        │  → arXiv:2407.20112 │ ⧉ full key
-                                        │  → DOI              │ ⧉ bibcode
-                                        │  ⌕ citations        │ ⧉ ADS URL
-                                        │  ⌕ references       │ ⧉ arXiv URL
-                                        │                     │ ⧉ DOI URL
-                                        │                     │ ⧉ PDF path
-                                        │                     │ ⧉ title
-                                        │                     │ ⧉ abstract
-                                        │  ───────────────────────────────────────
-                                        │
-                                        │   arXiv ↓   ADS OA ↓   browser ↓   pick
-                                        │
-                                        │  Neutron stars · Magnetohydrodynamics ·
-                                        │  Gravitational wave sources
-                                        │
-                                        │  Cabrera2024txuze   ◇ add to manuscript
-                                        │
-                                        │
-                                        │
-                                        │
-                                        │                           ▤ card │ @ bib
+   ↓ ● Year ▼ Author         Title Key     Cabrera, Okafor · 2024
+────────────────────────────────────────   arXiv e-prints, arXiv:2407.20112
+     Turbulent magnetic a Cabrera2024      cited by ? ⟳
+     Precursor flares fro Ekwueme2023
+     Relativistic jet bra Andersson2021    We present global moving-mesh
+     A census of runaway  Baxter2019       simulations of the first hundred
+     On the stability of  Delacroix2018    milliseconds of a binary neutron star
+                                           merger remnant. Small-scale dynamo
+                                           action amplifies the seed field to
+                                           magnetar strength, and we discuss
+                                           implications for jet launching.
+                                           ───────────────────────────────────────
+                                           → ADS              │ ⧉ cite key
+                                           → arXiv:2407.20112 │ ⧉ full key
+                                           → DOI              │ ⧉ bibcode
+                                           ⌕ citations        │ ⧉ ADS URL
+                                           ⌕ references       │ ⧉ arXiv URL
+                                                              │ ⧉ DOI URL
+                                                              │ ⧉ PDF path
+                                                              │ ⧉ title
+                                                              │ ⧉ abstract
+                                           ───────────────────────────────────────
+
+                                            arXiv ↓   ADS OA ↓   browser ↓   pick
+
+                                           Neutron stars · Magnetohydrodynamics ·
+                                           Gravitational wave sources
+
+                                           Cabrera2024txuze   ◇ add to manuscript
+
+
+
+
+
+                                                                    ▤ card │ @ bib
 
 ## library w=84 nocard
    ↓ ● Year ▼ Author         Title
@@ -367,113 +376,117 @@
 
 
 
+
 ## manuscript w=84 card
-      Cited                      State  │  Andersson, Blomqvist · 2021
-────────────────────────────────────────│  ApJ 912, 77
-◉  ○  Anders librar Relativistic jet bra│  cited by ? ⟳
-   ○  Baxter librar A census of runaway │
-   ✗  Nowher missin                     │  We study the deceleration of
-                                        │  relativistic jets launched into dense
-                                        │  circumstellar shells. Semi-analytic
-                                        │  models are compared with
-                                        │  two-dimensional simulations, and we
-                                        │  find that jet braking imprints a
-                                        │  characteristic break in the afterglow
-                                        │  light curve.
-                                        │  ───────────────────────────────────────
-                                        │  → ADS              │ ⧉ cite key
-                                        │  → arXiv:2103.04156 │ ⧉ full key
-                                        │  → DOI              │ ⧉ bibcode
-                                        │  ⌕ citations        │ ⧉ ADS URL
-                                        │  ⌕ references       │ ⧉ arXiv URL
-                                        │                     │ ⧉ DOI URL
-                                        │                     │ ⧉ PDF path
-                                        │                     │ ⧉ title
-                                        │                     │ ⧉ abstract
-                                        │  ───────────────────────────────────────
-                                        │
-                                        │   arXiv ↓   ADS OA ↓   browser ↓   pick
-                                        │
-                                        │  Relativistic jets · Circumstellar
-                                        │  matter · High energy astrophysics
-                                        │
-                                        │  Andersson2021pombz
-                                        │   ◇ add to manuscript
-                                        │
-                                        │
-                                        │                           ▤ card │ @ bib
+      Cited                      State     Andersson, Blomqvist · 2021
+────────────────────────────────────────   ApJ 912, 77
+◉  ○  Anders librar Relativistic jet bra   cited by ? ⟳
+   ○  Baxter librar A census of runaway
+   ✗  Nowher missin                        We study the deceleration of
+                                           relativistic jets launched into dense
+                                           circumstellar shells. Semi-analytic
+                                           models are compared with
+                                           two-dimensional simulations, and we
+                                           find that jet braking imprints a
+                                           characteristic break in the afterglow
+                                           light curve.
+                                           ───────────────────────────────────────
+                                           → ADS              │ ⧉ cite key
+                                           → arXiv:2103.04156 │ ⧉ full key
+                                           → DOI              │ ⧉ bibcode
+                                           ⌕ citations        │ ⧉ ADS URL
+                                           ⌕ references       │ ⧉ arXiv URL
+                                                              │ ⧉ DOI URL
+                                                              │ ⧉ PDF path
+                                                              │ ⧉ title
+                                                              │ ⧉ abstract
+                                           ───────────────────────────────────────
+
+                                            arXiv ↓   ADS OA ↓   browser ↓   pick
+
+                                           Relativistic jets · Circumstellar
+                                           matter · High energy astrophysics
+
+                                           Andersson2021pombz
+                                            ◇ add to manuscript
+
+
+
+                                                                    ▤ card │ @ bib
 
 ## query w=84 card
-   ↓ ● Year ▼ Entered    Author         │  TestJ 1, 1
-────────────────────────────────────────│  cited by 7 ⟳
-      A cached result abou Cachette2020h│
-      Older cached compani Quist2015kfjl│  From the cache, not the network.
-                                        │  ───────────────────────────────────────
-                                        │  → ADS               │ ⧉ cite key
-                                        │  → arXiv             │ ⧉ full key
-                                        │  → DOI               │ ⧉ bibcode
-                                        │  ⌕ citations         │ ⧉ ADS URL
-                                        │  ⌕ references        │ ⧉ arXiv URL
-                                        │  ⌕ add to manuscript │ ⧉ DOI URL
-                                        │                      │ ⧉ PDF path
-                                        │                      │ ⧉ title
-                                        │                      │ ⧉ abstract
-                                        │  ───────────────────────────────────────
-                                        │
-                                        │  Cachette2020hvsjk  → import
-                                        │
-                                        │
-                                        │
-                                        │
-                                        │
-                                        │
-                                        │
-                                        │
-                                        │
-                                        │
-                                        │
-                                        │
-                                        │
-                                        │
-                                        │
-                                        │
-                                        │                           ▤ card │ @ bib
+   ↓ ● Year ▼ Entered    Author            TestJ 1, 1
+────────────────────────────────────────   cited by 7 ⟳
+      A cached result abou Cachette2020h
+      Older cached compani Quist2015kfjl   From the cache, not the network.
+                                           ───────────────────────────────────────
+                                           → ADS               │ ⧉ cite key
+                                           → arXiv             │ ⧉ full key
+                                           → DOI               │ ⧉ bibcode
+                                           ⌕ citations         │ ⧉ ADS URL
+                                           ⌕ references        │ ⧉ arXiv URL
+                                           ⌕ add to manuscript │ ⧉ DOI URL
+                                                               │ ⧉ PDF path
+                                                               │ ⧉ title
+                                                               │ ⧉ abstract
+                                           ───────────────────────────────────────
+
+                                           Cachette2020hvsjk  → import
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+                                                                    ▤ card │ @ bib
 
 ## library w=64 card
-   ↓ ● Year ▼ Author         Title Key  │  merger remnants
-────────────────────────────────────────│
-     Turbulent magnetic a Cabrera2024   │  Cabrera, Okafor ·
-     Precursor flares fro Ekwueme2023   │  2024
-     Relativistic jet bra Andersson2021 │  arXiv e-prints,
-     A census of runaway  Baxter2019    │  arXiv:2407.20112
-     On the stability of  Delacroix2018 │  cited by ? ⟳
-                                        │
-                                        │  We present global
-                                        │  moving-mesh
-                                        │  simulations of the
-                                        │↓ first hundred
-                                        │  ───────────────────
-                                        │  → ADS     │ ⧉ cite
-                                        │  → arXiv:2 │ ⧉ full
-                                        │  → DOI     │ ⧉ bibco
-                                        │  ⌕ citatio │ ⧉ ADS U
-                                        │  ⌕ referen │ ⧉ arXiv
-                                        │            │ ⧉ DOI U
-                                        │            │ ⧉ PDF p
-                                        │            │ ⧉ title
-                                        │            │ ⧉ abstr
-                                        │  ───────────────────
-                                        │
-                                        │   arXiv ↓   ADS OA ↓
-                                        │
-                                        │  Neutron stars ·
-                                        │  Magnetohydrodynamic
-                                        │  · Gravitational
-                                        │  wave sources
-                                        │
-                                        │  Cabrera2024txuze
-                                        │   ◇ add to manuscrip
-                                        │       ▤ card │ @ bib
+   ↓ ● Year ▼ Author         Title Key     merger remnants
+────────────────────────────────────────
+     Turbulent magnetic a Cabrera2024      Cabrera, Okafor ·
+     Precursor flares fro Ekwueme2023      2024
+     Relativistic jet bra Andersson2021    arXiv e-prints,
+     A census of runaway  Baxter2019       arXiv:2407.20112
+     On the stability of  Delacroix2018    cited by ? ⟳
+
+                                           We present global
+                                           moving-mesh
+                                           simulations of the
+                                           first hundred
+                                         ↓ milliseconds of a
+                                           ───────────────────
+                                           → ADS     │ ⧉ cite
+                                           → arXiv:2 │ ⧉ full
+                                           → DOI     │ ⧉ bibco
+                                           ⌕ citatio │ ⧉ ADS U
+                                           ⌕ referen │ ⧉ arXiv
+                                                     │ ⧉ DOI U
+                                                     │ ⧉ PDF p
+                                                     │ ⧉ title
+                                                     │ ⧉ abstr
+                                           ───────────────────
+
+                                            arXiv ↓   ADS OA ↓
+
+                                           Neutron stars ·
+                                           Magnetohydrodynamic
+                                           · Gravitational
+                                           wave sources
+
+                                           Cabrera2024txuze
+                                            ◇ add to manuscrip
+                                                ▤ card │ @ bib
 
 ## library w=64 nocard
    ↓ ● Year ▼ Author         Title
@@ -512,186 +525,192 @@
 
 
 
+
 ## manuscript w=64 card
-      Cited                      State  │  environments
-────────────────────────────────────────│
-◉  ○  Anders librar Relativistic jet bra│  Andersson,
-   ○  Baxter librar A census of runaway │  Blomqvist · 2021
-   ✗  Nowher missin                     │  ApJ 912, 77
-                                        │  cited by ? ⟳
-                                        │
-                                        │  We study the
-                                        │  deceleration of
-                                        │  relativistic jets
-                                        │  launched into dense
-                                        │↓ circumstellar
-                                        │  ───────────────────
-                                        │  → ADS     │ ⧉ cite
-                                        │  → arXiv:2 │ ⧉ full
-                                        │  → DOI     │ ⧉ bibco
-                                        │  ⌕ citatio │ ⧉ ADS U
-                                        │  ⌕ referen │ ⧉ arXiv
-                                        │            │ ⧉ DOI U
-                                        │            │ ⧉ PDF p
-                                        │            │ ⧉ title
-                                        │            │ ⧉ abstr
-                                        │  ───────────────────
-                                        │
-                                        │   arXiv ↓   ADS OA ↓
-                                        │
-                                        │  Relativistic jets ·
-                                        │  Circumstellar
-                                        │  matter · High
-                                        │  energy astrophysics
-                                        │
-                                        │  Andersson2021pombz
-                                        │   ◇ add to manuscrip
-                                        │       ▤ card │ @ bib
+      Cited                      State     environments
+────────────────────────────────────────
+◉  ○  Anders librar Relativistic jet bra   Andersson,
+   ○  Baxter librar A census of runaway    Blomqvist · 2021
+   ✗  Nowher missin                        ApJ 912, 77
+                                           cited by ? ⟳
+
+                                           We study the
+                                           deceleration of
+                                           relativistic jets
+                                           launched into dense
+                                           circumstellar
+                                         ↓ shells.
+                                           ───────────────────
+                                           → ADS     │ ⧉ cite
+                                           → arXiv:2 │ ⧉ full
+                                           → DOI     │ ⧉ bibco
+                                           ⌕ citatio │ ⧉ ADS U
+                                           ⌕ referen │ ⧉ arXiv
+                                                     │ ⧉ DOI U
+                                                     │ ⧉ PDF p
+                                                     │ ⧉ title
+                                                     │ ⧉ abstr
+                                           ───────────────────
+
+                                            arXiv ↓   ADS OA ↓
+
+                                           Relativistic jets ·
+                                           Circumstellar
+                                           matter · High
+                                           energy astrophysics
+
+                                           Andersson2021pombz
+                                            ◇ add to manuscrip
+                                                ▤ card │ @ bib
 
 ## query w=64 card
-   ↓ ● Year ▼ Entered    Author         │  Cachette, Zylstra ·
-────────────────────────────────────────│  2020
-      A cached result abou Cachette2020h│  TestJ 1, 1
-      Older cached compani Quist2015kfjl│  cited by 7 ⟳
-                                        │
-                                        │  From the cache, not
-                                        │  the network.
-                                        │  ───────────────────
-                                        │  → ADS     │ ⧉ cite
-                                        │  → arXiv   │ ⧉ full
-                                        │  → DOI     │ ⧉ bibco
-                                        │  ⌕ citatio │ ⧉ ADS U
-                                        │  ⌕ referen │ ⧉ arXiv
-                                        │  ⌕ add to  │ ⧉ DOI U
-                                        │            │ ⧉ PDF p
-                                        │            │ ⧉ title
-                                        │            │ ⧉ abstr
-                                        │  ───────────────────
-                                        │
-                                        │  Cachette2020hvsjk
-                                        │
-                                        │
-                                        │
-                                        │
-                                        │
-                                        │
-                                        │
-                                        │
-                                        │
-                                        │
-                                        │
-                                        │
-                                        │
-                                        │       ▤ card │ @ bib
+   ↓ ● Year ▼ Entered    Author            Cachette, Zylstra ·
+────────────────────────────────────────   2020
+      A cached result abou Cachette2020h   TestJ 1, 1
+      Older cached compani Quist2015kfjl   cited by 7 ⟳
+
+                                           From the cache, not
+                                           the network.
+                                           ───────────────────
+                                           → ADS     │ ⧉ cite
+                                           → arXiv   │ ⧉ full
+                                           → DOI     │ ⧉ bibco
+                                           ⌕ citatio │ ⧉ ADS U
+                                           ⌕ referen │ ⧉ arXiv
+                                           ⌕ add to  │ ⧉ DOI U
+                                                     │ ⧉ PDF p
+                                                     │ ⧉ title
+                                                     │ ⧉ abstr
+                                           ───────────────────
+
+                                           Cachette2020hvsjk
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+                                                ▤ card │ @ bib
 
 ## library sort=title asc
-   ↓ ● Year   Author          Title ▲                                   Key                 │
-────────────────────────────────────────────────────────────────────────────────────────────│  Baxter · 2019
-◉      2019   Baxter          A census of runaway white dwarfs in the g Baxter2019          │  MNRAS 487, 1234-1250
-       2018   Délacroix, +1   On the stability of self-gravitating accr Delacroix2018       │  cited by ? ⟳
-       2023   Ekwueme, +4     Precursor flares from charged black hole  Ekwueme2023         │
-       2021   Andersson, +1   Relativistic jet braking in dense circums Andersson2021       │  Using astrometry from the second data
-       2024   Cabrera, +1     Turbulent magnetic amplification in binar Cabrera2024         │  release of Gaia, we identify 211 white
-                                                                                            │  dwarfs on unbound galactic orbits. Their
-                                                                                            │  space velocities are consistent with
-                                                                                            │  ejection from double-degenerate supernova
-                                                                                            │  progenitors.
-                                                                                            │  ───────────────────────────────────────────
-                                                                                            │  → ADS        │ ⧉ cite key
-                                                                                            │  → arXiv      │ ⧉ full key
-                                                                                            │  → DOI        │ ⧉ bibcode
-                                                                                            │  ⌕ citations  │ ⧉ ADS URL
-                                                                                            │  ⌕ references │ ⧉ arXiv URL
-                                                                                            │               │ ⧉ DOI URL
-                                                                                            │               │ ⧉ PDF path
-                                                                                            │               │ ⧉ title
-                                                                                            │               │ ⧉ abstract
-                                                                                            │  ───────────────────────────────────────────
-                                                                                            │
-                                                                                            │   ADS OA ↓   browser ↓   pick …
-                                                                                            │
-                                                                                            │  White dwarf stars · Stellar kinematics ·
-                                                                                            │  Galactic halo
-                                                                                            │
-                                                                                            │  Baxter2019equxm   ◇ add to manuscript
-                                                                                            │
-                                                                                            │
-                                                                                            │
-                                                                                            │
-                                                                                            │
-                                                                                            │                               ▤ card │ @ bib
+   ↓ ● Year   Author          Title ▲                                   Key
+────────────────────────────────────────────────────────────────────────────────────────────   Baxter · 2019
+◉      2019   Baxter          A census of runaway white dwarfs in the g Baxter2019             MNRAS 487, 1234-1250
+       2018   Délacroix, +1   On the stability of self-gravitating accr Delacroix2018          cited by ? ⟳
+       2023   Ekwueme, +4     Precursor flares from charged black hole  Ekwueme2023
+       2021   Andersson, +1   Relativistic jet braking in dense circums Andersson2021          Using astrometry from the second data
+       2024   Cabrera, +1     Turbulent magnetic amplification in binar Cabrera2024            release of Gaia, we identify 211 white
+                                                                                               dwarfs on unbound galactic orbits. Their
+                                                                                               space velocities are consistent with
+                                                                                               ejection from double-degenerate supernova
+                                                                                               progenitors.
+                                                                                               ───────────────────────────────────────────
+                                                                                               → ADS        │ ⧉ cite key
+                                                                                               → arXiv      │ ⧉ full key
+                                                                                               → DOI        │ ⧉ bibcode
+                                                                                               ⌕ citations  │ ⧉ ADS URL
+                                                                                               ⌕ references │ ⧉ arXiv URL
+                                                                                                            │ ⧉ DOI URL
+                                                                                                            │ ⧉ PDF path
+                                                                                                            │ ⧉ title
+                                                                                                            │ ⧉ abstract
+                                                                                               ───────────────────────────────────────────
+
+                                                                                                ADS OA ↓   browser ↓   pick …
+
+                                                                                               White dwarf stars · Stellar kinematics ·
+                                                                                               Galactic halo
+
+                                                                                               Baxter2019equxm   ◇ add to manuscript
+
+
+
+
+
+
+                                                                                                                            ▤ card │ @ bib
 
 ## library sort=title desc
-   ↓ ● Year   Author          Title ▼                                   Key                 │
-────────────────────────────────────────────────────────────────────────────────────────────│  Cabrera, Okafor · 2024
-◉      2024   Cabrera, +1     Turbulent magnetic amplification in binar Cabrera2024         │  arXiv e-prints, arXiv:2407.20112
-       2021   Andersson, +1   Relativistic jet braking in dense circums Andersson2021       │  cited by ? ⟳
-       2023   Ekwueme, +4     Precursor flares from charged black hole  Ekwueme2023         │
-       2018   Délacroix, +1   On the stability of self-gravitating accr Delacroix2018       │  We present global moving-mesh simulations
-       2019   Baxter          A census of runaway white dwarfs in the g Baxter2019          │  of the first hundred milliseconds of a
-                                                                                            │  binary neutron star merger remnant.
-                                                                                            │  Small-scale dynamo action amplifies the
-                                                                                            │  seed field to magnetar strength, and we
-                                                                                            │  discuss implications for jet launching.
-                                                                                            │  ───────────────────────────────────────────
-                                                                                            │  → ADS              │ ⧉ cite key
-                                                                                            │  → arXiv:2407.20112 │ ⧉ full key
-                                                                                            │  → DOI              │ ⧉ bibcode
-                                                                                            │  ⌕ citations        │ ⧉ ADS URL
-                                                                                            │  ⌕ references       │ ⧉ arXiv URL
-                                                                                            │                     │ ⧉ DOI URL
-                                                                                            │                     │ ⧉ PDF path
-                                                                                            │                     │ ⧉ title
-                                                                                            │                     │ ⧉ abstract
-                                                                                            │  ───────────────────────────────────────────
-                                                                                            │
-                                                                                            │   arXiv ↓   ADS OA ↓   browser ↓   pick …
-                                                                                            │
-                                                                                            │  Neutron stars · Magnetohydrodynamics ·
-                                                                                            │  Gravitational wave sources
-                                                                                            │
-                                                                                            │  Cabrera2024txuze   ◇ add to manuscript
-                                                                                            │
-                                                                                            │
-                                                                                            │
-                                                                                            │
-                                                                                            │
-                                                                                            │                               ▤ card │ @ bib
+   ↓ ● Year   Author          Title ▼                                   Key
+────────────────────────────────────────────────────────────────────────────────────────────   Cabrera, Okafor · 2024
+◉      2024   Cabrera, +1     Turbulent magnetic amplification in binar Cabrera2024            arXiv e-prints, arXiv:2407.20112
+       2021   Andersson, +1   Relativistic jet braking in dense circums Andersson2021          cited by ? ⟳
+       2023   Ekwueme, +4     Precursor flares from charged black hole  Ekwueme2023
+       2018   Délacroix, +1   On the stability of self-gravitating accr Delacroix2018          We present global moving-mesh simulations
+       2019   Baxter          A census of runaway white dwarfs in the g Baxter2019             of the first hundred milliseconds of a
+                                                                                               binary neutron star merger remnant.
+                                                                                               Small-scale dynamo action amplifies the
+                                                                                               seed field to magnetar strength, and we
+                                                                                               discuss implications for jet launching.
+                                                                                               ───────────────────────────────────────────
+                                                                                               → ADS              │ ⧉ cite key
+                                                                                               → arXiv:2407.20112 │ ⧉ full key
+                                                                                               → DOI              │ ⧉ bibcode
+                                                                                               ⌕ citations        │ ⧉ ADS URL
+                                                                                               ⌕ references       │ ⧉ arXiv URL
+                                                                                                                  │ ⧉ DOI URL
+                                                                                                                  │ ⧉ PDF path
+                                                                                                                  │ ⧉ title
+                                                                                                                  │ ⧉ abstract
+                                                                                               ───────────────────────────────────────────
+
+                                                                                                arXiv ↓   ADS OA ↓   browser ↓   pick …
+
+                                                                                               Neutron stars · Magnetohydrodynamics ·
+                                                                                               Gravitational wave sources
+
+                                                                                               Cabrera2024txuze   ◇ add to manuscript
+
+
+
+
+
+
+                                                                                                                            ▤ card │ @ bib
 
 ## library sort=year
-   ↓ ● Year ▼ Author          Title                                     Key                 │
-────────────────────────────────────────────────────────────────────────────────────────────│  Cabrera, Okafor · 2024
-◉      2024   Cabrera, +1     Turbulent magnetic amplification in binar Cabrera2024         │  arXiv e-prints, arXiv:2407.20112
-       2023   Ekwueme, +4     Precursor flares from charged black hole  Ekwueme2023         │  cited by ? ⟳
-       2021   Andersson, +1   Relativistic jet braking in dense circums Andersson2021       │
-       2019   Baxter          A census of runaway white dwarfs in the g Baxter2019          │  We present global moving-mesh simulations
-       2018   Délacroix, +1   On the stability of self-gravitating accr Delacroix2018       │  of the first hundred milliseconds of a
-                                                                                            │  binary neutron star merger remnant.
-                                                                                            │  Small-scale dynamo action amplifies the
-                                                                                            │  seed field to magnetar strength, and we
-                                                                                            │  discuss implications for jet launching.
-                                                                                            │  ───────────────────────────────────────────
-                                                                                            │  → ADS              │ ⧉ cite key
-                                                                                            │  → arXiv:2407.20112 │ ⧉ full key
-                                                                                            │  → DOI              │ ⧉ bibcode
-                                                                                            │  ⌕ citations        │ ⧉ ADS URL
-                                                                                            │  ⌕ references       │ ⧉ arXiv URL
-                                                                                            │                     │ ⧉ DOI URL
-                                                                                            │                     │ ⧉ PDF path
-                                                                                            │                     │ ⧉ title
-                                                                                            │                     │ ⧉ abstract
-                                                                                            │  ───────────────────────────────────────────
-                                                                                            │
-                                                                                            │   arXiv ↓   ADS OA ↓   browser ↓   pick …
-                                                                                            │
-                                                                                            │  Neutron stars · Magnetohydrodynamics ·
-                                                                                            │  Gravitational wave sources
-                                                                                            │
-                                                                                            │  Cabrera2024txuze   ◇ add to manuscript
-                                                                                            │
-                                                                                            │
-                                                                                            │
-                                                                                            │
-                                                                                            │
-                                                                                            │                               ▤ card │ @ bib
+   ↓ ● Year ▼ Author          Title                                     Key
+────────────────────────────────────────────────────────────────────────────────────────────   Cabrera, Okafor · 2024
+◉      2024   Cabrera, +1     Turbulent magnetic amplification in binar Cabrera2024            arXiv e-prints, arXiv:2407.20112
+       2023   Ekwueme, +4     Precursor flares from charged black hole  Ekwueme2023            cited by ? ⟳
+       2021   Andersson, +1   Relativistic jet braking in dense circums Andersson2021
+       2019   Baxter          A census of runaway white dwarfs in the g Baxter2019             We present global moving-mesh simulations
+       2018   Délacroix, +1   On the stability of self-gravitating accr Delacroix2018          of the first hundred milliseconds of a
+                                                                                               binary neutron star merger remnant.
+                                                                                               Small-scale dynamo action amplifies the
+                                                                                               seed field to magnetar strength, and we
+                                                                                               discuss implications for jet launching.
+                                                                                               ───────────────────────────────────────────
+                                                                                               → ADS              │ ⧉ cite key
+                                                                                               → arXiv:2407.20112 │ ⧉ full key
+                                                                                               → DOI              │ ⧉ bibcode
+                                                                                               ⌕ citations        │ ⧉ ADS URL
+                                                                                               ⌕ references       │ ⧉ arXiv URL
+                                                                                                                  │ ⧉ DOI URL
+                                                                                                                  │ ⧉ PDF path
+                                                                                                                  │ ⧉ title
+                                                                                                                  │ ⧉ abstract
+                                                                                               ───────────────────────────────────────────
+
+                                                                                                arXiv ↓   ADS OA ↓   browser ↓   pick …
+
+                                                                                               Neutron stars · Magnetohydrodynamics ·
+                                                                                               Gravitational wave sources
+
+                                                                                               Cabrera2024txuze   ◇ add to manuscript
+
+
+
+
+
+
+                                                                                                                            ▤ card │ @ bib
 

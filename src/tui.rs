@@ -506,6 +506,29 @@ const PANEL_BG: Color = Color::Rgb(24, 26, 32);
 const CARD_BG: Color = Color::Rgb(28, 25, 31);
 const LOG_BG: Color = Color::Rgb(23, 28, 29);
 const HELP_BG: Color = Color::Rgb(30, 28, 23);
+/// The footer is a surface too, and its tint is what separates it from
+/// the table — it carries no rule above it for the same reason the card
+/// and the panels carry none beside them.
+const FOOTER_BG: Color = Color::Rgb(26, 27, 31);
+
+/// Chips and buttons: the resting fill and the fill under the pointer.
+/// Named because this pair is drawn from four unrelated places — the
+/// scope capsules, the card's action pills in two layouts, and the
+/// confirm dialog — and inline copies of a shared colour drift apart.
+const CHIP_BG: Color = Color::Rgb(40, 44, 52);
+const CHIP_BG_HOVER: Color = Color::Rgb(58, 63, 72);
+
+/// The filter capsule's own warmer pair: it is a mode rather than a
+/// scope, so it reads yellow instead of joining the chip family.
+const FILTER_CHIP_BG: Color = Color::Rgb(52, 47, 26);
+const FILTER_CHIP_BG_HOVER: Color = Color::Rgb(70, 62, 30);
+
+/// Row-level hover fill in the panels that have one — the keys sheet and
+/// the PDF picker, both of which are lists of clickable rows.
+const ROW_HOVER_BG: Color = Color::Rgb(50, 54, 62);
+
+/// The fill marking a hovered copy region in the pub card.
+const COPY_REGION_BG: Color = Color::Rgb(44, 48, 56);
 
 fn divider() -> Style {
     Style::default().fg(DIVIDER_FG)
@@ -1006,6 +1029,15 @@ fn word_motion(code: KeyCode, mods: KeyModifiers) -> Option<tui_input::InputRequ
 
 fn hit(r: Rect, x: u16, y: u16) -> bool {
     x >= r.x && x < r.x + r.width && y >= r.y && y < r.y + r.height
+}
+
+/// The text rect of a tinted panel. Panels carry no borders — their tint
+/// is the boundary — so the shape is: heading on the first row, content
+/// under it, and the panel's last row left blank as the bottom inset.
+/// A column of inset each side keeps text off the tint's edge, which is
+/// where the border used to hold it.
+fn panel_body(r: Rect) -> Rect {
+    Rect { x: r.x + 1, y: r.y, width: r.width.saturating_sub(2), height: r.height }
 }
 
 /// Centered dim hint for an empty table (no results / empty library).
@@ -4455,9 +4487,10 @@ impl App {
         // which has nothing to do with the log.
         let [body, status] = Layout::vertical([
             Constraint::Min(1),
-            // the rule, then the footer line — or several, when a query
-            // has outgrown one and the prompt wraps to stay legible
-            Constraint::Length(1 + self.prompt_height(f.area().width)),
+            // the footer line — or several, when a query has outgrown one
+            // and the prompt wraps to stay legible. No rule above it: the
+            // footer is its own tinted surface and the tint separates it
+            Constraint::Length(self.prompt_height(f.area().width)),
         ])
         .areas(f.area());
         let mut constraints = vec![];
@@ -4620,7 +4653,7 @@ impl App {
         push_pill(
             &mut bspans,
             "cancel",
-            if hov_cancel { Color::Rgb(58, 63, 72) } else { Color::Rgb(40, 44, 52) },
+            if hov_cancel { CHIP_BG_HOVER } else { CHIP_BG },
             Color::White,
         );
         lines.push(Line::from(bspans));
@@ -4684,7 +4717,7 @@ impl App {
         let Some(rows) = self.active_samples() else {
             return 0;
         };
-        let want = rows.len() as u16 + 3; // instruction line + two borders
+        let want = rows.len() as u16 + 2; // heading line + a row of inset below
         let qw = rows.iter().map(|(q, _)| q.chars().count()).max().unwrap_or(0) as u16;
         // never truncate a query: what is shown must be what a click
         // loads, so the band stands down rather than lie about it
@@ -4714,13 +4747,15 @@ impl App {
         };
         let empty = self.prompt_is_empty();
         let dim = Style::default().fg(Color::DarkGray);
-        // the instruction has to live here: the footer would normally
-        // carry it, and the prompt is in the footer
+        // the heading names the surface and states the rule, in the one
+        // row the box used to spend on a border. The rule has to be
+        // stated here at all because the footer would normally carry it,
+        // and the prompt is in the footer
         let mut lines = vec![Line::from(Span::styled(
             if empty {
-                " click one to use it"
+                " examples  ·  click one to use it"
             } else {
-                " clear the query to use one"
+                " examples  ·  clear the query to use one"
             },
             dim,
         ))];
@@ -4729,7 +4764,7 @@ impl App {
         // the purpose is what gives way when the column is tight
         let show_purpose = (area.width.saturating_sub(2) as usize) >= qw + 3 + pw;
         for (i, (query, purpose)) in rows.iter().enumerate() {
-            let y = area.y + 2 + i as u16;
+            let y = area.y + 1 + i as u16;
             let r = Rect { x: area.x + 1, y, width: area.width.saturating_sub(2), height: 1 };
             // registered whether or not it can act: an unregistered row
             // would let the click through to the click-away dismissal,
@@ -4749,23 +4784,20 @@ impl App {
             }
             lines.push(Line::from(spans));
         }
-        f.render_widget(
-            Paragraph::new(Text::from(lines)).block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .border_style(divider())
-                    .style(Style::default().bg(HELP_BG))
-                    .title(Span::styled(" examples ", dim)),
-            ),
-            area,
-        );
+        // the tint is the boundary: no border, so the heading takes the
+        // top row and a row of inset closes the panel at the bottom
+        f.render_widget(Block::default().style(Style::default().bg(HELP_BG)), area);
+        f.render_widget(Paragraph::new(Text::from(lines)), panel_body(area));
     }
 
     fn draw_help(&mut self, f: &mut Frame, area: Rect) {
         self.help_rects.clear();
         let cols = (area.width.saturating_sub(2) / HELP_COLW).max(1) as usize;
         let rows = HELP_ENTRIES.len().div_ceil(cols);
-        let mut lines: Vec<Line> = vec![];
+        // the heading takes the row the top border used to, so the
+        // entries below it keep the rows their click rects assume
+        let mut lines: Vec<Line> =
+            vec![Line::from(Span::styled(" keys ", Style::default().fg(Color::DarkGray)))];
         for r in 0..rows {
             let mut spans: Vec<Span> = vec![];
             for c in 0..cols {
@@ -4783,17 +4815,21 @@ impl App {
                     // synthesize explains itself in the footer, which
                     // beats a dimmed row that swallows the click
                     self.help_rects.push((rect, *click));
+                    // an unavailable key is the inactive form of an
+                    // available one, so it dims cyan rather than piling
+                    // DIM onto gray — the row is still clickable, and
+                    // doubly-dimmed gray disappears on lighter themes
                     let (mut ks, mut ls) = if avail {
                         (Style::default().fg(Color::Cyan), Style::default())
                     } else {
                         (
-                            Style::default().fg(Color::DarkGray).add_modifier(Modifier::DIM),
+                            Style::default().fg(Color::Cyan).add_modifier(Modifier::DIM),
                             Style::default().fg(Color::DarkGray),
                         )
                     };
                     if hov {
-                        ks = ks.bg(Color::Rgb(50, 54, 62));
-                        ls = ls.bg(Color::Rgb(50, 54, 62));
+                        ks = ks.bg(ROW_HOVER_BG);
+                        ls = ls.bg(ROW_HOVER_BG);
                     }
                     let text = format!(" {key:>3}  {label}");
                     let pad = (HELP_COLW as usize).saturating_sub(text.chars().count());
@@ -4803,14 +4839,8 @@ impl App {
             }
             lines.push(Line::from(spans));
         }
-        let p = Paragraph::new(Text::from(lines)).block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(divider())
-                .style(Style::default().bg(HELP_BG))
-                .title(Span::styled(" keys ", Style::default().fg(Color::DarkGray))),
-        );
-        f.render_widget(p, area);
+        f.render_widget(Block::default().style(Style::default().bg(HELP_BG)), area);
+        f.render_widget(Paragraph::new(Text::from(lines)), panel_body(area));
     }
 
     /// Fetch (once) the canonical BibTeX an import of this article
@@ -5012,7 +5042,7 @@ impl App {
             let style = if i == *sel {
                 Style::default().bg(Color::DarkGray).add_modifier(Modifier::BOLD)
             } else if hov {
-                Style::default().bg(Color::Rgb(50, 54, 62))
+                Style::default().bg(ROW_HOVER_BG)
             } else {
                 Style::default()
             };
@@ -5094,20 +5124,20 @@ impl App {
             let composing_new = matches!(self.mode, Mode::AdsPrompt { edit: None, .. });
             let (bg, fg) = if idx == FILTER_CHIP {
                 if hov {
-                    (Color::Rgb(70, 62, 30), Color::Yellow)
+                    (FILTER_CHIP_BG_HOVER, Color::Yellow)
                 } else {
-                    (Color::Rgb(52, 47, 26), Color::Yellow)
+                    (FILTER_CHIP_BG, Color::Yellow)
                 }
             } else if composing_new && idx == usize::MAX {
                 (Color::Cyan, Color::Black)
             } else if idx == self.active_scope && !composing_new {
                 (Color::Cyan, Color::Black)
             } else if hov {
-                (Color::Rgb(58, 63, 72), Color::White)
+                (CHIP_BG_HOVER, Color::White)
             } else if idx == usize::MAX {
-                (Color::Rgb(40, 44, 52), Color::DarkGray)
+                (CHIP_BG, Color::DarkGray)
             } else {
-                (Color::Rgb(40, 44, 52), Color::Gray)
+                (CHIP_BG, Color::Gray)
             };
             if rounded {
                 push_pill(&mut spans, &label, bg, fg);
@@ -5238,9 +5268,13 @@ impl App {
         } else {
             ""
         };
-        // unselected rings recede almost entirely; selected dots pop
+        // unselected rings recede almost entirely; selected dots pop.
+        // The ring is the *inactive form of the dot*, so it dims the
+        // dot's own hue rather than doubling gray onto dim — dim gray
+        // sinks out of sight altogether on lighter terminal themes,
+        // where this still has to read as a thing you can click.
         let style = if circle == "◯" {
-            Style::default().fg(Color::DarkGray).add_modifier(Modifier::DIM)
+            Style::default().fg(Color::Cyan).add_modifier(Modifier::DIM)
         } else if self.select_mode && at_cursor {
             Style::default().fg(Color::White).add_modifier(Modifier::BOLD)
         } else {
@@ -6074,27 +6108,27 @@ impl App {
         let scroll = self.log_scroll.min(self.log.len().saturating_sub(n));
         let start = self.log.len().saturating_sub(n + scroll);
         let end = (start + n).min(self.log.len());
-        let mut lines: Vec<Line> = vec![];
-        for (cat, secs, msg) in &self.log[start..end] {
-            lines.push(Line::from(vec![
-                Span::styled(
-                    format!("{:02}:{:02}  ", secs / 60, secs % 60),
-                    Style::default().fg(Color::DarkGray),
-                ),
-                Span::styled(msg.clone(), Style::default().fg(cat.color())),
-            ]));
-        }
         let title = if scroll > 0 {
             format!(" Log ↑{scroll} ")
         } else {
             " Log ".to_string()
         };
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .border_style(divider())
-            .style(Style::default().bg(LOG_BG))
-            .title(Span::styled(title, Style::default().fg(Color::DarkGray)));
-        f.render_widget(Paragraph::new(Text::from(lines)).block(block), area);
+        // heading first, on the row the top border used to occupy
+        let mut lines: Vec<Line> =
+            vec![Line::from(Span::styled(title, Style::default().fg(Color::DarkGray)))];
+        for (cat, secs, msg) in &self.log[start..end] {
+            lines.push(Line::from(vec![
+                Span::styled(
+                    // the leading space lines the entries up under the
+                    // heading, which the border used to do for both
+                    format!(" {:02}:{:02}  ", secs / 60, secs % 60),
+                    Style::default().fg(Color::DarkGray),
+                ),
+                Span::styled(msg.clone(), Style::default().fg(cat.color())),
+            ]));
+        }
+        f.render_widget(Block::default().style(Style::default().bg(LOG_BG)), area);
+        f.render_widget(Paragraph::new(Text::from(lines)), panel_body(area));
     }
 
     /// One rendered line of the columns sidebar: its spans, the click
@@ -6267,17 +6301,11 @@ impl App {
         self.col_rects.clear();
         let kind = self.active_kind();
         let focused = self.focus == Focus::Columns;
-        // a single vertical rule on the inner edge, mirroring the pub
-        // card's left rule on the other side of the table
-        f.render_widget(
-            Block::default()
-                .borders(Borders::RIGHT)
-                .border_style(divider())
-                .style(Style::default().bg(PANEL_BG)),
-            area,
-        );
+        // no edge rule, mirroring the pub card on the other side of the
+        // table: each panel's tint is its own boundary
+        f.render_widget(Block::default().style(Style::default().bg(PANEL_BG)), area);
         // laid out as the pub card's mirror image: the card insets its
-        // text 2 cells from its rule and 2 from the far edge and starts
+        // text 3 cells from the table and 2 from the far edge and starts
         // one line down, so this does the same on the other side
         let inner = Rect {
             x: area.x + 2,
@@ -6501,25 +6529,13 @@ impl App {
     }
 
     fn draw_status(&mut self, f: &mut Frame, area: Rect) {
-        // a rule and a breath of space separate the footer from the
-        // content above
-        f.render_widget(
-            Paragraph::new(Line::from(Span::styled(
-                "─".repeat(area.width as usize),
-                divider(),
-            ))),
-            Rect { x: area.x, y: area.y, width: area.width, height: 1 },
-        );
-        let body = Rect {
-            x: area.x,
-            y: area.y + 1,
-            width: area.width,
-            height: area.height.saturating_sub(1),
-        };
-        if self.draw_wrapped_prompt(f, body) {
+        // no rule above: the footer's own tint separates it from the
+        // table, the way every other surface here is separated
+        f.render_widget(Block::default().style(Style::default().bg(FOOTER_BG)), area);
+        if self.draw_wrapped_prompt(f, area) {
             return;
         }
-        let area = Rect { x: area.x, y: area.y + 1, width: area.width, height: 1 };
+        let area = Rect { x: area.x, y: area.y, width: area.width, height: 1 };
         // the badges live on this same line and are drawn after it, so
         // their hover hint has to be settled before the line is built
         if let Some(hint) = self.badge_hint(area) {

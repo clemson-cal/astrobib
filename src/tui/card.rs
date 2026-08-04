@@ -15,7 +15,7 @@ use super::*;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph};
+use ratatui::widgets::{Block, Paragraph};
 use ratatui::Frame;
 
 /// What follows the cite key on the card's last line.
@@ -343,12 +343,12 @@ impl App {
             self.hover_hint = Some(format!("⧉ click to copy {what}"));
         }
         let mut yanks: Vec<(Rect, CopyItem)> = vec![];
-        let tint = Style::default().bg(Color::Rgb(44, 48, 56));
+        let tint = Style::default().bg(COPY_REGION_BG);
         let region_style = |base: Style, item: CopyItem| {
             if hov_region == Some(item) { base.patch(tint) } else { base }
         };
 
-        let x0 = area.x + 3; // border + 2 padding
+        let x0 = area.x + 3; // 3 cells of inset; the tint is the edge
         let w = area.width.saturating_sub(5) as usize;
         // The view toggler is pinned to the card's last row, so the body
         // stops one above it. Without that reservation a long keyword
@@ -505,7 +505,7 @@ impl App {
                 if hovb {
                     self.hover_hint = Some(card_hint(btn).to_string());
                 }
-                let bg = if hovb { Color::Rgb(58, 63, 72) } else { Color::Rgb(40, 44, 52) };
+                let bg = if hovb { CHIP_BG_HOVER } else { CHIP_BG };
                 push_pill(&mut spans, label, bg, fg);
                 spans.push(Span::raw(" "));
                 bx += wl + 1;
@@ -569,7 +569,7 @@ impl App {
                 if hovb {
                     self.hover_hint = Some(card_hint(btn).to_string());
                 }
-                let bg = if hovb { Color::Rgb(58, 63, 72) } else { Color::Rgb(40, 44, 52) };
+                let bg = if hovb { CHIP_BG_HOVER } else { CHIP_BG };
                 if inline {
                     spans.push(Span::raw("  "));
                     push_pill(&mut spans, &label, bg, fg);
@@ -668,13 +668,9 @@ impl App {
             self.card_scroll = 0;
         }
         self.card_links.clear();
-        f.render_widget(
-            Block::default()
-                .borders(Borders::LEFT)
-                .border_style(divider())
-                .style(Style::default().bg(CARD_BG)),
-            area,
-        );
+        // no edge rule: the tint is what separates the card from the
+        // table, and a line beside a tint says the same thing twice
+        f.render_widget(Block::default().style(Style::default().bg(CARD_BG)), area);
         if self.active_ads().is_some() {
             self.draw_article_card(f, area);
             return;

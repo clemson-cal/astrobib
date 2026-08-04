@@ -170,7 +170,10 @@ def run(t):
     # the list scrolls when it outgrows the pane. Without this the cursor
     # walked off the bottom into rows that were never drawn — it looked
     # like the selection descending past the final row into nothing.
-    t.resize(150, 10)
+    # 9 rows, not 10: the footer gave a row back to the body when it
+    # stopped drawing a rule above itself, so the pane has to be one
+    # shorter than it used to be to still outgrow its list
+    t.resize(150, 9)
     for _ in range(8):
         t.key("down")
     t.wait_for(

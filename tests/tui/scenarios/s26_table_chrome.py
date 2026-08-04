@@ -143,8 +143,9 @@ def _block(t):
     """The table region: header row, rule, and every data row."""
     row, _ = _rule(t)
     require(row is not None, "no table header rule on screen", t)
-    # the bottom band is the footer: its rule and its one line
-    return [ln.rstrip() for ln in t.lines()[row - 1 : t.rows - 2]]
+    # the bottom band is the footer, now a single tinted line — it lost
+    # the rule above it, and the body gained that row
+    return [ln.rstrip() for ln in t.lines()[row - 1 : t.rows - 1]]
 
 
 def run(t):
