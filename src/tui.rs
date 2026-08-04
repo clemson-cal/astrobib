@@ -1740,6 +1740,29 @@ impl App {
                             }
                             self.save_metrics();
                             let n = articles.len();
+                            // A citation-graph query that comes back
+                            // empty has nothing to open: no edge to
+                            // follow, and unlike a search, no query to
+                            // refine — the argument is a bibcode. So
+                            // warn instead of leaving a dead tab that
+                            // can only be closed again. A *refresh* of
+                            // an existing graph tab keeps it: it is
+                            // already there, and its empty state says
+                            // the same thing.
+                            let refs = tab.query.starts_with("references(");
+                            let graph = refs || tab.query.starts_with("citations(");
+                            if n == 0 && graph && refresh_of.is_none() {
+                                self.note(
+                                    MsgCat::Warn,
+                                    if refs {
+                                        "ADS has not indexed this paper's references — for a new preprint they usually appear within days"
+                                    } else {
+                                        "ADS records nothing citing this paper yet"
+                                    }
+                                    .to_string(),
+                                );
+                                continue;
+                            }
                             crate::tabs::save_cached_articles(&tab.id, &articles);
                             tab.refreshed = Some(crate::tabs::now_secs());
                             let scope = Scope::Ads { tab, articles };
