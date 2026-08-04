@@ -1,9 +1,12 @@
 # Changelog
 
-## Unreleased
+## 0.11.0 — 2026-08-03
 
 ### Fixed
 - An empty citations/references query warns instead of opening a dead tab. `C` and `R` on a paper ADS has no graph edges for used to leave a scope reading "no results — r re-runs", which invites you to wait for something that is not going to change: a recent preprint simply has no extracted reference list yet, and nothing has cited it. There is no query to refine either — the argument is a bibcode — so there is nothing for the tab to be. A refresh of an existing graph tab still keeps it, and its empty state says the same thing. `C` and `R` on a paper ADS has no graph edges for opened a scope reading "no results — r re-runs", which invites you to wait for something that is not going to change: a recent preprint simply has no extracted reference list yet, and nothing has cited it. The two cases now say so, and `C` on a paper already known to have no citations says it without spending a round trip to be told.
+
+### Changed
+- Shipped examples and test fixtures use fictitious names throughout. They had named real researchers — the author's own name in the sample queries, colleagues' names in the filter grammar, the cite-key parser and the author-formatting tests. Examples should not put real people's work in front of users as illustration. The copyright and about-modal attribution still name the actual author, which is what they are for, and `tests/golden_format.json` keeps its real ADS records: those are captured evidence that the serializer handles real-world input, not examples, and nothing shows them to a user.
 
 ### Added
 - The query prompt wraps instead of scrolling off the end. A topical ADS query with spelling variants and exclusions runs past 200 characters, and a one-row prompt showed you a window onto your own query with no way to see the rest. It now takes as many rows as it needs, with the result limit and selection sort moving to a row of their own once the text has the width. The text stays *one logical line* — there is no newline in it and none is sent to ADS, which has no use for one — and wrapping breaks at the column rather than at word boundaries, so the cursor maps to a row and column exactly, with no reflow surprise mid-edit. A short query still renders on one row exactly as before; the common case does not pay for the long one.
