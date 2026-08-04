@@ -188,6 +188,16 @@ class Session:
     def key(self, name):
         self.send(KEYS[name])
 
+    def paste(self, text):
+        """Paste text as a real terminal does, in bracketed-paste markers.
+
+        The app enables bracketed paste, so the whole string arrives as
+        one `Event::Paste` rather than as a burst of key events — which
+        is what lets a pasted URL be recognised as one thing instead of
+        a hundred characters that happen to spell one.
+        """
+        self.send(b"\x1b[200~" + text.encode() + b"\x1b[201~")
+
     def click(self, x, y):
         """Left click at 0-based screen cell (x, y) via SGR mouse injection."""
         self.send(b"\x1b[<0;%d;%dM" % (x + 1, y + 1))

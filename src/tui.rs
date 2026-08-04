@@ -9,7 +9,8 @@ use crate::pdf;
 use crate::query::{self, QueryContext};
 use crate::text::fit_authors;
 use ratatui::crossterm::event::{
-    self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, KeyModifiers,
+    self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
+    Event, KeyCode, KeyEventKind, KeyModifiers,
     MouseButton, MouseEvent, MouseEventKind,
 };
 use ratatui::crossterm::execute;
@@ -29,7 +30,11 @@ use table::Col;
 pub fn run(lib: MergedLibrary) -> anyhow::Result<()> {
     let mut terminal = ratatui::init();
     let _ = execute!(std::io::stdout(), EnableMouseCapture);
+    // without this a pasted query arrives as a burst of key events, and
+    // an ADS search URL cannot be recognised as one thing
+    let _ = execute!(std::io::stdout(), EnableBracketedPaste);
     let result = App::new(lib).run(&mut terminal);
+    let _ = execute!(std::io::stdout(), DisableBracketedPaste);
     let _ = execute!(std::io::stdout(), DisableMouseCapture);
     ratatui::restore();
     result
@@ -1011,6 +1016,9 @@ struct App {
     // user-state stores whose last write failed: the latch behind
     // state_write, so an unwritable state dir reports once per store
     write_failed: HashSet<&'static str>,
+    // what ^k killed, for ^y to yank back. One slot, not a ring: the
+    // prompts are one line and there is nothing to cycle through.
+    kill_ring: String,
 }
 
 /// option/alt+arrow (and emacs alt+b/f) word motions for text inputs.
@@ -1222,6 +1230,7 @@ impl App {
             ms_watch: (vec![], None),
             ms_watch_at: std::time::Instant::now(),
             write_failed: HashSet::new(),
+            kill_ring: String::new(),
         }
     }
 
@@ -2543,6 +2552,7 @@ impl App {
                         self.on_key(key.code, key.modifiers)
                     }
                     Event::Mouse(m) => self.on_mouse(m),
+                    Event::Paste(s) => self.on_paste(s),
                     _ => {}
                 }
                 continue;
@@ -2583,6 +2593,7 @@ impl App {
                             self.on_key(key.code, key.modifiers)
                         }
                         Event::Mouse(m) => self.on_mouse(m),
+                        Event::Paste(s) => self.on_paste(s),
                         _ => {}
                     }
                     if self.quit || !event::poll(Duration::ZERO)? {
@@ -4121,6 +4132,136 @@ impl App {
         }
     }
 
+    /// The text the active mode is composing, if it is composing any.
+    fn active_input_mut(&mut self) -> Option<&mut tui_input::Input> {
+        match &mut self.mode {
+            Mode::Filter => Some(&mut self.filter),
+            Mode::AdsPrompt { input, .. }
+            | Mode::Setup { input, .. }
+            | Mode::Export { input, .. }
+            | Mode::Rename { input } => Some(input),
+            _ => None,
+        }
+    }
+
+    /// Replace the active input's text, keeping the cursor where the
+    /// caller puts it (char index, as tui-input counts).
+    fn set_input(&mut self, value: String, cursor: usize) {
+        if let Some(input) = self.active_input_mut() {
+            *input = tui_input::Input::new(value).with_cursor(cursor);
+        }
+    }
+
+    /// The chords shared by every prompt: emacs kill/yank, and copying
+    /// what is being composed. Returns whether the key was claimed.
+    ///
+    /// `⌃k` used to reach tui-input, which implements it as a plain
+    /// delete — so a killed tail was simply gone, and `⌃y` had nothing
+    /// to yank because there was no kill ring to yank from.
+    fn prompt_chord(&mut self, code: KeyCode, mods: KeyModifiers) -> bool {
+        let ctrl = mods.contains(KeyModifiers::CONTROL);
+        let alt = mods.contains(KeyModifiers::ALT);
+        let Some(input) = self.active_input_mut() else {
+            return false;
+        };
+        let (value, cursor) = (input.value().to_string(), input.cursor());
+        // char indices, since the cursor is one and the text is not ASCII
+        let split = |n: usize| {
+            let b = value.char_indices().nth(n).map(|(i, _)| i).unwrap_or(value.len());
+            (value[..b].to_string(), value[b..].to_string())
+        };
+        match code {
+            KeyCode::Char('k') if ctrl => {
+                let (head, tail) = split(cursor);
+                if tail.is_empty() {
+                    return true; // nothing to kill; do not clobber the ring
+                }
+                self.kill_ring = tail;
+                self.set_input(head, cursor);
+                true
+            }
+            KeyCode::Char('y') if ctrl => {
+                if self.kill_ring.is_empty() {
+                    self.note(MsgCat::Warn, "nothing killed to yank".to_string());
+                    return true;
+                }
+                let (head, tail) = split(cursor);
+                let n = self.kill_ring.chars().count();
+                let text = format!("{head}{}{tail}", self.kill_ring);
+                self.set_input(text, cursor + n);
+                true
+            }
+            // ⌥w, emacs' copy. On an ADS query it copies the search URL,
+            // which is the only form that carries the result limit and
+            // what ADS returns as well — neither is query syntax, and
+            // Solr has no comment to smuggle them into. Pasting one back
+            // restores all three.
+            KeyCode::Char('w') if alt => {
+                let text = match &self.mode {
+                    Mode::AdsPrompt { input, limit, sort, .. } => {
+                        crate::ads::search_url(input.value(), *limit, sort)
+                    }
+                    _ => value,
+                };
+                if text.is_empty() {
+                    self.note(MsgCat::Warn, "nothing to copy".to_string());
+                } else {
+                    self.finish_copy(&text);
+                }
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// A bracketed paste. In a prompt the text is inserted at the
+    /// cursor; an ADS search URL instead *configures* the query, which
+    /// is what makes ⌥w reversible — copy a query anywhere, paste it
+    /// back, and the text, the limit and the returns mode all come with
+    /// it. Pasted onto the table with no prompt up, it opens one.
+    fn on_paste(&mut self, text: String) {
+        let parsed = crate::ads::parse_search_url(&text);
+        if let Some((q, rows, so)) = parsed {
+            if matches!(self.mode, Mode::Normal) {
+                self.open_ads_prompt();
+            }
+            if let Mode::AdsPrompt { input, limit, sort, .. } = &mut self.mode {
+                *input = tui_input::Input::from(q);
+                let mut said = String::from("query pasted");
+                if let Some(r) = rows {
+                    *limit = r.clamp(1, 2000);
+                    said.push_str(&format!(" · {} results", *limit));
+                }
+                // an unknown sort would leave the prompt naming a mode it
+                // is not in, since the label is looked up by value
+                if let Some(s) = so {
+                    match ADS_SORTS.iter().find(|(_, v)| *v == s) {
+                        Some((name, v)) => {
+                            *sort = v.to_string();
+                            said.push_str(&format!(" · {name}"));
+                        }
+                        None => said.push_str(" · (unknown sort ignored)"),
+                    }
+                }
+                self.note(MsgCat::Ok, said);
+                return;
+            }
+        }
+        if self.active_input_mut().is_some() {
+            let one_line: String =
+                text.chars().map(|c| if c == '\n' || c == '\r' { ' ' } else { c }).collect();
+            let input = self.active_input_mut().unwrap();
+            let (value, cursor) = (input.value().to_string(), input.cursor());
+            let b = value.char_indices().nth(cursor).map(|(i, _)| i).unwrap_or(value.len());
+            let n = one_line.chars().count();
+            let text = format!("{}{one_line}{}", &value[..b], &value[b..]);
+            self.set_input(text, cursor + n);
+            if matches!(self.mode, Mode::Filter) {
+                self.refilter();
+            }
+        }
+    }
+
     fn on_key(&mut self, code: KeyCode, mods: KeyModifiers) {
         if mods.contains(KeyModifiers::CONTROL) && code == KeyCode::Char('c') {
             self.quit = true;
@@ -4138,6 +4279,11 @@ impl App {
             && self.focus == Focus::Columns
             && self.columns_panel_key(code)
         {
+            return;
+        }
+        // the editing chords every prompt shares, claimed before the
+        // per-mode arms so each one does not have to repeat them
+        if self.prompt_chord(code, mods) {
             return;
         }
         match &mut self.mode {

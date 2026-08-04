@@ -462,9 +462,113 @@ fn percent_decode(s: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
+/// Percent-encode for a URL query value: RFC 3986 unreserved characters
+/// pass through, everything else goes out as `%XX` per UTF-8 byte.
+fn percent_encode(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for b in s.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(b as char)
+            }
+            _ => out.push_str(&format!("%{b:02X}")),
+        }
+    }
+    out
+}
+
+/// `percent_decode`, plus the `+`-means-space convention that query
+/// strings use and paths do not.
+fn percent_decode_query(s: &str) -> String {
+    percent_decode(&s.replace('+', " "))
+}
+
+/// The ADS UI's own search URL: everything a saved query *is*, on one
+/// pasteable line.
+///
+/// This exists because `q` cannot carry the rest. ADS query syntax is
+/// Solr and has no comment token, and the result limit and the ordering
+/// were never query syntax to begin with — they are the `rows` and
+/// `sort` API parameters, which is the same reason `sort:"entry_date
+/// desc"` inside `q` is an error rather than a sort. A URL is the one
+/// format that holds all three, and ADS emits it itself.
+pub fn search_url(query: &str, rows: usize, sort: &str) -> String {
+    format!(
+        "https://ui.adsabs.harvard.edu/search/q={}&rows={}&sort={}",
+        percent_encode(query),
+        rows,
+        percent_encode(sort)
+    )
+}
+
+/// The inverse of `search_url`, lenient enough to also accept a URL
+/// copied out of the ADS website — which carries parameters we do not
+/// write (`p_`, `sort` alone) and omits ones we do.
+///
+/// `rows` and `sort` come back as None when the URL does not say, so the
+/// caller keeps whatever it already had rather than inventing a default.
+pub fn parse_search_url(text: &str) -> Option<(String, Option<usize>, Option<String>)> {
+    let t = text.trim();
+    let i = t.find("adsabs.harvard.edu/search")?;
+    let rest = &t[i + "adsabs.harvard.edu/search".len()..];
+    // ours writes /search/q=…; the website has used ?q=… as well
+    let rest = rest.strip_prefix('/').or_else(|| rest.strip_prefix('?')).unwrap_or(rest);
+    let (mut query, mut rows, mut sort) = (None, None, None);
+    for pair in rest.split('&') {
+        let Some((k, v)) = pair.split_once('=') else { continue };
+        match k {
+            "q" => query = Some(percent_decode_query(v)),
+            "rows" => rows = percent_decode_query(v).parse::<usize>().ok(),
+            "sort" => sort = Some(percent_decode_query(v)),
+            _ => {}
+        }
+    }
+    let query = query?;
+    if query.is_empty() {
+        return None;
+    }
+    Some((query, rows, sort))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn search_url_round_trips() {
+        let q = r#"abs:"little red dot" -doctype:abstract"#;
+        let url = search_url(q, 50, "citation_count desc");
+        let (q2, rows, sort) = parse_search_url(&url).unwrap();
+        assert_eq!(q2, q);
+        assert_eq!(rows, Some(50));
+        assert_eq!(sort.as_deref(), Some("citation_count desc"));
+        // the query has to survive as one parameter: a bare space or a
+        // stray & would split it and silently truncate the query
+        assert!(!url.contains(' '));
+        assert_eq!(url.matches('&').count(), 2);
+    }
+
+    #[test]
+    fn parses_a_url_from_the_ads_website() {
+        // the website writes its own parameter set: no rows, a sort we
+        // do not offer, and trailing state of its own
+        let (q, rows, sort) = parse_search_url(
+            "https://ui.adsabs.harvard.edu/search/q=author%3A%22Zrake%22&sort=date+desc&p_=0",
+        )
+        .unwrap();
+        assert_eq!(q, r#"author:"Zrake""#);
+        assert_eq!(rows, None); // absent, so the caller keeps its own
+        assert_eq!(sort.as_deref(), Some("date desc"));
+    }
+
+    #[test]
+    fn non_search_urls_are_not_queries() {
+        // an abstract link is a paper, not a query; and a query string
+        // that merely mentions ADS is text the user typed
+        assert!(parse_search_url("https://ui.adsabs.harvard.edu/abs/2019ApJ...123..456Z").is_none());
+        assert!(parse_search_url("abs:\"adsabs.harvard.edu/search\"").is_none());
+        assert!(parse_search_url("https://ui.adsabs.harvard.edu/search/q=").is_none());
+    }
 
     #[test]
     fn doi_extraction() {

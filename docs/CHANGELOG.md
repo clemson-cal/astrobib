@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+### Added
+- A query can be copied out and pasted back. `⌥w` in any prompt copies what you are composing; from an ADS query it copies the search URL, which is the only form that carries the result count and what ADS returns as well. Neither of those is query syntax — they are the `rows` and `sort` API parameters, the same reason `sort:"entry_date desc"` inside `q` is an error rather than a sort — and Solr has no comment token to smuggle them into, so there is nowhere in the query text for them to ride. Pasting such a URL back restores all three at once, and pasting one with no prompt open opens the prompt already configured. URLs copied from the ADS website work too: parameters they omit leave yours alone, and a sort astrobib does not offer is ignored rather than leaving the prompt naming a mode it is not in.
+- `⌃k` and `⌃y` are a kill and a yank, not a delete. `⌃k` reached tui-input, which implements it as a plain deletion, so the tail of a long query was simply gone and `⌃y` had nothing to bring back — there was no kill ring for it to yank from.
+
+### Changed
+- Bracketed paste is enabled, so pasted text arrives as one event rather than as a burst of keystrokes. That is what lets a pasted URL be recognised as one thing instead of a hundred characters that happen to spell one; it also means a long pasted query lands at once instead of being replayed character by character.
+
 ## 0.12.0 — 2026-08-04
 
 ### Changed
