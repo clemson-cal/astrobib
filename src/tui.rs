@@ -2642,6 +2642,15 @@ impl App {
     /// Open a citations(...) (or references(...)) query scope for the
     /// card's paper — the C / R keys and the ⌕ card rows.
     fn spawn_citation_query(&mut self, refs: bool) {
+        // asking for citations already known to be zero costs a round
+        // trip to be told what the card in front of you already says
+        if !refs && self.card_citation_count() == Some(0) {
+            self.note(
+                MsgCat::Info,
+                "ADS records nothing citing this paper yet".to_string(),
+            );
+            return;
+        }
         if let Some(bc) = self.card_bibcode() {
             // identifier: (not bibcode:) — a preprint-imported entry
             // carries the arXiv bibcode, and citations(bibcode:…) finds
@@ -2654,6 +2663,18 @@ impl App {
             };
             self.run_ads_query_limit(q, None, crate::tabs::DEFAULT_LIMIT, None);
         }
+    }
+
+    /// The citation count the card is showing, when it is known. None
+    /// means unknown, which must never be confused with a known zero.
+    fn card_citation_count(&self) -> Option<i64> {
+        if let Some(Scope::Ads { articles, .. }) = self.scopes.get(self.active_scope) {
+            if let Some(a) = self.card_article_pos().and_then(|p| articles.get(p)) {
+                return a.citation_count;
+            }
+        }
+        let key = self.card_entry_key()?;
+        self.metrics.get(&key).and_then(|m| m.citations)
     }
 
     fn card_entry_key(&self) -> Option<String> {
@@ -5143,9 +5164,22 @@ impl App {
     fn empty_hint(&self) -> Option<&'static str> {
         match self.scopes.get(self.active_scope) {
             Some(Scope::Manuscript { .. }) => None,
-            Some(Scope::Ads { .. }) => {
-                (self.row_count() == 0).then_some("no results — r re-runs, +/- changes n")
+            Some(Scope::Ads { tab, .. }) if self.row_count() == 0 => {
+                // A citation-graph query coming back empty is not a
+                // search that found nothing — it means ADS has no edge
+                // to follow, which is the normal state of a recent
+                // preprint whose reference list is not yet extracted.
+                // Telling the user to re-run invites them to wait for
+                // something that is not going to change.
+                Some(if tab.query.starts_with("references(") {
+                    "ADS has not indexed this paper's references — for a new preprint they usually appear within days"
+                } else if tab.query.starts_with("citations(") {
+                    "ADS records nothing citing this paper yet"
+                } else {
+                    "no results — r re-runs, +/- changes n"
+                })
             }
+            Some(Scope::Ads { .. }) => None,
             _ => {
                 if self.order.is_empty() {
                     Some("library is empty — S searches ADS, or: astrobib add <bibcode>")

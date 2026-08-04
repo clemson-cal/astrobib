@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+### Fixed
+- An empty citations/references scope says what it means. `C` and `R` on a paper ADS has no graph edges for opened a scope reading "no results — r re-runs", which invites you to wait for something that is not going to change: a recent preprint simply has no extracted reference list yet, and nothing has cited it. The two cases now say so, and `C` on a paper already known to have no citations says it without spending a round trip to be told.
+
 ### Added
 - Both query languages offer examples while you compose. Pressing `S` or `/` puts four samples for that language in a band above the prompt; clicking one loads it. A reference card would not do: the syntax is needed *while* typing, and a modal has to be dismissed to reach the prompt — and a TUI has no copy-paste to carry an example across. A sample replaces the whole query, so it acts only on an empty prompt; once you have typed, the rows dim and the band says `clear the query to use one`, the footer being occupied by the prompt itself. The ADS samples are run against the live API before shipping and the filter samples are checked by a unit test against the tokenizer, since a sample naming a field the parser does not know would not error — it would degrade to a bare term and quietly match nothing. No sample carries an absolute upper year: recency is the prompt's own control, and a baked-in end year would silently exclude the newest work once it passed.
 
