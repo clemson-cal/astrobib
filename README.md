@@ -67,7 +67,7 @@ pri:>0.5  cit:>100    metric comparisons (> < or bare for ≥); no metric never 
 -abs:neutrino          leading - negates (NOT works too)
 ^andersson OR ^baxter  uppercase OR separates alternatives; AND binds tighter
 ```
-A half-typed query never errors. With a filter active, `S` pre-fills the equivalent ADS query — filter locally, escalate in one keystroke.
+Long queries wrap across as many rows as they need rather than scrolling out of sight; the text stays one line, and ⏎ still runs it. A half-typed query never errors. With a filter active, `S` pre-fills the equivalent ADS query — filter locally, escalate in one keystroke.
 
 Pressing `/` offers these four as a starting point; click one to load it into an empty filter.
 ```

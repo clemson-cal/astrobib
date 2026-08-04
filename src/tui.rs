@@ -4455,7 +4455,9 @@ impl App {
         // which has nothing to do with the log.
         let [body, status] = Layout::vertical([
             Constraint::Min(1),
-            Constraint::Length(2), // the rule and the footer line
+            // the rule, then the footer line — or several, when a query
+            // has outgrown one and the prompt wraps to stay legible
+            Constraint::Length(1 + self.prompt_height(f.area().width)),
         ])
         .areas(f.area());
         let mut constraints = vec![];
@@ -6359,6 +6361,145 @@ impl App {
         f.render_widget(Paragraph::new(Text::from(rendered)), inner);
     }
 
+    /// The active prompt's label, its text, the cursor offset into that
+    /// text, and how much of the first row its trailing parameters need.
+    ///
+    /// Only the two prompts that hold *queries* are here. A path or a
+    /// name is short by nature and keeps the old horizontal scroll; a
+    /// query grows until you cannot see what you are editing, which is
+    /// the whole reason for wrapping.
+    fn prompt_layout(&self) -> Option<(String, String, usize, usize)> {
+        match &self.mode {
+            Mode::AdsPrompt { input, limit, sort, edit } => {
+                let label = if edit.is_some() { "edit query: " } else { "ADS query:  " };
+                let suffix = format!(
+                    "   ADS returns {limit} (↑↓) {} (⌃r)   ⏎ search · Esc cancel",
+                    ads_sort_name(sort)
+                );
+                Some((
+                    label.to_string(),
+                    input.value().to_string(),
+                    input.visual_cursor(),
+                    suffix.chars().count(),
+                ))
+            }
+            Mode::Filter => Some((
+                "/".to_string(),
+                self.filter.value().to_string(),
+                self.filter.visual_cursor(),
+                0,
+            )),
+            _ => None,
+        }
+    }
+
+    /// Rows the prompt itself needs, not counting the rule above it.
+    ///
+    /// One, until the text no longer fits beside its parameters. Then
+    /// the text takes the full width across as many rows as it needs and
+    /// the parameters move to a row of their own — so a short query
+    /// looks exactly as it always did, and a long one is legible instead
+    /// of scrolled off the end.
+    fn prompt_height(&self, width: u16) -> u16 {
+        let Some((label, text, cursor, reserve)) = self.prompt_layout() else {
+            return 1;
+        };
+        let lw = label.chars().count();
+        let n = text.chars().count();
+        if n < (width as usize).saturating_sub(lw + reserve) {
+            return 1;
+        }
+        let body_w = Self::prompt_body_w(width, lw);
+        let rows = (n.max(cursor) + 1).div_ceil(body_w).max(1);
+        // capped: a prompt may borrow the screen, not take it
+        ((rows + 1) as u16).min(8)
+    }
+
+    fn prompt_body_w(width: u16, label_w: usize) -> usize {
+        (width as usize).saturating_sub(label_w + 1).max(1)
+    }
+
+    /// Draw the prompt wrapped over several rows, returning false if it
+    /// fits on one and the ordinary single-row path should run.
+    ///
+    /// The text stays one logical line throughout — there is no newline
+    /// in it and none is sent to ADS, which has no use for one. Wrapping
+    /// breaks at the column rather than at word boundaries so that the
+    /// cursor maps to a row and a column by division: exact, and with no
+    /// reflow surprise while you are typing in the middle of it.
+    fn draw_wrapped_prompt(&mut self, f: &mut Frame, area: Rect) -> bool {
+        if self.prompt_height(area.width) <= 1 {
+            return false;
+        }
+        let Some((label, text, cursor, _)) = self.prompt_layout() else {
+            return false;
+        };
+        let lw = label.chars().count();
+        let body_w = Self::prompt_body_w(area.width, lw);
+        let chars: Vec<char> = text.chars().collect();
+        let mut rows: Vec<String> =
+            chars.chunks(body_w).map(|c| c.iter().collect()).collect();
+        let crow = cursor / body_w;
+        // the cursor sits one past the end when the text ends exactly on
+        // a row boundary, so that row has to exist to put it on
+        while rows.len() <= crow {
+            rows.push(String::new());
+        }
+        let text_rows = (area.height as usize).saturating_sub(1);
+        let mut lines: Vec<Line> = vec![];
+        for (i, r) in rows.iter().take(text_rows).enumerate() {
+            lines.push(Line::from(vec![
+                Span::styled(
+                    if i == 0 { label.clone() } else { " ".repeat(lw) },
+                    Style::default().fg(Color::Cyan),
+                ),
+                Span::raw(r.clone()),
+            ]));
+        }
+        // the parameters and hints, on a row of their own now that the
+        // text has taken the width
+        let last_y = area.y + area.height - 1;
+        let mut tail: Vec<Span> = vec![Span::raw(" ".repeat(lw))];
+        if let Mode::AdsPrompt { limit, ref sort, .. } = self.mode {
+            let head = format!("ADS returns {limit} (↑↓) ");
+            let action = format!("{} (⌃r)", ads_sort_name(sort));
+            let r = Rect {
+                x: area.x + lw as u16 + head.chars().count() as u16,
+                y: last_y,
+                width: action.chars().count() as u16,
+                height: 1,
+            };
+            self.prompt_sort_rect = r;
+            let hov = hit(r, self.hover.0, self.hover.1);
+            tail.push(Span::styled(head, Style::default().fg(Color::Gray)));
+            tail.push(Span::styled(
+                action,
+                if hov {
+                    Style::default().fg(Color::Cyan).add_modifier(Modifier::UNDERLINED)
+                } else {
+                    Style::default().fg(Color::Gray)
+                },
+            ));
+            tail.push(Span::styled(
+                "   ⏎ search · Esc cancel",
+                Style::default().fg(Color::DarkGray),
+            ));
+        } else {
+            tail.push(Span::styled(
+                "⏎ apply · Esc clears",
+                Style::default().fg(Color::DarkGray),
+            ));
+        }
+        lines.push(Line::from(tail));
+        f.render_widget(Paragraph::new(Text::from(lines)), area);
+        f.set_cursor_position((
+            area.x + lw as u16 + (cursor % body_w) as u16,
+            area.y + crow.min(text_rows.saturating_sub(1)) as u16,
+        ));
+        self.draw_badges(f, Rect { x: area.x, y: last_y, width: area.width, height: 1 });
+        true
+    }
+
     fn draw_status(&mut self, f: &mut Frame, area: Rect) {
         // a rule and a breath of space separate the footer from the
         // content above
@@ -6369,6 +6510,15 @@ impl App {
             ))),
             Rect { x: area.x, y: area.y, width: area.width, height: 1 },
         );
+        let body = Rect {
+            x: area.x,
+            y: area.y + 1,
+            width: area.width,
+            height: area.height.saturating_sub(1),
+        };
+        if self.draw_wrapped_prompt(f, body) {
+            return;
+        }
         let area = Rect { x: area.x, y: area.y + 1, width: area.width, height: 1 };
         // the badges live on this same line and are drawn after it, so
         // their hover hint has to be settled before the line is built
