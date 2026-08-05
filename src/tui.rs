@@ -201,7 +201,24 @@ enum Scope {
     Ads {
         tab: crate::tabs::Tab,
         articles: Vec<crate::ads::Article>,
+        state: QueryState,
     },
+}
+
+/// Where a query scope is in its round trip to ADS.
+///
+/// A tab exists from the moment its query is sent, not from the moment
+/// the results land: a query that takes a minute used to leave nothing
+/// on screen at all, which reads as though nothing was asked. The tab
+/// is the acknowledgement, and this is what it has to say meanwhile.
+#[derive(Clone, PartialEq)]
+enum QueryState {
+    Pending,
+    Ready,
+    /// ADS refused or the network did — the text is shown on the page,
+    /// where it stays put, rather than only in a log line that scrolls
+    /// away while you are reading it.
+    Failed(String),
 }
 
 /// One manuscript-view row: a cited string (or an uncited db member).
@@ -242,7 +259,6 @@ enum AdsMsg {
     Done {
         id: u64,
         tab: crate::tabs::Tab,
-        refresh_of: Option<usize>,
         result: Result<Vec<crate::ads::Article>, String>,
     },
     Imported {
@@ -1045,12 +1061,24 @@ fn draw_empty_hint(f: &mut Frame, area: Rect, msg: &str) {
     if area.height == 0 {
         return;
     }
-    let y = area.y + (area.height / 3).min(area.height - 1);
-    let line = Line::from(Span::styled(msg, Style::default().fg(Color::DarkGray)))
-        .alignment(ratatui::layout::Alignment::Center);
+    // wrapped, not clipped: an ADS error carries the server's own words
+    // and runs past the width, and the tail is where the reason and what
+    // to do about it are — the part worth reading
+    let w = area.width.saturating_sub(8).max(20) as usize;
+    let lines = wrap_text(msg, w);
+    let h = (lines.len() as u16).min(area.height);
+    let y = area.y + (area.height / 3).min(area.height.saturating_sub(h));
+    let text: Vec<Line> = lines
+        .into_iter()
+        .take(h as usize)
+        .map(|l| {
+            Line::from(Span::styled(l, Style::default().fg(Color::DarkGray)))
+                .alignment(ratatui::layout::Alignment::Center)
+        })
+        .collect();
     f.render_widget(
-        Paragraph::new(line),
-        Rect { x: area.x, y, width: area.width, height: 1 },
+        Paragraph::new(text),
+        Rect { x: area.x, y, width: area.width, height: h },
     );
 }
 
@@ -1418,14 +1446,42 @@ impl App {
         let (tx, rx) = std::sync::mpsc::channel();
         self.ads_rx = Some(rx);
         self.note(MsgCat::Info, format!("Searching ADS: {query}"));
+        // the tab appears now, not when the results do. An ADS query can
+        // take a minute, and a tab that only materialises at the end
+        // leaves nothing on screen to say the query was even sent.
+        if refresh_of.is_none() {
+            self.scopes.push(Scope::Ads {
+                tab: tab.clone(),
+                articles: vec![],
+                state: QueryState::Pending,
+            });
+            self.set_scope(self.scopes.len() - 1);
+        } else if let Some(Scope::Ads { state, .. }) =
+            refresh_of.and_then(|i| self.scopes.get_mut(i))
+        {
+            *state = QueryState::Pending;
+        }
         let ads_sort = tab.ads_sort.clone();
         std::thread::spawn(move || {
             // the tab's own ADS sort selects the records — "the newest
             // n postings matching this", not an arbitrary n
             let result = crate::ads::search_sorted(&query, limit, &ads_sort)
                 .map_err(|e| e.to_string());
-            let _ = tx.send(AdsMsg::Done { id, tab, refresh_of, result });
+            let _ = tx.send(AdsMsg::Done { id, tab, result });
         });
+    }
+
+    /// The scope holding a given tab, by the tab's own id.
+    ///
+    /// Results are routed by identity rather than by the index the query
+    /// was launched from: the tab is on screen for the whole round trip
+    /// now, so it can be closed, or another opened beside it, while the
+    /// query is still in flight — and an index captured a minute ago
+    /// would by then address somebody else's scope.
+    fn scope_of_tab(&self, id: &str) -> Option<usize> {
+        self.scopes
+            .iter()
+            .position(|s| matches!(s, Scope::Ads { tab, .. } if tab.id == id))
     }
 
     /// The manuscript view's row set: scan .tex and .md sources and
@@ -1613,7 +1669,7 @@ impl App {
             if !articles.is_empty() {
                 cached += 1;
             }
-            self.scopes.push(Scope::Ads { tab: t.clone(), articles });
+            self.scopes.push(Scope::Ads { tab: t.clone(), articles, state: QueryState::Ready });
         }
         // the cache holds whatever order the results last arrived in;
         // each tab's stored sort is what it should come back showing
@@ -1751,14 +1807,16 @@ impl App {
         }
         for m in msgs {
             match m {
-                AdsMsg::Done { id, mut tab, refresh_of, result } => {
-                    // a cancelled query's result is discarded on arrival
-                    // (the thread cannot be killed, only outwaited)
-                    if let Some(t) = self.finish_task(id).filter(|t| t.cancelled) {
-                        self.note(
-                            MsgCat::Info,
-                            format!("cancelled — {} (result discarded)", t.label),
-                        );
+                AdsMsg::Done { id, mut tab, result } => {
+                    let cancelled = self.finish_task(id).is_some_and(|t| t.cancelled);
+                    // the tab was opened when the query was sent, so by
+                    // now it may have been closed — in which case there
+                    // is nowhere for the result to go
+                    let Some(idx) = self.scope_of_tab(&tab.id) else { continue };
+                    if cancelled {
+                        self.note(MsgCat::Info, "cancelled — result discarded".to_string());
+                        self.scopes.remove(idx);
+                        self.set_scope(self.active_scope.min(self.scopes.len() - 1));
                         continue;
                     }
                     match result {
@@ -1773,50 +1831,25 @@ impl App {
                             }
                             self.save_metrics();
                             let n = articles.len();
-                            // A citation-graph query that comes back
-                            // empty has nothing to open: no edge to
-                            // follow, and unlike a search, no query to
-                            // refine — the argument is a bibcode. So
-                            // warn instead of leaving a dead tab that
-                            // can only be closed again. A *refresh* of
-                            // an existing graph tab keeps it: it is
-                            // already there, and its empty state says
-                            // the same thing.
-                            let refs = tab.query.starts_with("references(");
-                            let graph = refs || tab.query.starts_with("citations(");
-                            if n == 0 && graph && refresh_of.is_none() {
-                                self.note(
-                                    MsgCat::Warn,
-                                    if refs {
-                                        "ADS has not indexed this paper's references — for a new preprint they usually appear within days"
-                                    } else {
-                                        "ADS records nothing citing this paper yet"
-                                    }
-                                    .to_string(),
-                                );
-                                continue;
-                            }
                             crate::tabs::save_cached_articles(&tab.id, &articles);
                             tab.refreshed = Some(crate::tabs::now_secs());
-                            let scope = Scope::Ads { tab, articles };
-                            let idx = match refresh_of {
-                                Some(i) if i < self.scopes.len() => {
-                                    self.scopes[i] = scope;
-                                    i
-                                }
-                                _ => {
-                                    self.scopes.push(scope);
-                                    self.set_scope(self.scopes.len() - 1);
-                                    self.scopes.len() - 1
-                                }
-                            };
+                            self.scopes[idx] =
+                                Scope::Ads { tab, articles, state: QueryState::Ready };
                             // ADS hands results back in its own order;
                             // the tab's own sort decides what is shown
                             self.sort_ads_at(idx);
                             self.save_tabs();
                             self.note(MsgCat::Ok, format!("{n} ADS result(s)"));
                         }
-                        Err(e) => self.note(MsgCat::Err, format!("ADS search failed: {e}")),
+                        Err(e) => {
+                            // the page keeps the reason; a log line would
+                            // scroll away while the tab still sat there
+                            // saying nothing about why it is empty
+                            if let Some(Scope::Ads { state, .. }) = self.scopes.get_mut(idx) {
+                                *state = QueryState::Failed(e.clone());
+                            }
+                            self.note(MsgCat::Err, format!("ADS search failed: {e}"));
+                        }
                     }
                 }
                 AdsMsg::Imported { id, bibcode, result } => {
@@ -5471,7 +5504,7 @@ impl App {
         }
         self.sort_headers.extend(rects);
         if let Some(hint) = self.empty_hint() {
-            draw_empty_hint(f, data_area, hint);
+            draw_empty_hint(f, data_area, &hint);
         }
     }
 
@@ -5484,30 +5517,41 @@ impl App {
     }
 
     /// The line drawn over an empty table, if the active scope has one.
-    fn empty_hint(&self) -> Option<&'static str> {
+    fn empty_hint(&self) -> Option<String> {
         match self.scopes.get(self.active_scope) {
             Some(Scope::Manuscript { .. }) => None,
-            Some(Scope::Ads { tab, .. }) if self.row_count() == 0 => {
-                // A citation-graph query coming back empty is not a
-                // search that found nothing — it means ADS has no edge
-                // to follow, which is the normal state of a recent
-                // preprint whose reference list is not yet extracted.
-                // Telling the user to re-run invites them to wait for
-                // something that is not going to change.
-                Some(if tab.query.starts_with("references(") {
-                    "ADS has not indexed this paper's references — for a new preprint they usually appear within days"
-                } else if tab.query.starts_with("citations(") {
-                    "ADS records nothing citing this paper yet"
-                } else {
-                    "no results — r re-runs, +/- changes n"
+            Some(Scope::Ads { tab, state, .. }) if self.row_count() == 0 => {
+                // Everything a query page has to say about being empty
+                // says it *here*. The tab now exists from the moment the
+                // query is sent, so "why is this empty" has a place to
+                // live that stays put — a log line would scroll away
+                // while the page it explains sat there saying nothing.
+                Some(match state {
+                    QueryState::Pending => {
+                        format!("searching ADS for {} — results will appear here", tab.query)
+                    }
+                    QueryState::Failed(e) => format!("ADS search failed: {e}  ·  r retries"),
+                    // A citation-graph query coming back empty is not a
+                    // search that found nothing — it means ADS has no
+                    // edge to follow, which is the normal state of a
+                    // recent preprint whose reference list is not yet
+                    // extracted. Telling the user to re-run invites them
+                    // to wait for something that is not going to change.
+                    QueryState::Ready if tab.query.starts_with("references(") => {
+                        "ADS has not indexed this paper's references — for a new preprint they usually appear within days".to_string()
+                    }
+                    QueryState::Ready if tab.query.starts_with("citations(") => {
+                        "ADS records nothing citing this paper yet".to_string()
+                    }
+                    QueryState::Ready => "no results — r re-runs, +/- changes n".to_string(),
                 })
             }
             Some(Scope::Ads { .. }) => None,
             _ => {
                 if self.order.is_empty() {
-                    Some("library is empty — S searches ADS, or: astrobib add <bibcode>")
+                    Some("library is empty — S searches ADS, or: astrobib add <bibcode>".to_string())
                 } else if self.filtered.is_empty() {
-                    Some("no matches — Esc clears the filter")
+                    Some("no matches — Esc clears the filter".to_string())
                 } else {
                     None
                 }

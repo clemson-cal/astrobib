@@ -36,7 +36,7 @@ Both stores are plain `bib/*.bib` files, one paper per file, indistinguishable f
 
 ---
 ## TUI overview
-Scope capsules at the top switch between your library, saved ADS query tabs, and the manuscript view. Each keeps its own sort, and remembers it. An optional one-cell colour swatch column shows a metric — your own decaying priority, or ADS citation counts; switch it on from the table panel (`|`), like any other column. The pub card on the right shows the highlighted paper (hover the citekey column to preview others); an event log and clickable view badges sit at the bottom. Most things are clickable; every action has a key (`?` shows the cheat-sheet).
+Scope capsules at the top switch between your library, saved ADS query tabs, and the manuscript view. A query's tab appears the moment it is sent — an ADS query can take a minute — and the page says what it is waiting for, then how it ended: results, nothing found, or why it failed. Each keeps its own sort, and remembers it. An optional one-cell colour swatch column shows a metric — your own decaying priority, or ADS citation counts; switch it on from the table panel (`|`), like any other column. The pub card on the right shows the highlighted paper (hover the citekey column to preview others); an event log and clickable view badges sit at the bottom. Most things are clickable; every action has a key (`?` shows the cheat-sheet).
 
 ### Keys
 - `/` — live filter (query language below); `S` — new ADS query (`↑`/`↓` sets the result count, `⌃r` what ADS returns — both also clickable; pasting a DOI or ADS URL imports directly)

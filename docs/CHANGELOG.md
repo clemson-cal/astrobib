@@ -1,6 +1,12 @@
 # Changelog
 
-## 0.13.1 — unreleased
+## Unreleased
+
+### Changed
+- A query tab appears when the query is sent, not when the results come back. An ADS query can take a minute, and the tab used to materialise only at the end — so for that minute nothing on screen said anything had been asked, and pressing ⏎ again was the natural response. The tab is the acknowledgement now: it opens at once, saying what it is waiting for, and the same place later carries how it ended.
+- Everything a query page has to say about being empty is said on the page. That follows from the tab existing for the whole round trip: a failure or an empty citation graph reported only in the footer would scroll away while the tab it explains sat there empty and unexplained. So a failed search keeps its tab and states the reason with `r retries`, and an empty `citations(...)` / `references(...)` query keeps its tab and says why — superseding 0.11.0, which refused to open one at all. That refusal existed because the tab appeared only on success; with the tab already open, closing it out from under you is the worse answer.
+- Query results are routed back to their tab by the tab's own id rather than by the index it was launched from. With the tab on screen for the whole round trip it can be closed, or another opened beside it, while a query is still in flight — and an index captured a minute earlier would by then address a different scope.
+- An empty-state message wraps instead of being clipped. ADS errors carry the server's own words and run past the width, and the tail is where the reason and what to do about it live.
 
 ### Fixed
 - The copy chord offers only what the current screen can actually copy. The menu was a hand-written string and the resolution a separate `match`, so the two drifted apart: the library offered `q this query` where there is no query, and every paper was offered a bibcode, a DOI and a cached PDF path whether or not it had one — pressing those answered "nothing to copy". Both now come from one table filtered by the same function that performs the copy, so an option can be offered only when pressing it would copy something, and pressing a key for something absent says what is missing rather than "copy cancelled". The menu shares its line with the view badges, so as it grows it sheds the `Esc cancel` hint, then its separators, then its words — never an option, since hiding an available one is the defect being fixed.
