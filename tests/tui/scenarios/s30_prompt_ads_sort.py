@@ -19,8 +19,8 @@ from driver import require
 
 DESCRIPTION = "query prompt: what ADS returns, named, chorded and clickable"
 
-# the modes in the order ⌃r steps them, wrapping
-MODES = ["newest posting", "newest published", "most cited", "most relevant"]
+# the default, which the prompt opens on
+MODES = ["newest posting"]
 CTRL_R = "\x12"
 
 
@@ -68,24 +68,72 @@ def run(t):
         what="the mode underlining under the pointer",
     )
 
-    # ⌃r steps it, and wraps. The name changing is the feedback — there
-    # is no second line to echo it to, the prompt having taken the footer
-    for name in MODES[1:] + [MODES[0]]:
-        t.send(CTRL_R)
-        t.wait_for(
-            lambda n=name: f"{n} (⌃r)" in t.lines()[footer],
-            what=f"⌃r stepping to {name!r}",
-        )
+    # ⌃r opens the menu of everything ADS will sort by. It cycled four
+    # modes until there were twenty — ten fields, each either way round —
+    # and a cycle cannot carry twenty.
+    t.send(CTRL_R)
+    t.wait_for("ADS returns  ·  the key picks it", what="the ADS-returns menu")
+    # names read forwards and counts read biggest-first, so the menu
+    # offers each field in the direction that is normally wanted
+    for name in ("most cited", "most read", "highest classic factor", "bibcode A→Z"):
+        require(name in t.text(), f"the menu should list {name!r}", t)
+    require(
+        "ADS query:" in t.lines()[footer],
+        "the menu must not close the prompt underneath it",
+        t,
+    )
 
-    # and clicking does the same
+    # a key picks its field, closes the menu, and the prompt says so
+    t.send("c")
+    t.wait_gone("the key picks it")
+    t.wait_for(
+        lambda: "most cited (⌃r)" in t.lines()[footer],
+        what="the picked mode named on the prompt",
+    )
+    require(
+        "little red dots" in t.lines()[footer],
+        f"picking a mode must not disturb the query: {t.lines()[footer]!r}",
+        t,
+    )
+
+    # shift takes the same field the other way round, which is how all
+    # twenty stay one keystroke away
+    t.send(CTRL_R)
+    t.wait_for("ADS returns  ·  the key picks it", what="the menu reopening")
+    t.send("C")
+    t.wait_for(
+        lambda: "least cited (⌃r)" in t.lines()[footer],
+        what="shift reversing the direction",
+    )
+
+    # ⌃r closes it again without changing anything
+    t.send(CTRL_R)
+    t.wait_for("ADS returns  ·  the key picks it", what="the menu reopening")
+    t.send(CTRL_R)
+    t.wait_gone("the key picks it")
+    require(
+        "least cited (⌃r)" in t.lines()[footer],
+        f"closing the menu should leave the mode alone: {t.lines()[footer]!r}",
+        t,
+    )
+
+    # and clicking the affordance opens it too
+    gx = t.lines()[footer].index("least cited") + 2
     t.click(gx, footer)
-    t.wait_for(f"{MODES[1]} (⌃r)", what="clicking the mode stepping it")
+    t.wait_for("ADS returns  ·  the key picks it", what="clicking the mode opening the menu")
+    t.key("esc")
+    t.wait_gone("the key picks it")
+    require(
+        "ADS query:" in t.lines()[footer],
+        "Esc should close the menu, not the prompt",
+        t,
+    )
 
     # ↑ still steps the limit, so the two parameters do not fight
     t.key("up")
     t.wait_for(
         lambda: "ADS returns 50 (↑↓)" in t.lines()[footer]
-        and MODES[1] in t.lines()[footer],
+        and "least cited" in t.lines()[footer],
         what="the limit stepping while the mode holds",
     )
 

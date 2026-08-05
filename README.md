@@ -39,7 +39,7 @@ Both stores are plain `bib/*.bib` files, one paper per file, indistinguishable f
 Scope capsules at the top switch between your library, saved ADS query tabs, and the manuscript view. A query's tab appears the moment it is sent — an ADS query can take a minute — and the page says what it is waiting for, then how it ended: results, nothing found, or why it failed. Each keeps its own sort, and remembers it. An optional one-cell colour swatch column shows a metric — your own decaying priority, or ADS citation counts; switch it on from the table panel (`|`), like any other column. The pub card on the right shows the highlighted paper (hover the citekey column to preview others); an event log and clickable view badges sit at the bottom. Most things are clickable; every action has a key (`?` shows the cheat-sheet).
 
 ### Keys
-- `/` — live filter (query language below); `S` — new ADS query (`↑`/`↓` sets the result count, `⌃r` what ADS returns — both also clickable; pasting a DOI or ADS URL imports directly)
+- `/` — live filter (query language below); `S` — new ADS query (`↑`/`↓` sets the result count, `⌃r` opens the menu of what ADS returns — both also clickable; pasting a DOI or ADS URL imports directly)
 - `j k g G` — move; `[` `]` — switch scope (`]` past the last one composes a new query); `ctrl+w` — close query scope; `r` — refresh; `+` `-` — result count
 - `Space` — select row (iOS-style selection mode); `a` — select visible; `A` — select all; Esc — done
 - `i` — import ADS result(s); `m` — toggle manuscript/local membership; `⌫` — remove (with confirmation)
@@ -84,6 +84,8 @@ kw:"compact objects" -abs:neutrino    keyword, and a negation
 ---
 ## ADS queries
 `S` passes your query to the [ADS API](https://ui.adsabs.harvard.edu/help/search/search-syntax) unmodified, so the full Solr language works (`bibstem:ApJL`, `citations(...)`, boolean grouping, …). Each query becomes a scope capsule, persisted per library context in `tabs.json`.
+
+**What ADS returns** (`⌃r` while composing) is the ADS `sort` parameter — the same thing the sort dropdown on the ADS website sets — but it does a different job here. Paired with the result count it decides *which* records come back, not how they are arranged: "most cited" gives you the most cited among the n selected, so changing it changes the papers rather than the order. Every field ADS sorts by is offered, under ADS's own names: entry date, publication date, citation count, normalized citation count, classic factor, read count, author count, first author, bibcode and relevance. The menu key picks a field in the direction usually wanted (newest, most, A→Z) and shift takes the other. ADS's dropdown also lists Title; it is left out because it sorts nothing — `title asc`, `title desc` and relevance return identical results.
 The pub card walks the citation graph directly: click "cited by N" (or the citations/references affordances) to open a `citations(...)` or `references(...)` scope for the shown paper.
 
 Pressing `S` offers these four as a starting point; click one to load it into an empty prompt.
