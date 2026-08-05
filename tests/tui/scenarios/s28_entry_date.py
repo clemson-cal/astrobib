@@ -102,15 +102,18 @@ def run(t):
     )
     require("Year ▼" not in t.text(), "the marker should have left the Year column", t)
 
-    # the display sort is the tab's own and is written back; what ADS
-    # *returns* is deliberately not persisted (see tabs::Tab::ads_sort)
+    # both sorts are written back, and they are not the same thing: the
+    # display sort reorders records already in hand, the selection sort
+    # decided which records came back at all. The second is part of what
+    # makes a query reproducible — a tab restored with a different one is
+    # not the query that was saved — so it persists with the rest.
     with open(os.path.join(t.state_dir, "tabs.json")) as f:
         tabs = json.load(f)
     saved = [tab for ctx in tabs["contexts"].values() for tab in ctx]
     require(saved, "no saved tabs written back", t)
     require(
-        all("ads_sort" not in s for s in saved),
-        f"the selection sort should not be persisted, got {[s.get('ads_sort') for s in saved]}",
+        all(s.get("ads_sort") for s in saved),
+        f"the selection sort should be persisted, got {[s.get('ads_sort') for s in saved]}",
         t,
     )
     require(

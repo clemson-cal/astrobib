@@ -666,6 +666,8 @@ const HELP_ENTRIES: &[(&str, &str, Option<Action>, KeyCode)] = &[
     ("|", "table columns…", Some(Action::Columns), KeyCode::Char('|')),
     ("N", "name this query…", None, KeyCode::Char('N')),
     ("E", "edit this query…", None, KeyCode::Char('E')),
+    ("y q", "copy this query", None, KeyCode::Char('y')),
+    ("P", "open query on clipboard", None, KeyCode::Char('P')),
     ("L", "event log", Some(Action::Log), KeyCode::Char('L')),
     ("t", "global tier", Some(Action::GlobalTier), KeyCode::Char('t')),
     ("v", "pub view", None, KeyCode::Char('v')),
@@ -3990,6 +3992,51 @@ impl App {
         }
     }
 
+    /// `y q` — the whole query configuration, from the tab rather than
+    /// from a prompt. Copying a saved query used to mean opening `E` on
+    /// it and abandoning the edit, which risks changing the query you
+    /// meant only to read.
+    fn copy_query_config(&mut self) {
+        let Some(Scope::Ads { tab, .. }) = self.scopes.get(self.active_scope) else {
+            self.note(
+                MsgCat::Warn,
+                "no query here to copy — this is the library".to_string(),
+            );
+            return;
+        };
+        let url = crate::ads::search_url(&tab.query, tab.limit, &tab.ads_sort);
+        self.finish_copy(&url);
+    }
+
+    /// `P` — take a query configuration off the clipboard and open it.
+    ///
+    /// Deliberately loud when the clipboard holds something else: the
+    /// whole value of this is that it is one keystroke, and one
+    /// keystroke that silently did nothing would be worse than none.
+    fn paste_query_config(&mut self) {
+        let Some(text) = read_clipboard() else {
+            self.note(
+                MsgCat::Err,
+                "could not read the clipboard on this system".to_string(),
+            );
+            return;
+        };
+        match crate::ads::parse_search_url(&text) {
+            Some(_) => self.on_paste(text),
+            None => {
+                let what: String = text.trim().chars().take(40).collect();
+                self.note(
+                    MsgCat::Warn,
+                    if what.is_empty() {
+                        "the clipboard is empty — nothing to open".to_string()
+                    } else {
+                        format!("not an ADS query URL: {what}…")
+                    },
+                );
+            }
+        }
+    }
+
     /// The clipboard text an item yields over the current targets, or
     /// None when no target has the field (also the panel's dimming test).
     fn copy_value(&self, item: CopyItem) -> Option<String> {
@@ -4146,6 +4193,38 @@ impl App {
                 self.set_input(head, cursor);
                 true
             }
+            // ⌃u kills to the start of the line and ⌃w the word before
+            // the cursor. tui-input performs both, but as deletions —
+            // routing them through the ring is what makes ⌃y able to
+            // undo any of the three rather than only ⌃k.
+            KeyCode::Char('u') if ctrl => {
+                let (head, tail) = split(cursor);
+                if head.is_empty() {
+                    return true;
+                }
+                self.kill_ring = head;
+                self.set_input(tail, 0);
+                true
+            }
+            KeyCode::Char('w') if ctrl => {
+                let (head, tail) = split(cursor);
+                // back over any run of spaces, then over the word itself
+                let kept = head.trim_end();
+                let start = kept
+                    .char_indices()
+                    .rev()
+                    .find(|(_, c)| c.is_whitespace())
+                    .map(|(i, c)| i + c.len_utf8())
+                    .unwrap_or(0);
+                if start == head.len() {
+                    return true;
+                }
+                self.kill_ring = head[start..].to_string();
+                let kept = head[..start].to_string();
+                let n = kept.chars().count();
+                self.set_input(format!("{kept}{tail}"), n);
+                true
+            }
             KeyCode::Char('y') if ctrl => {
                 if self.kill_ring.is_empty() {
                     self.note(MsgCat::Warn, "nothing killed to yank".to_string());
@@ -4296,6 +4375,12 @@ impl App {
                     KeyCode::Char('p') => Some(CopyItem::PdfPath),
                     KeyCode::Char('t') => Some(CopyItem::Title),
                     KeyCode::Char('A') => Some(CopyItem::Abstract),
+                    // the query itself, not a paper in it
+                    KeyCode::Char('q') => {
+                        self.exit_copy_mode();
+                        self.copy_query_config();
+                        return;
+                    }
                     _ => None,
                 };
                 match item {
@@ -4505,6 +4590,7 @@ impl App {
                 KeyCode::Char('a') => self.select_all(true),
                 KeyCode::Char('A') => self.select_all(false),
                 KeyCode::Char('S') => self.open_ads_prompt(),
+                KeyCode::Char('P') => self.paste_query_config(),
                 KeyCode::Char('[') => self.cycle_scope(-1),
                 KeyCode::Char(']') => self.cycle_scope(1),
                 KeyCode::Char('r') => self.refresh_scope(),
@@ -6781,7 +6867,7 @@ impl App {
             Mode::Copy => Line::from(vec![
                 Span::styled("copy: ", Style::default().fg(Color::Cyan)),
                 Span::styled(
-                    "y key · Y full key · b bibcode · a ADS · x arXiv · d DOI · p PDF path · t title · A abstract · Esc cancel",
+                    "y key · Y full key · b bibcode · a ADS · x arXiv · d DOI · p PDF path · t title · A abstract · q this query · Esc cancel",
                     Style::default().fg(Color::DarkGray),
                 ),
             ]),
@@ -6926,6 +7012,34 @@ fn copy_to_clipboard(text: &str) -> bool {
     }
     let mut out = std::io::stdout();
     write!(out, "\x1b]52;c;{}\x07", base64(text.as_bytes())).is_ok() && out.flush().is_ok()
+}
+
+/// Read the system clipboard, or None where there is no way to.
+///
+/// There is no OSC 52 counterpart: terminals overwhelmingly refuse to
+/// *answer* a clipboard read, since that would let any program running
+/// in them exfiltrate whatever the user last copied. So this is the
+/// platform tool or nothing, and "nothing" is reported rather than
+/// guessed at.
+fn read_clipboard() -> Option<String> {
+    use std::process::Command;
+    let candidates: &[(&str, &[&str])] = if cfg!(target_os = "macos") {
+        &[("pbpaste", &[])]
+    } else {
+        &[
+            ("wl-paste", &["--no-newline"]),
+            ("xclip", &["-selection", "clipboard", "-o"]),
+            ("xsel", &["--clipboard", "--output"]),
+        ]
+    };
+    for (bin, args) in candidates {
+        if let Ok(out) = Command::new(bin).args(*args).output() {
+            if out.status.success() {
+                return String::from_utf8(out.stdout).ok();
+            }
+        }
+    }
+    None
 }
 
 /// Minimal RFC 4648 base64 for the OSC 52 payload (not worth a crate).

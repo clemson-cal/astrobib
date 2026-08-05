@@ -26,9 +26,12 @@ pub struct Tab {
     /// interchangeable, because the display sort ranks within whatever
     /// this selected.
     ///
-    /// Deliberately not persisted: it is chosen when a query is composed
-    /// and matters while it is being worked, so a restored tab starts
-    /// from the default rather than from a choice made days ago.
+    /// Persisted with the rest, because it is part of what makes a
+    /// query reproducible: text, result count and this together are the
+    /// whole configuration, and a tab that came back with a different
+    /// one was not the query you saved. (It was once left out on the
+    /// argument that it is chosen while composing — but that argument
+    /// applies just as well to the query text.)
     pub ads_sort: String,
 }
 
@@ -91,8 +94,13 @@ pub fn load(ms_root: Option<&Path>) -> Vec<Tab> {
                     .get("sort_asc")
                     .and_then(|v| v.as_bool())
                     .unwrap_or(DEFAULT_SORT.1),
-                // not read back: see the field's note
-                ads_sort: crate::ads::DEFAULT_ADS_SORT.to_string(),
+                // tabs written before this was stored simply have no
+                // entry, and the default is what they ran with anyway
+                ads_sort: t
+                    .get("ads_sort")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or(crate::ads::DEFAULT_ADS_SORT)
+                    .to_string(),
             })
         })
         .collect()
@@ -116,6 +124,7 @@ pub fn save(tabs: &[Tab], ms_root: Option<&Path>) -> std::io::Result<()> {
                 "refreshed": t.refreshed,
                 "sort_col": t.sort_col,
                 "sort_asc": t.sort_asc,
+                "ads_sort": t.ads_sort,
             })
         })
         .collect();

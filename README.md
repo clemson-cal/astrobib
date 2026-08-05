@@ -45,7 +45,8 @@ Scope capsules at the top switch between your library, saved ADS query tabs, and
 - `i` — import ADS result(s); `m` — toggle manuscript/local membership; `⌫` — remove (with confirmation)
 - `p` — download PDFs (ADS open-access, then arXiv); `B` — browser download (watches ~/Downloads); `o` — open PDF; `X` — clear PDF; double-click a row — open its PDF
 - `y` — copy chord: `yy` cite key, `yY` full key, `yb` bibcode, `ya`/`yx`/`yd` ADS/arXiv/DOI URL, `yp` PDF path, `yt` title, `yA` abstract; card title/abstract/key are click-to-copy
-- In any prompt: `⌃k` kills to the end of the line and `⌃y` yanks it back; `⌥w` copies what you are composing — from a query that means the ADS search URL, carrying the text, the result count and what ADS returns together, since only the first of those is query syntax. Pasting one back restores all three, and pasting one with no prompt open opens one already configured
+- `y q` — copy the active query's whole configuration: its text, its result count and what ADS returns, as an ADS search URL. `P` — open the query configuration on the clipboard (it says so if the clipboard holds something else). Both round-trip, so a query pasted to a colleague arrives as the query you sent
+- In any prompt: `⌃k` / `⌃u` / `⌃w` kill to end of line, to start of line, and the previous word, and `⌃y` yanks the last of them back; `⌥w` copies what you are composing (from a query, the same URL as `y q`)
 - `E` — edit the active query in place (text, result count and what ADS returns); `S` always composes a new one
 - `N` — name the active query (the capsule label; persists across edits to the query, empty restores the derived name)
 - `C` / `R` — open a citations / references query for the shown paper; `v` — pub view (the raw .bib); `e` — export the selection to a .bib file
