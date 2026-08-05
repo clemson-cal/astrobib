@@ -113,10 +113,22 @@ def run(t):
         f"every row should have turned around, not just the cursor's:\n{t.text()}",
         t,
     )
+    # either arrow turns it: with two directions there is nowhere else
+    # to go, so a key that only moved one way would be dead half the time
+    t.key("right")
+    t.wait_for(
+        lambda: "most cited (⌃r)" in t.lines()[footer],
+        what="→ again turning it back, rather than doing nothing",
+    )
+    t.key("left")
+    t.wait_for(
+        lambda: "least cited (⌃r)" in t.lines()[footer],
+        what="← turning it around too",
+    )
     t.key("left")
     t.wait_for(
         lambda: "most cited (⌃r)" in t.lines()[footer],
-        what="← turning it back",
+        what="← back again",
     )
 
     # ⏎ closes it — everything already applied, so there is nothing to

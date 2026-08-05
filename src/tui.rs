@@ -5144,12 +5144,12 @@ impl App {
                 self.sort_menu_sel = (self.sort_menu_sel + 1) % n;
                 self.apply_sort_menu();
             }
+            // either arrow turns the list around: with two directions
+            // there is nowhere else to go, so a key that only ever moved
+            // one way would be dead half the time
             KeyCode::Left | KeyCode::Right => {
-                let primary = matches!(code, KeyCode::Left);
-                if self.sort_menu_primary != primary {
-                    self.sort_menu_primary = primary;
-                    self.apply_sort_menu();
-                }
+                self.sort_menu_primary = !self.sort_menu_primary;
+                self.apply_sort_menu();
             }
             _ => {}
         }
@@ -5246,13 +5246,7 @@ impl App {
                 }
                 (false, false) => Style::default().fg(table_text()),
             };
-            let mut spans = vec![Span::styled(text, style)];
-            // the cursor row is the one in effect, so it says so where
-            // the eye already is
-            if i == sel {
-                spans.push(Span::styled("  ·  what ADS will return", dim));
-            }
-            lines.push(Line::from(spans));
+            lines.push(Line::from(Span::styled(text, style)));
         }
         f.render_widget(Block::default().style(Style::default().bg(help_bg())), area);
         f.render_widget(Paragraph::new(Text::from(lines)), panel_body(area));
