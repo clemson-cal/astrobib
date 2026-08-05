@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.13.0 — 2026-08-05
 
 ### Fixed
 - Surfaces follow the terminal's background instead of assuming it is dark. Every colour astrobib draws as RGB rather than as an ANSI name is a surface — a panel tint, a row fill, a divider, or the body text on one — and each is defined as a small offset *from* the background so it reads as barely raised off it. Held as constants, that offset only ever pointed one way: on a light terminal the panels, the pub card and the footer became near-black slabs against white, the cursor row a dark bar, and `Color::White` text on a hovered row turned into the background. The background is now asked for once at startup (OSC 11, falling back to `$COLORFGBG` and then to dark for terminals that do not answer), and every surface is a function of the answer. `ASTROBIB_THEME=light|dark` decides it by hand. This is not a theme system: there is no configuration and no third option, only which direction "away from the background" points.
