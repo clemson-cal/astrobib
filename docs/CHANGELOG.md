@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.15.0 — 2026-08-05
 
 ### Added
 - Every field ADS sorts by is offered, under ADS's own names. "What ADS returns" is the `sort` API parameter — the same thing the sort dropdown on the ADS website sets — so there was no reason to carry four of its eleven options. `⌃r` now opens a menu of all of them: entry date, publication date, citation count, normalized citation count, classic factor, read count, author count, first author, bibcode and relevance. It is arrow-driven: `↑`/`↓` choose what to rank by and either of `←`/`→` turns the whole list between most-first and least-first, which is one question rather than one per field. Every move applies at once, so the prompt behind the menu always reads as what a search would do, and the menu closes rather than commits. `⌃r` cycled four modes; a cycle cannot carry twenty.
