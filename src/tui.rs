@@ -24,10 +24,17 @@ use std::time::Duration;
 
 mod card;
 mod table;
+mod theme;
+
+use theme::*;
 
 use table::Col;
 
 pub fn run(lib: MergedLibrary) -> anyhow::Result<()> {
+    // before the alternate screen, while the terminal will still answer:
+    // every surface colour is an offset from its background, and an
+    // offset has to know which way it points
+    theme::detect();
     let mut terminal = ratatui::init();
     let _ = execute!(std::io::stdout(), EnableMouseCapture);
     // without this a pasted query arrives as a burst of key events, and
@@ -264,12 +271,6 @@ struct Task {
     keys: Vec<String>,
 }
 
-
-/// Every divider in the app — the card's horizontal rules and the
-/// vertical column divider, the table header rule, and the log/footer
-/// rules — uses this one quite-dim color.
-const DIVIDER_FG: Color = Color::Rgb(62, 66, 74);
-
 /// Which side of the screen the arrow keys drive.
 ///
 /// The columns panel is a toggle view, not a modal — the table stays
@@ -444,7 +445,7 @@ impl PanelLine {
     fn to_line(&self) -> Line<'static> {
         let line = Line::from(self.spans.clone());
         if self.fill {
-            line.style(Style::default().bg(table::CURSOR_FILL))
+            line.style(Style::default().bg(cursor_fill()))
         } else {
             line
         }
@@ -502,47 +503,12 @@ fn arrow(asc: bool) -> &'static str {
     }
 }
 
-/// Each secondary view gets a barely-there tint of its own, so which
-/// surface the eye is on is legible without a border doing the work.
-/// All of them sit within a few points of a typical dark terminal
-/// background, and the table keeps the terminal's own colour — it is the
-/// primary surface, and tinting it would fight every theme.
-const PANEL_BG: Color = Color::Rgb(24, 26, 32);
-const CARD_BG: Color = Color::Rgb(28, 25, 31);
-const LOG_BG: Color = Color::Rgb(23, 28, 29);
-const HELP_BG: Color = Color::Rgb(30, 28, 23);
-/// The footer is a surface too, and its tint is what separates it from
-/// the table — it carries no rule above it for the same reason the card
-/// and the panels carry none beside them.
-const FOOTER_BG: Color = Color::Rgb(26, 27, 31);
-
-/// Chips and buttons: the resting fill and the fill under the pointer.
-/// Named because this pair is drawn from four unrelated places — the
-/// scope capsules, the card's action pills in two layouts, and the
-/// confirm dialog — and inline copies of a shared colour drift apart.
-const CHIP_BG: Color = Color::Rgb(40, 44, 52);
-const CHIP_BG_HOVER: Color = Color::Rgb(58, 63, 72);
-
-/// The filter capsule's own warmer pair: it is a mode rather than a
-/// scope, so it reads yellow instead of joining the chip family.
-const FILTER_CHIP_BG: Color = Color::Rgb(52, 47, 26);
-const FILTER_CHIP_BG_HOVER: Color = Color::Rgb(70, 62, 30);
-
-/// Row-level hover fill in the panels that have one — the keys sheet and
-/// the PDF picker, both of which are lists of clickable rows.
-const ROW_HOVER_BG: Color = Color::Rgb(50, 54, 62);
-
-/// The fill marking a hovered copy region in the pub card.
-const COPY_REGION_BG: Color = Color::Rgb(44, 48, 56);
-
+/// The surface palette lives in `theme`, which reads the terminal's own
+/// background once at startup: every one of these colours is defined as
+/// an offset *from* that background, and an offset has a direction.
 fn divider() -> Style {
-    Style::default().fg(DIVIDER_FG)
+    Style::default().fg(divider_fg())
 }
-
-/// Unhovered table text (author, title) and the card's abstract body —
-/// modestly dimmer than the terminal foreground.
-const TABLE_TEXT: Color = Color::Rgb(150, 155, 163);
-const ABSTRACT_TEXT: Color = Color::Rgb(170, 174, 182);
 
 /// The one-cell metric swatch column: one scalar per paper, colored
 /// by a per-metric colormap so the hue family names the metric.
@@ -4799,8 +4765,8 @@ impl App {
         push_pill(
             &mut bspans,
             "cancel",
-            if hov_cancel { CHIP_BG_HOVER } else { CHIP_BG },
-            Color::White,
+            if hov_cancel { chip_bg_hover() } else { chip_bg() },
+            chip_fg_strong(),
         );
         lines.push(Line::from(bspans));
         // with no local tier there is only one place to remove from, so
@@ -4920,7 +4886,7 @@ impl App {
             let style = if hov {
                 Style::default().fg(Color::Cyan).add_modifier(Modifier::UNDERLINED)
             } else if empty {
-                Style::default().fg(TABLE_TEXT)
+                Style::default().fg(table_text())
             } else {
                 dim
             };
@@ -4932,7 +4898,7 @@ impl App {
         }
         // the tint is the boundary: no border, so the heading takes the
         // top row and a row of inset closes the panel at the bottom
-        f.render_widget(Block::default().style(Style::default().bg(HELP_BG)), area);
+        f.render_widget(Block::default().style(Style::default().bg(help_bg())), area);
         f.render_widget(Paragraph::new(Text::from(lines)), panel_body(area));
     }
 
@@ -4974,8 +4940,8 @@ impl App {
                         )
                     };
                     if hov {
-                        ks = ks.bg(ROW_HOVER_BG);
-                        ls = ls.bg(ROW_HOVER_BG);
+                        ks = ks.bg(row_hover_bg());
+                        ls = ls.bg(row_hover_bg());
                     }
                     let text = format!(" {key:>3}  {label}");
                     let pad = (HELP_COLW as usize).saturating_sub(text.chars().count());
@@ -4985,7 +4951,7 @@ impl App {
             }
             lines.push(Line::from(spans));
         }
-        f.render_widget(Block::default().style(Style::default().bg(HELP_BG)), area);
+        f.render_widget(Block::default().style(Style::default().bg(help_bg())), area);
         f.render_widget(Paragraph::new(Text::from(lines)), panel_body(area));
     }
 
@@ -5188,7 +5154,7 @@ impl App {
             let style = if i == *sel {
                 Style::default().bg(Color::DarkGray).add_modifier(Modifier::BOLD)
             } else if hov {
-                Style::default().bg(ROW_HOVER_BG)
+                Style::default().bg(row_hover_bg())
             } else {
                 Style::default()
             };
@@ -5270,20 +5236,20 @@ impl App {
             let composing_new = matches!(self.mode, Mode::AdsPrompt { edit: None, .. });
             let (bg, fg) = if idx == FILTER_CHIP {
                 if hov {
-                    (FILTER_CHIP_BG_HOVER, Color::Yellow)
+                    (filter_chip_bg_hover(), filter_chip_fg())
                 } else {
-                    (FILTER_CHIP_BG, Color::Yellow)
+                    (filter_chip_bg(), filter_chip_fg())
                 }
             } else if composing_new && idx == usize::MAX {
                 (Color::Cyan, Color::Black)
             } else if idx == self.active_scope && !composing_new {
                 (Color::Cyan, Color::Black)
             } else if hov {
-                (CHIP_BG_HOVER, Color::White)
+                (chip_bg_hover(), chip_fg_strong())
             } else if idx == usize::MAX {
-                (CHIP_BG, Color::DarkGray)
+                (chip_bg(), chip_fg_dim())
             } else {
-                (CHIP_BG, Color::Gray)
+                (chip_bg(), chip_fg())
             };
             if rounded {
                 push_pill(&mut spans, &label, bg, fg);
@@ -5422,7 +5388,7 @@ impl App {
         let style = if circle == "◯" {
             Style::default().fg(Color::Cyan).add_modifier(Modifier::DIM)
         } else if self.select_mode && at_cursor {
-            Style::default().fg(Color::White).add_modifier(Modifier::BOLD)
+            Style::default().fg(text_strong()).add_modifier(Modifier::BOLD)
         } else {
             Style::default().fg(Color::Cyan)
         };
@@ -5456,12 +5422,12 @@ impl App {
                     (_, CiteState::Missing) => ("✗", "missing", Style::default().fg(Color::Red)),
                 };
                 let cite_style = if lit {
-                    Style::default().fg(Color::White)
+                    Style::default().fg(text_strong())
                 } else {
                     Style::default().fg(Color::Cyan)
                 };
                 let title_style = if lit {
-                    Style::default().fg(Color::White).add_modifier(Modifier::ITALIC)
+                    Style::default().fg(text_strong()).add_modifier(Modifier::ITALIC)
                 } else {
                     Style::default().fg(Color::Gray).add_modifier(Modifier::ITALIC)
                 };
@@ -5480,7 +5446,7 @@ impl App {
                     .collect();
                 let row = Row::new(cells);
                 if at_cursor {
-                    row.style(Style::default().bg(table::CURSOR_FILL))
+                    row.style(Style::default().bg(cursor_fill()))
                 } else {
                     row
                 }
@@ -5508,14 +5474,14 @@ impl App {
                 let lit = hov_row == Some(pos);
                 let (au_style, ti_style, yr_style) = if lit {
                     (
-                        Style::default().fg(Color::White),
-                        Style::default().fg(Color::White).add_modifier(Modifier::ITALIC),
+                        Style::default().fg(text_strong()),
+                        Style::default().fg(text_strong()).add_modifier(Modifier::ITALIC),
                         Style::default().fg(Color::Green),
                     )
                 } else {
                     (
-                        Style::default().fg(TABLE_TEXT),
-                        Style::default().fg(TABLE_TEXT).add_modifier(Modifier::ITALIC),
+                        Style::default().fg(table_text()),
+                        Style::default().fg(table_text()).add_modifier(Modifier::ITALIC),
                         Style::default().fg(Color::Green).add_modifier(Modifier::DIM),
                     )
                 };
@@ -5554,7 +5520,7 @@ impl App {
                     .collect();
                 let row = Row::new(cells);
                 if at_cursor {
-                    row.style(Style::default().bg(table::CURSOR_FILL))
+                    row.style(Style::default().bg(cursor_fill()))
                 } else {
                     row
                 }
@@ -5574,7 +5540,7 @@ impl App {
                     Style::default().fg(Color::Green),
                     Style::default().fg(Color::Magenta),
                     Style::default().fg(Color::Green),
-                    Style::default().fg(Color::White),
+                    Style::default().fg(text_strong()),
                     Style::default().fg(Color::Cyan),
                 )
             } else {
@@ -5582,7 +5548,7 @@ impl App {
                     Style::default().fg(Color::Green),
                     Style::default().fg(Color::Magenta),
                     Style::default().fg(Color::Green).add_modifier(Modifier::DIM),
-                    Style::default().fg(TABLE_TEXT),
+                    Style::default().fg(table_text()),
                     Style::default().fg(Color::Cyan).add_modifier(Modifier::DIM),
                 )
             }
@@ -5642,9 +5608,9 @@ impl App {
                         Col::Title => Cell::from(Span::styled(
                             e.title().trim_matches(['{', '}']).to_string(),
                             if lit {
-                                Style::default().fg(Color::White).add_modifier(Modifier::ITALIC)
+                                Style::default().fg(text_strong()).add_modifier(Modifier::ITALIC)
                             } else {
-                                Style::default().fg(TABLE_TEXT).add_modifier(Modifier::ITALIC)
+                                Style::default().fg(table_text()).add_modifier(Modifier::ITALIC)
                             },
                         )),
                         Col::Key => Cell::from(Span::styled(e.short_key.clone(), c_key)),
@@ -5653,7 +5619,7 @@ impl App {
                     .collect();
                 let row = Row::new(cells);
                 if at_cursor {
-                    row.style(Style::default().bg(table::CURSOR_FILL))
+                    row.style(Style::default().bg(cursor_fill()))
                 } else {
                     row
                 }
@@ -6273,7 +6239,7 @@ impl App {
                 Span::styled(msg.clone(), Style::default().fg(cat.color())),
             ]));
         }
-        f.render_widget(Block::default().style(Style::default().bg(LOG_BG)), area);
+        f.render_widget(Block::default().style(Style::default().bg(log_bg())), area);
         f.render_widget(Paragraph::new(Text::from(lines)), panel_body(area));
     }
 
@@ -6357,9 +6323,9 @@ impl App {
                     let lab_style = if !visible {
                         dim
                     } else if on_cursor {
-                        Style::default().fg(Color::White).add_modifier(Modifier::BOLD)
+                        Style::default().fg(text_strong()).add_modifier(Modifier::BOLD)
                     } else {
-                        Style::default().fg(TABLE_TEXT)
+                        Style::default().fg(table_text())
                     };
                     // the metric strip says which metric it is showing —
                     // M toggles that, and nothing else on screen names it
@@ -6400,7 +6366,7 @@ impl App {
                     {
                         (arrow(asc), Style::default().fg(Color::Cyan))
                     } else if sortable && preview == Some(id) {
-                        (arrow(self.next_sort(id).1), Style::default().fg(DIVIDER_FG))
+                        (arrow(self.next_sort(id).1), Style::default().fg(divider_fg()))
                     } else {
                         (" ", Style::default())
                     };
@@ -6449,7 +6415,7 @@ impl App {
         let focused = self.focus == Focus::Columns;
         // no edge rule, mirroring the pub card on the other side of the
         // table: each panel's tint is its own boundary
-        f.render_widget(Block::default().style(Style::default().bg(PANEL_BG)), area);
+        f.render_widget(Block::default().style(Style::default().bg(panel_bg())), area);
         // laid out as the pub card's mirror image: the card insets its
         // text 3 cells from the table and 2 from the far edge and starts
         // one line down, so this does the same on the other side
@@ -6677,7 +6643,7 @@ impl App {
     fn draw_status(&mut self, f: &mut Frame, area: Rect) {
         // no rule above: the footer's own tint separates it from the
         // table, the way every other surface here is separated
-        f.render_widget(Block::default().style(Style::default().bg(FOOTER_BG)), area);
+        f.render_widget(Block::default().style(Style::default().bg(footer_bg())), area);
         if self.draw_wrapped_prompt(f, area) {
             return;
         }

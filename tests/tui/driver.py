@@ -55,7 +55,7 @@ class Session:
     """One TUI process in one pty against one scratch library."""
 
     def __init__(self, binary, cols=140, rows=40, allow_network=False, manuscript=None,
-                 pre_launch=None):
+                 pre_launch=None, env_override=None):
         self.binary = os.path.abspath(binary)
         self.cols = cols
         self.rows = rows
@@ -96,7 +96,15 @@ class Session:
             "ASTROBIB_LIBRARY": self.library,
             "ASTROBIB_STATE_DIR": self.state_dir,
             "ASTROBIB_ASCII": "1",
+            # the app asks the terminal for its background with OSC 11;
+            # pyte reconstructs a screen but cannot answer a query, so
+            # without this every scenario would wait out the probe's
+            # timeout before its first frame
+            "ASTROBIB_THEME": "dark",
         }
+        # a scenario may override any of it — ASTROBIB_THEME is the one
+        # that matters, since the palette is chosen from it
+        env.update(env_override or {})
         if allow_network and os.environ.get("ADS_API_TOKEN"):
             env["ADS_API_TOKEN"] = os.environ["ADS_API_TOKEN"]
 

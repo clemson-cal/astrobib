@@ -53,6 +53,8 @@ Scope capsules at the top switch between your library, saved ADS query tabs, and
 - `|` — table panel: show/hide columns, `←`/`→` to resize, `s` to sort by any of them (shown or not); `Tab` swaps the arrow keys between the panel and the table, `Esc` hands them back
 - `t` — show/hide the global tier; `D` — pub card; `L` — event log; `?` — keys; `@` — about; `q` — quit
 
+The side panels, the pub card and the footer are separated from the table by a faint tint rather than by border lines, and the tint is chosen from your terminal's own background: darker than it on a light theme, lighter on a dark one. astrobib asks the terminal at startup (OSC 11) and falls back to dark for terminals that do not answer — set `ASTROBIB_THEME=light` or `dark` to decide it yourself.
+
 ---
 ## Filtering the library
 Press `/` to filter as you type. Whitespace-separated terms AND together; each term is a case-insensitive partial match. Bare terms match author, title, abstract, key, keywords, and year; field prefixes narrow:

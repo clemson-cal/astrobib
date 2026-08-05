@@ -343,7 +343,7 @@ impl App {
             self.hover_hint = Some(format!("⧉ click to copy {what}"));
         }
         let mut yanks: Vec<(Rect, CopyItem)> = vec![];
-        let tint = Style::default().bg(COPY_REGION_BG);
+        let tint = Style::default().bg(copy_region_bg());
         let region_style = |base: Style, item: CopyItem| {
             if hov_region == Some(item) { base.patch(tint) } else { base }
         };
@@ -460,7 +460,7 @@ impl App {
                     y,
                     Line::from(Span::styled(
                         l,
-                        region_style(Style::default().fg(ABSTRACT_TEXT), CopyItem::Abstract),
+                        region_style(Style::default().fg(abstract_text()), CopyItem::Abstract),
                     )),
                 );
                 y += 1;
@@ -505,7 +505,7 @@ impl App {
                 if hovb {
                     self.hover_hint = Some(card_hint(btn).to_string());
                 }
-                let bg = if hovb { CHIP_BG_HOVER } else { CHIP_BG };
+                let bg = if hovb { chip_bg_hover() } else { chip_bg() };
                 push_pill(&mut spans, label, bg, fg);
                 spans.push(Span::raw(" "));
                 bx += wl + 1;
@@ -569,7 +569,7 @@ impl App {
                 if hovb {
                     self.hover_hint = Some(card_hint(btn).to_string());
                 }
-                let bg = if hovb { CHIP_BG_HOVER } else { CHIP_BG };
+                let bg = if hovb { chip_bg_hover() } else { chip_bg() };
                 if inline {
                     spans.push(Span::raw("  "));
                     push_pill(&mut spans, &label, bg, fg);
@@ -670,7 +670,7 @@ impl App {
         self.card_links.clear();
         // no edge rule: the tint is what separates the card from the
         // table, and a line beside a tint says the same thing twice
-        f.render_widget(Block::default().style(Style::default().bg(CARD_BG)), area);
+        f.render_widget(Block::default().style(Style::default().bg(card_bg())), area);
         if self.active_ads().is_some() {
             self.draw_article_card(f, area);
             return;

@@ -114,6 +114,7 @@ def main():
                 allow_network=getattr(mod, "ALLOW_NETWORK", False),
                 manuscript=getattr(mod, "MANUSCRIPT", None),
                 pre_launch=getattr(mod, "PRE_LAUNCH", None),
+                env_override=getattr(mod, "ENV", None),
             )
             sess.wait_ready()
             mod.run(sess)

@@ -245,9 +245,7 @@ pub(super) struct TableModel {
     pub hover: (u16, u16),
 }
 
-/// The cursor row's faint cool fill — "standing on a surface". Shared by
-/// all three scopes, which is why it lives here.
-pub(super) const CURSOR_FILL: Color = Color::Rgb(34, 40, 52);
+
 
 /// Solve column widths: fixed columns take what they ask for, and the
 /// flex column takes the rest.
