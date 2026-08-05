@@ -118,6 +118,7 @@ const INVENTORY: &[(char, Zone, Risk, &str)] = &[
     ('↑', Zone::Hit, Risk::Ambiguous, "sort/limit indicators"),
     ('▲', Zone::Hit, Risk::Ambiguous, "ascending sort indicator"),
     ('▼', Zone::Hit, Risk::Ambiguous, "descending sort indicator"),
+    ('▸', Zone::Hit, Risk::Narrow, "cursor row marker in the ADS-returns menu"),
     ('✗', Zone::Hit, Risk::Narrow, "cite-state missing marker"),
     // -- columns panel ----------------------------------------------------
     ('✓', Zone::Hit, Risk::Narrow, "columns panel: this column is shown"),

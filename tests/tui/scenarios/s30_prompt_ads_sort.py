@@ -72,9 +72,7 @@ def run(t):
     # modes until there were twenty — ten fields, each either way round —
     # and a cycle cannot carry twenty.
     t.send(CTRL_R)
-    t.wait_for("ADS returns  ·  the key picks it", what="the ADS-returns menu")
-    # names read forwards and counts read biggest-first, so the menu
-    # offers each field in the direction that is normally wanted
+    t.wait_for("ADS returns  ·  ↑↓ what to rank by", what="the ADS-returns menu")
     for name in ("most cited", "most read", "highest classic factor", "bibcode A→Z"):
         require(name in t.text(), f"the menu should list {name!r}", t)
     require(
@@ -82,58 +80,73 @@ def run(t):
         "the menu must not close the prompt underneath it",
         t,
     )
-
-    # a key picks its field, closes the menu, and the prompt says so
-    t.send("c")
-    t.wait_gone("the key picks it")
-    t.wait_for(
-        lambda: "most cited (⌃r)" in t.lines()[footer],
-        what="the picked mode named on the prompt",
-    )
+    # it opens on what the prompt is already set to, not at the top
     require(
-        "little red dots" in t.lines()[footer],
-        f"picking a mode must not disturb the query: {t.lines()[footer]!r}",
+        "▸ newest posting" in t.text(),
+        f"the cursor should start on the current mode:\n{t.text()}",
         t,
     )
 
-    # shift takes the same field the other way round, which is how all
-    # twenty stay one keystroke away
-    t.send(CTRL_R)
-    t.wait_for("ADS returns  ·  the key picks it", what="the menu reopening")
-    t.send("C")
+    # ↑↓ choose the field, and every move applies at once — the prompt
+    # behind the menu always reads as what a search would do
+    for _ in range(2):
+        t.key("down")
     t.wait_for(
-        lambda: "least cited (⌃r)" in t.lines()[footer],
-        what="shift reversing the direction",
+        lambda: "most cited (⌃r)" in t.lines()[footer],
+        what="↓ walking to the third field and applying it",
+    )
+    require(
+        "little red dots" in t.lines()[footer],
+        f"walking the menu must not disturb the query: {t.lines()[footer]!r}",
+        t,
     )
 
-    # ⌃r closes it again without changing anything
-    t.send(CTRL_R)
-    t.wait_for("ADS returns  ·  the key picks it", what="the menu reopening")
-    t.send(CTRL_R)
-    t.wait_gone("the key picks it")
+    # ←→ turn the whole list around at once: most or least is one
+    # question, not one per row
+    t.key("right")
+    t.wait_for(
+        lambda: "least cited (⌃r)" in t.lines()[footer],
+        what="→ reversing the direction",
+    )
     require(
-        "least cited (⌃r)" in t.lines()[footer],
-        f"closing the menu should leave the mode alone: {t.lines()[footer]!r}",
+        "oldest posting" in t.text() and "fewest authors" in t.text(),
+        f"every row should have turned around, not just the cursor's:\n{t.text()}",
+        t,
+    )
+    t.key("left")
+    t.wait_for(
+        lambda: "most cited (⌃r)" in t.lines()[footer],
+        what="← turning it back",
+    )
+
+    # ⏎ closes it — everything already applied, so there is nothing to
+    # commit and nothing to undo
+    t.key("enter")
+    t.wait_gone("↑↓ what to rank by")
+    require(
+        "ADS query:" in t.lines()[footer] and "most cited (⌃r)" in t.lines()[footer],
+        f"⏎ should close the menu and leave the prompt: {t.lines()[footer]!r}",
         t,
     )
 
     # and clicking the affordance opens it too
-    gx = t.lines()[footer].index("least cited") + 2
+    gx = t.lines()[footer].index("most cited") + 2
     t.click(gx, footer)
-    t.wait_for("ADS returns  ·  the key picks it", what="clicking the mode opening the menu")
+    t.wait_for("↑↓ what to rank by", what="clicking the mode opening the menu")
     t.key("esc")
-    t.wait_gone("the key picks it")
+    t.wait_gone("↑↓ what to rank by")
     require(
         "ADS query:" in t.lines()[footer],
         "Esc should close the menu, not the prompt",
         t,
     )
 
-    # ↑ still steps the limit, so the two parameters do not fight
+    # ↑ steps the limit again once the menu has gone, so the two never
+    # fight over the arrows
     t.key("up")
     t.wait_for(
         lambda: "ADS returns 50 (↑↓)" in t.lines()[footer]
-        and "least cited" in t.lines()[footer],
+        and "most cited" in t.lines()[footer],
         what="the limit stepping while the mode holds",
     )
 

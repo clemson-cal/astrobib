@@ -346,19 +346,19 @@ enum PanelRow {
 /// ADS *silently drops* a sort field it does not know (it answers 200
 /// with `"sort": ""` and default ordering), so a wrong field name would
 /// leave the app naming an order it is not getting.
-const ADS_SORTS: [(char, &str, bool, &str, &str); 10] = [
-    ('e', "entry_date", true, "newest posting", "oldest posting"),
-    ('d', "date", true, "newest published", "oldest published"),
-    ('c', "citation_count", true, "most cited", "least cited"),
-    ('n', "citation_count_norm", true, "most cited (normalized)", "least cited (normalized)"),
-    ('f', "classic_factor", true, "highest classic factor", "lowest classic factor"),
-    ('r', "read_count", true, "most read", "least read"),
-    ('a', "author_count", true, "most authors", "fewest authors"),
+const ADS_SORTS: [(&str, bool, &str, &str); 10] = [
+    ("entry_date", true, "newest posting", "oldest posting"),
+    ("date", true, "newest published", "oldest published"),
+    ("citation_count", true, "most cited", "least cited"),
+    ("citation_count_norm", true, "most cited (normalized)", "least cited (normalized)"),
+    ("classic_factor", true, "highest classic factor", "lowest classic factor"),
+    ("read_count", true, "most read", "least read"),
+    ("author_count", true, "most authors", "fewest authors"),
     // names read forwards: the useful direction here is ascending, so
-    // that is the one the unshifted key gives
-    ('1', "first_author", false, "first author A→Z", "first author Z→A"),
-    ('b', "bibcode", false, "bibcode A→Z", "bibcode Z→A"),
-    ('s', "score", true, "most relevant", "least relevant"),
+    // that is the one the list offers first
+    ("first_author", false, "first author A→Z", "first author Z→A"),
+    ("bibcode", false, "bibcode A→Z", "bibcode Z→A"),
+    ("score", true, "most relevant", "least relevant"),
 ];
 
 /// The `sort` parameter for a field in its primary or reverse direction.
@@ -367,8 +367,8 @@ const ADS_SORTS: [(char, &str, bool, &str, &str); 10] = [
 fn ads_sort_value(field: &str, primary: bool) -> String {
     let desc = ADS_SORTS
         .iter()
-        .find(|(_, f, ..)| *f == field)
-        .map(|(_, _, d, ..)| *d)
+        .find(|(f, ..)| *f == field)
+        .map(|(_, d, ..)| *d)
         .unwrap_or(true);
     format!("{field} {}", if desc == primary { "desc" } else { "asc" })
 }
@@ -379,15 +379,15 @@ fn ads_sort_name(sort: &str) -> &'static str {
     let (field, dir) = sort.split_once(' ').unwrap_or((sort, "desc"));
     ADS_SORTS
         .iter()
-        .find(|(_, f, ..)| *f == field)
-        .map(|(_, _, desc, primary, reverse)| {
+        .find(|(f, ..)| *f == field)
+        .map(|(_, desc, primary, reverse)| {
             if (dir == "desc") == *desc {
                 *primary
             } else {
                 *reverse
             }
         })
-        .unwrap_or(ADS_SORTS[0].3)
+        .unwrap_or(ADS_SORTS[0].2)
 }
 
 /// Which kind of table a scope presents. Columns are configured per
@@ -1074,6 +1074,12 @@ struct App {
     // it must never close the prompt underneath.
     sort_menu: bool,
     sort_menu_rects: Vec<(Rect, String)>,
+    // the highlighted field, and whether the whole list is showing its
+    // primary direction (newest / most / A→Z) or its reverse. Direction
+    // is one axis for the list rather than a property of each row: it is
+    // the same question whichever field you are on.
+    sort_menu_sel: usize,
+    sort_menu_primary: bool,
 }
 
 /// option/alt+arrow (and emacs alt+b/f) word motions for text inputs.
@@ -1300,6 +1306,8 @@ impl App {
             kill_ring: String::new(),
             sort_menu: false,
             sort_menu_rects: vec![],
+            sort_menu_sel: 0,
+            sort_menu_primary: true,
         }
     }
 
@@ -3712,16 +3720,27 @@ impl App {
         // the prompt's ADS-returns glyph, which must be tested before the
         // click-away dismissal below or it would close the prompt instead
         if matches!(self.mode, Mode::AdsPrompt { .. }) && hit(self.prompt_sort_rect, x, y) {
-            self.sort_menu = !self.sort_menu;
+            if self.sort_menu {
+                self.sort_menu = false;
+            } else {
+                self.open_sort_menu();
+            }
             return;
         }
         // a menu entry, before the click-away dismissal for the same
         // reason the samples are: reaching that would close the prompt
         if self.sort_menu && matches!(self.mode, Mode::AdsPrompt { .. }) {
-            if let Some((_, value)) =
-                self.sort_menu_rects.iter().find(|(r, _)| hit(*r, x, y)).cloned()
-            {
-                self.set_ads_sort(value);
+            if let Some(i) = self.sort_menu_rects.iter().position(|(r, _)| hit(*r, x, y)) {
+                // a click is one gesture, so it chooses and leaves —
+                // unlike the arrows, which are a walk through the list
+                if let Some((_, value)) = self.sort_menu_rects.get(i).cloned() {
+                    self.sort_menu_sel = ADS_SORTS
+                        .iter()
+                        .position(|(f, ..)| value.starts_with(f))
+                        .unwrap_or(self.sort_menu_sel);
+                    self.apply_sort_menu();
+                }
+                self.sort_menu = false;
                 return;
             }
         }
@@ -4449,7 +4468,7 @@ impl App {
                 // order the query is not actually getting
                 if let Some(s) = so {
                     let field = s.split_once(' ').map(|(f, _)| f).unwrap_or(&s);
-                    if ADS_SORTS.iter().any(|(_, f, ..)| *f == field) {
+                    if ADS_SORTS.iter().any(|(f, ..)| *f == field) {
                         *sort = s.clone();
                         said.push_str(&format!(" · {}", ads_sort_name(&s)));
                     } else {
@@ -4653,7 +4672,7 @@ impl App {
                 // flow control. It cycled four modes until there were
                 // twenty, which is more than a cycle can carry.
                 KeyCode::Char('r') if mods.contains(KeyModifiers::CONTROL) => {
-                    self.sort_menu = !self.sort_menu;
+                    self.open_sort_menu();
                 }
                 KeyCode::Up => {
                     const STEPS: [usize; 4] = [20, 50, 100, 200];
@@ -5099,15 +5118,52 @@ impl App {
         }
     }
 
-    /// Apply a chosen ADS-returns value, close the menu, and say so.
+    /// A keypress while the ADS-returns menu is open. Returns whether
+    /// it was claimed — everything is, so a stray key cannot type into
+    /// the query behind the menu.
     ///
-    /// A changed name in the prompt is a weak signal on its own, so the
-    /// change is also spoken — as with every other mode toggle.
-    fn set_ads_sort(&mut self, value: String) {
+    /// Arrows only: ↑/↓ walk the fields, ←/→ turn the whole list around.
+    /// Direction is one axis rather than a property of each row — "most
+    /// or least" is the same question whichever field you are on — and
+    /// there are no letter shortcuts, so nothing depends on shift, which
+    /// is what broke on the digit key.
+    ///
+    /// Every move applies at once, so the prompt behind the menu always
+    /// reads as what a search would do; the menu closes rather than
+    /// commits.
+    fn sort_menu_key(&mut self, code: KeyCode, mods: KeyModifiers) -> bool {
+        let n = ADS_SORTS.len();
+        match code {
+            KeyCode::Esc | KeyCode::Enter => self.sort_menu = false,
+            KeyCode::Char('r') if mods.contains(KeyModifiers::CONTROL) => self.sort_menu = false,
+            KeyCode::Up => {
+                self.sort_menu_sel = (self.sort_menu_sel + n - 1) % n;
+                self.apply_sort_menu();
+            }
+            KeyCode::Down => {
+                self.sort_menu_sel = (self.sort_menu_sel + 1) % n;
+                self.apply_sort_menu();
+            }
+            KeyCode::Left | KeyCode::Right => {
+                let primary = matches!(code, KeyCode::Left);
+                if self.sort_menu_primary != primary {
+                    self.sort_menu_primary = primary;
+                    self.apply_sort_menu();
+                }
+            }
+            _ => {}
+        }
+        true
+    }
+
+    /// Put the highlighted field, in the direction the list is showing,
+    /// on the prompt.
+    fn apply_sort_menu(&mut self) {
+        let (field, ..) = ADS_SORTS[self.sort_menu_sel.min(ADS_SORTS.len() - 1)];
+        let value = ads_sort_value(field, self.sort_menu_primary);
         if let Mode::AdsPrompt { sort, .. } = &mut self.mode {
             *sort = value.clone();
         }
-        self.sort_menu = false;
         self.note_latest(
             MsgCat::Info,
             "ads-returns",
@@ -5115,129 +5171,89 @@ impl App {
         );
     }
 
-    /// A keypress while the ADS-returns menu is open. Returns whether it
-    /// was claimed — everything is, so a stray key cannot type into the
-    /// query behind the menu.
-    fn sort_menu_key(&mut self, code: KeyCode, mods: KeyModifiers) -> bool {
-        match code {
-            KeyCode::Esc => {
-                self.sort_menu = false;
-                true
-            }
-            KeyCode::Char('r') if mods.contains(KeyModifiers::CONTROL) => {
-                self.sort_menu = false;
-                true
-            }
-            KeyCode::Char(c) => {
-                // shift takes the reverse direction: the menu keys are
-                // lowercase, so an uppercase one is unambiguous
-                let lower = c.to_ascii_lowercase();
-                match ADS_SORTS.iter().find(|(k, ..)| *k == lower) {
-                    Some((_, field, ..)) => {
-                        let value = ads_sort_value(field, !c.is_ascii_uppercase());
-                        self.set_ads_sort(value);
-                    }
-                    None => self.note(
-                        MsgCat::Warn,
-                        "no such ADS-returns mode — Esc closes the menu".to_string(),
-                    ),
-                }
-                true
-            }
-            _ => true,
-        }
-    }
-
-    /// Cells wide enough for the longest name, and the columns that fit.
-    /// One place, so the height and the drawing cannot disagree about
-    /// how many rows the grid takes.
-    fn sort_menu_grid(width: u16) -> (usize, usize, usize) {
-        let cw = ADS_SORTS
+    /// Open the menu on whatever the prompt is currently set to, so the
+    /// cursor starts where you are rather than at the top.
+    fn open_sort_menu(&mut self) {
+        let current = match &self.mode {
+            Mode::AdsPrompt { sort, .. } => sort.clone(),
+            _ => return,
+        };
+        let (field, dir) = current.split_once(' ').unwrap_or((current.as_str(), "desc"));
+        self.sort_menu_sel = ADS_SORTS.iter().position(|(f, ..)| *f == field).unwrap_or(0);
+        self.sort_menu_primary = ADS_SORTS
             .iter()
-            .map(|(_, _, _, name, _)| name.chars().count() + 4)
-            .max()
-            .unwrap_or(20);
-        let cols = ((width.saturating_sub(4) as usize) / cw).clamp(1, 3);
-        (cw, cols, ADS_SORTS.len().div_ceil(cols))
+            .find(|(f, ..)| *f == field)
+            .map(|(_, desc, ..)| (dir == "desc") == *desc)
+            .unwrap_or(true);
+        self.sort_menu = true;
     }
 
-    /// Rows the ADS-returns menu wants: a heading, the grid, a line
-    /// saying how to reverse, and the closing inset.
-    fn sort_menu_height(&self, spare: u16, width: u16) -> u16 {
+    /// Rows the ADS-returns menu wants: a heading, the list, and the
+    /// closing inset — windowed to what the band can spare, so a short
+    /// terminal gets a scrolling list rather than no menu at all.
+    fn sort_menu_height(&self, spare: u16, _width: u16) -> u16 {
         if !matches!(self.mode, Mode::AdsPrompt { .. }) {
             return 0;
         }
-        let (_, _, rows) = Self::sort_menu_grid(width);
-        let want = rows as u16 + 3;
-        if spare < want + 3 {
-            0
-        } else {
-            want
-        }
+        let want = ADS_SORTS.len() as u16 + 2;
+        // leave the table at least four rows; below that show fewer
+        // fields rather than nothing
+        want.min(spare.saturating_sub(4)).max(4)
     }
 
-    /// Everything ADS will sort by, one key each.
+    /// Everything ADS will sort by, one per row.
     ///
     /// This was a four-way cycle on ⌃r until it became twenty — ten
     /// fields, each either way round — and a cycle cannot carry twenty.
-    /// The key picks the field in its usual direction; shift takes the
-    /// other one, which keeps every option one keystroke away.
+    /// A list can: ↑/↓ choose the field and ←/→ turn every row around at
+    /// once, since "most or least" is one question, not ten.
     fn draw_sort_menu(&mut self, f: &mut Frame, area: Rect) {
         self.sort_menu_rects.clear();
-        if area.height == 0 {
+        if area.height == 0 || !matches!(self.mode, Mode::AdsPrompt { .. }) {
             return;
         }
-        let Mode::AdsPrompt { sort, .. } = &self.mode else { return };
-        let current = sort.clone();
         let dim = Style::default().fg(Color::DarkGray);
-        let (cw, cols, rows) = Self::sort_menu_grid(area.width);
+        let primary = self.sort_menu_primary;
+        let sel = self.sort_menu_sel.min(ADS_SORTS.len() - 1);
+        // the visible window: the list scrolls only as far as it takes to
+        // keep the cursor on screen, so the rows stay put while you walk
+        let rows = (area.height.saturating_sub(2)) as usize;
+        let first = if rows == 0 || sel < rows { 0 } else { sel + 1 - rows };
         let mut lines = vec![Line::from(Span::styled(
-            " ADS returns  ·  the key picks it, shift reverses it  ·  ⌃r or Esc closes",
+            format!(
+                " ADS returns  ·  ↑↓ what to rank by  ·  ←→ {}  ·  ⏎ or Esc closes",
+                if primary { "most first" } else { "least first" }
+            ),
             dim,
         ))];
-        for r in 0..rows {
-            let mut spans: Vec<Span> = vec![Span::raw(" ")];
-            for c in 0..cols {
-                let Some((key, field, _, primary, reverse)) = ADS_SORTS.get(r + c * rows) else {
-                    continue;
-                };
-                // the entry shows the direction it is *in*, so the row
-                // reads as the mode rather than as a field name
-                let on_primary = current != ads_sort_value(field, false);
-                let active = current == ads_sort_value(field, true)
-                    || current == ads_sort_value(field, false);
-                let name = if active && !on_primary { reverse } else { primary };
-                let text = format!("{key} {name}");
-                let x = area.x + 1 + (c * cw) as u16;
-                let rect = Rect {
-                    x,
-                    y: area.y + 1 + r as u16,
-                    width: text.chars().count() as u16,
-                    height: 1,
-                };
-                self.sort_menu_rects
-                    .push((rect, ads_sort_value(field, !(active && on_primary))));
-                let hov = hit(rect, self.hover.0, self.hover.1);
-                let style = match (active, hov) {
-                    (true, true) => Style::default()
-                        .fg(Color::Cyan)
-                        .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
-                    (true, false) => Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
-                    (false, true) => {
-                        Style::default().fg(Color::Cyan).add_modifier(Modifier::UNDERLINED)
-                    }
-                    (false, false) => Style::default().fg(table_text()),
-                };
-                let pad = cw.saturating_sub(text.chars().count());
-                spans.push(Span::styled(text, style));
-                spans.push(Span::raw(" ".repeat(pad)));
+        for (i, (field, _, name_p, name_r)) in
+            ADS_SORTS.iter().enumerate().skip(first).take(rows.max(1))
+        {
+            let name = if primary { name_p } else { name_r };
+            let text = format!(" {} {name}", if i == sel { "▸" } else { " " });
+            let rect = Rect {
+                x: area.x + 1,
+                y: area.y + 1 + (i - first) as u16,
+                width: area.width.saturating_sub(2),
+                height: 1,
+            };
+            self.sort_menu_rects.push((rect, ads_sort_value(field, primary)));
+            let hov = hit(rect, self.hover.0, self.hover.1);
+            let style = match (i == sel, hov) {
+                (true, _) => Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+                (false, true) => {
+                    Style::default().fg(Color::Cyan).add_modifier(Modifier::UNDERLINED)
+                }
+                (false, false) => Style::default().fg(table_text()),
+            };
+            let mut spans = vec![Span::styled(text, style)];
+            // the cursor row is the one in effect, so it says so where
+            // the eye already is
+            if i == sel {
+                spans.push(Span::styled("  ·  what ADS will return", dim));
             }
             lines.push(Line::from(spans));
         }
-        lines.push(Line::from(Span::styled(
-            format!("  now: {}", ads_sort_name(&current)),
-            dim,
-        )));
         f.render_widget(Block::default().style(Style::default().bg(help_bg())), area);
         f.render_widget(Paragraph::new(Text::from(lines)), panel_body(area));
     }
@@ -7404,21 +7420,10 @@ mod tests {
     /// test can hold is the table's shape.
     #[test]
     fn ads_sort_table_is_well_formed() {
-        let mut keys: Vec<char> = ADS_SORTS.iter().map(|(k, ..)| *k).collect();
-        keys.sort_unstable();
-        let n = keys.len();
-        keys.dedup();
-        assert_eq!(keys.len(), n, "menu keys must be unique");
-        for (k, field, ..) in ADS_SORTS {
-            // shift on a menu key means "the other direction", so an
-            // uppercase key would be two things at once
-            assert!(
-                !k.is_ascii_uppercase(),
-                "{k:?} ({field}) must be lowercase: shift is the reverse direction"
-            );
-            assert!(!field.contains(' '), "{field:?} is a field, not a sort value");
+        let mut fields: Vec<&str> = ADS_SORTS.iter().map(|(f, ..)| *f).collect();
+        for f in &fields {
+            assert!(!f.contains(' '), "{f:?} is a field, not a sort value");
         }
-        let mut fields: Vec<&str> = ADS_SORTS.iter().map(|(_, f, ..)| *f).collect();
         fields.sort_unstable();
         let n = fields.len();
         fields.dedup();
@@ -7430,12 +7435,9 @@ mod tests {
 
     #[test]
     fn every_sort_value_names_itself() {
-        for (_, field, _, primary, reverse) in ADS_SORTS {
+        for (field, _, primary, reverse) in ADS_SORTS {
             assert_eq!(ads_sort_name(&ads_sort_value(field, true)), primary);
             assert_eq!(ads_sort_name(&ads_sort_value(field, false)), reverse);
-        }
-        // the two directions are actually different parameters
-        for (_, field, ..) in ADS_SORTS {
             assert_ne!(ads_sort_value(field, true), ads_sort_value(field, false));
         }
         // names read forwards, counts and dates read biggest-first
@@ -7449,8 +7451,8 @@ mod tests {
     /// since one can arrive from a pasted URL or an older state file.
     #[test]
     fn an_unknown_sort_falls_back_to_the_default_name() {
-        assert_eq!(ads_sort_name("title desc"), ADS_SORTS[0].3);
-        assert_eq!(ads_sort_name(""), ADS_SORTS[0].3);
+        assert_eq!(ads_sort_name("title desc"), ADS_SORTS[0].2);
+        assert_eq!(ads_sort_name(""), ADS_SORTS[0].2);
     }
 
     /// A filter sample using a field the tokenizer does not know does
