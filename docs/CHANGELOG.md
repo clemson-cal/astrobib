@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.14.0 — 2026-08-05
 
 ### Changed
 - A query tab appears when the query is sent, not when the results come back. An ADS query can take a minute, and the tab used to materialise only at the end — so for that minute nothing on screen said anything had been asked, and pressing ⏎ again was the natural response. The tab is the acknowledgement now: it opens at once, saying what it is waiting for, and the same place later carries how it ended.
