@@ -177,6 +177,9 @@ impl MsgCat {
 /// straight into \cite{...}); URLs, paths, and titles join with newlines.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum CopyItem {
+    /// Not a datum of a paper but of the *scope*: the whole query
+    /// configuration, as an ADS search URL.
+    QueryConfig,
     Key,
     FullKey,
     Bibcode,
@@ -683,6 +686,26 @@ const HELP_ENTRIES: &[(&str, &str, Option<Action>, KeyCode)] = &[
     ("q", "quit", Some(Action::Quit), KeyCode::Char('q')),
 ];
 
+/// The copy chord: key, menu label, and what it copies. One table, so
+/// the keys the chord accepts and the options the footer offers are the
+/// same list by construction — they were a `match` and a hand-written
+/// string, and drifted.
+/// `(key, label, short label, item)`. The short labels exist because the
+/// menu shares its line with the view badges and, with everything
+/// available, the full one no longer fits at 140 columns.
+const COPY_CHORD: [(char, &str, &str, CopyItem); 10] = [
+    ('y', "key", "key", CopyItem::Key),
+    ('Y', "full key", "full", CopyItem::FullKey),
+    ('b', "bibcode", "bib", CopyItem::Bibcode),
+    ('a', "ADS", "ADS", CopyItem::AdsUrl),
+    ('x', "arXiv", "arXiv", CopyItem::ArxivUrl),
+    ('d', "DOI", "DOI", CopyItem::DoiUrl),
+    ('p', "PDF path", "PDF", CopyItem::PdfPath),
+    ('t', "title", "title", CopyItem::Title),
+    ('A', "abstract", "abs", CopyItem::Abstract),
+    ('q', "this query", "query", CopyItem::QueryConfig),
+];
+
 /// One row of the card's link stack: → rows open the browser, ⌕ rows
 /// act inside astrobib (query scopes).
 enum LinkTarget {
@@ -703,6 +726,7 @@ fn copy_hint(item: CopyItem) -> &'static str {
         CopyItem::PdfPath => "⧉ copy the cached PDF's path  ·  y p",
         CopyItem::Title => "⧉ copy the title  ·  y t",
         CopyItem::Abstract => "⧉ copy the abstract  ·  y A",
+        CopyItem::QueryConfig => "⧉ copy this query's configuration  ·  y q",
     }
 }
 
@@ -3923,6 +3947,10 @@ impl App {
         let vals: Vec<String> = items
             .iter()
             .filter_map(|a| match item {
+                // a scope's property, not a paper's: copy_text
+                // answers it before any of these are reached
+                CopyItem::QueryConfig => None,
+
                 CopyItem::Key | CopyItem::FullKey => Some(self.hypothetical_key(a)),
                 CopyItem::Bibcode => Some(a.bibcode.clone()),
                 CopyItem::AdsUrl => Some(format!(
@@ -3964,6 +3992,9 @@ impl App {
     /// Every copyable datum of one query-result article.
     fn article_value(&self, a: &crate::ads::Article, item: CopyItem) -> Option<String> {
         match item {
+            // a scope's property, not a paper's: copy_text answers
+            // it before any of these are reached
+            CopyItem::QueryConfig => None,
             CopyItem::Title => Some(a.title.clone()),
             CopyItem::Abstract => {
                 (!a.abstract_.is_empty()).then(|| crate::ads::clean_abstract(&a.abstract_))
@@ -3990,22 +4021,6 @@ impl App {
         if matches!(self.mode, Mode::Copy) {
             self.mode = Mode::Normal;
         }
-    }
-
-    /// `y q` — the whole query configuration, from the tab rather than
-    /// from a prompt. Copying a saved query used to mean opening `E` on
-    /// it and abandoning the edit, which risks changing the query you
-    /// meant only to read.
-    fn copy_query_config(&mut self) {
-        let Some(Scope::Ads { tab, .. }) = self.scopes.get(self.active_scope) else {
-            self.note(
-                MsgCat::Warn,
-                "no query here to copy — this is the library".to_string(),
-            );
-            return;
-        };
-        let url = crate::ads::search_url(&tab.query, tab.limit, &tab.ads_sort);
-        self.finish_copy(&url);
     }
 
     /// `P` — take a query configuration off the clipboard and open it.
@@ -4048,6 +4063,8 @@ impl App {
         for k in keys {
             let Some(e) = self.lib.get(k) else { continue };
             let v = match item {
+                // a scope's property, not a paper's
+                CopyItem::QueryConfig => None,
                 CopyItem::Key => Some(if e.short_key.is_empty() {
                     e.key().to_string()
                 } else {
@@ -4093,40 +4110,105 @@ impl App {
         }
     }
 
-    fn do_copy(&mut self, item: CopyItem) {
-        self.exit_copy_mode();
+    /// What `item` would put on the clipboard right now, or why it
+    /// would not.
+    ///
+    /// The menu and the action both go through this, so an option can
+    /// only be offered when pressing it would actually copy something —
+    /// the two used to be a static string and a separate resolution, and
+    /// the menu offered "bibcode" for papers that have none and "this
+    /// query" on the library, where there is no query.
+    fn copy_text(&self, item: CopyItem) -> Result<String, String> {
+        if item == CopyItem::QueryConfig {
+            let Some(Scope::Ads { tab, .. }) = self.scopes.get(self.active_scope) else {
+                return Err("no query here to copy — this is the library".to_string());
+            };
+            return Ok(crate::ads::search_url(&tab.query, tab.limit, &tab.ads_sort));
+        }
         let multi_prose = matches!(item, CopyItem::Title | CopyItem::Abstract);
-        let text = if matches!(self.scopes.get(self.active_scope), Some(Scope::Ads { .. })) {
+        let nothing = || "nothing to copy".to_string();
+        if matches!(self.scopes.get(self.active_scope), Some(Scope::Ads { .. })) {
             let sel = self.selected_articles();
             if sel.len() > 1 {
                 if multi_prose {
-                    self.note(
-                        MsgCat::Warn,
-                        format!("no multi-item form for that ({} selected)", sel.len()),
-                    );
-                    return;
+                    return Err(format!("no multi-item form for that ({} selected)", sel.len()));
                 }
-                self.articles_copy_value(&sel, item)
-            } else if sel.len() == 1 {
-                self.article_value(sel[0], item)
+                return self.articles_copy_value(&sel, item).ok_or_else(nothing);
+            }
+            if sel.len() == 1 {
+                return self.article_value(sel[0], item).ok_or_else(nothing);
+            }
+            return self.article_copy_value(item).ok_or_else(nothing);
+        }
+        if multi_prose && self.select_mode && self.selected.len() > 1 {
+            return Err(format!(
+                "no multi-item form for that ({} selected)",
+                self.selected.len()
+            ));
+        }
+        self.copy_value(item).ok_or_else(nothing)
+    }
+
+    /// Whether the copy menu should offer `item` on the current screen.
+    fn copy_offered(&self, item: CopyItem) -> bool {
+        self.copy_text(item).is_ok()
+    }
+
+    /// The which-key line for the copy chord, listing only what this
+    /// screen can actually copy — no "this query" on the library, no
+    /// "bibcode" for a paper that has none.
+    fn copy_menu(&self, width: u16) -> String {
+        let offered: Vec<&(char, &str, &str, CopyItem)> =
+            COPY_CHORD.iter().filter(|(.., item)| self.copy_offered(*item)).collect();
+        if offered.is_empty() {
+            return "nothing here to copy · Esc cancel".to_string();
+        }
+        // shortening beats truncating: a cut-off menu hides options that
+        // are available, which is the failure this whole change is about
+        let render = |short: bool, tail: bool, sep: &str| {
+            let body = offered
+                .iter()
+                .map(|(k, long, s, _)| format!("{k} {}", if short { s } else { long }))
+                .collect::<Vec<_>>()
+                .join(sep);
+            if tail {
+                format!("{body}{sep}Esc cancel")
             } else {
-                self.article_copy_value(item)
+                body
             }
-        } else {
-            if multi_prose && self.select_mode && self.selected.len() > 1 {
-                self.note(
-                    MsgCat::Warn,
-                    format!("no multi-item form for that ({} selected)", self.selected.len()),
-                );
-                return;
-            }
-            self.copy_value(item)
         };
-        let Some(text) = text else {
-            self.note(MsgCat::Warn, "nothing to copy".to_string());
-            return;
+        // last resort, for a terminal too narrow for any of it: the keys
+        // alone. They still say what the chord accepts, and the card's
+        // copy column carries the meanings — colliding with the badges
+        // would say nothing at all.
+        let keys = || {
+            offered.iter().map(|(k, ..)| k.to_string()).collect::<Vec<_>>().join(" ")
         };
-        self.finish_copy(&text);
+        let fits = |s: &String| s.chars().count() <= width as usize;
+        // words before separators before labels: which key does what is
+        // the information here, and the dots are only comfort
+        [
+            render(false, true, " · "),
+            render(true, true, " · "),
+            render(true, false, " · "),
+            render(true, false, "  "),
+            keys(),
+        ]
+            .into_iter()
+            .find(fits)
+            .unwrap_or_else(|| {
+                let mut t: String = keys().chars().take(width.saturating_sub(1) as usize).collect();
+                t.push('…');
+                t
+            })
+    }
+
+    fn do_copy(&mut self, item: CopyItem) {
+        self.exit_copy_mode();
+        match self.copy_text(item) {
+            Ok(text) => self.finish_copy(&text),
+            Err(why) => self.note(MsgCat::Warn, why),
+        }
     }
 
     fn finish_copy(&mut self, text: &str) {
@@ -4366,20 +4448,8 @@ impl App {
             },
             Mode::Copy => {
                 let item = match code {
-                    KeyCode::Char('y') => Some(CopyItem::Key),
-                    KeyCode::Char('Y') => Some(CopyItem::FullKey),
-                    KeyCode::Char('b') => Some(CopyItem::Bibcode),
-                    KeyCode::Char('a') => Some(CopyItem::AdsUrl),
-                    KeyCode::Char('x') => Some(CopyItem::ArxivUrl),
-                    KeyCode::Char('d') => Some(CopyItem::DoiUrl),
-                    KeyCode::Char('p') => Some(CopyItem::PdfPath),
-                    KeyCode::Char('t') => Some(CopyItem::Title),
-                    KeyCode::Char('A') => Some(CopyItem::Abstract),
-                    // the query itself, not a paper in it
-                    KeyCode::Char('q') => {
-                        self.exit_copy_mode();
-                        self.copy_query_config();
-                        return;
+                    KeyCode::Char(c) => {
+                        COPY_CHORD.iter().find(|(k, ..)| *k == c).map(|(.., i)| *i)
                     }
                     _ => None,
                 };
@@ -6739,6 +6809,13 @@ impl App {
         if let Some(hint) = self.badge_hint(area) {
             self.hover_hint = Some(hint);
         }
+        // room left of the badges, which are drawn after this line and
+        // over it: whatever goes here has to fit in front of them
+        let free = self
+            .badge_layout(area)
+            .first()
+            .map(|(r, ..)| r.x.saturating_sub(area.x).saturating_sub(2))
+            .unwrap_or(area.width);
         // the prompt's control rect, published after the match: the arm
         // borrows self.mode, so it cannot write to self while building
         let mut sort_rect = Rect::default();
@@ -6867,7 +6944,8 @@ impl App {
             Mode::Copy => Line::from(vec![
                 Span::styled("copy: ", Style::default().fg(Color::Cyan)),
                 Span::styled(
-                    "y key · Y full key · b bibcode · a ADS · x arXiv · d DOI · p PDF path · t title · A abstract · q this query · Esc cancel",
+                    // "copy: " already spent six of them
+                    self.copy_menu(free.saturating_sub(6)),
                     Style::default().fg(Color::DarkGray),
                 ),
             ]),

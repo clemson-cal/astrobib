@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.13.1 — unreleased
+
+### Fixed
+- The copy chord offers only what the current screen can actually copy. The menu was a hand-written string and the resolution a separate `match`, so the two drifted apart: the library offered `q this query` where there is no query, and every paper was offered a bibcode, a DOI and a cached PDF path whether or not it had one — pressing those answered "nothing to copy". Both now come from one table filtered by the same function that performs the copy, so an option can be offered only when pressing it would copy something, and pressing a key for something absent says what is missing rather than "copy cancelled". The menu shares its line with the view badges, so as it grows it sheds the `Esc cancel` hint, then its separators, then its words — never an option, since hiding an available one is the defect being fixed.
+
 ## 0.13.0 — 2026-08-05
 
 ### Fixed
