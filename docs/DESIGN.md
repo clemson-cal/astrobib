@@ -67,11 +67,11 @@ Two orderings are involved and they are never interchangeable. The ADS `sort` pa
 
 A tag is a named collection — "the spiral-shock references for section 3", "disk instabilities" — and it lives in the database under version control, because a topical grouping is a statement about the literature that coauthors and group members benefit from.
 
-The format is a `tags/` directory beside `bib/`, one file per tag, named for the tag. Each line is one cite key; blank lines and `#` comments are ignored; lines are kept sorted.
+The format is a `tags/` directory beside `bib/`, one file per tag, named for the tag. Each line is one cite key; blank lines and whole-line `#` comments are ignored; lines are kept sorted. Nothing may follow a key on its line — a trailing comment would have to be stripped before the file could be handed to anyone, which is exactly the property the format is built to have. Dotfiles and subdirectories in `tags/` are not tags: `.DS_Store` lands in any directory a Finder window has visited, and a tag named for it is a worse outcome than an editor swap file going unread.
 
 - One file per tag, not one file holding all tags. `bib/` is one file per paper because that is what merges: two people adding papers never conflict. A single `tags.json` would be the one file everybody edits, and a conflicted JSON blob is a merge nobody wants to resolve by hand at the end of a semester. Sorted line-oriented files make merging two tags the operation git already performs on any text file.
 - One key per line, so the file *is* the citekey dump. Handing a collection to a colleague is `cat`, with no export path to write and nothing that can fall out of step with the reader.
-- A key that no longer resolves is skipped, never deleted. Cite keys denote papers for life, so a dangling line is far more likely to be a paper not yet imported than a mistake.
+- A key that no longer resolves is skipped, never deleted. Cite keys denote papers for life, so a dangling line is far more likely to be a paper not yet imported than a mistake. Skipped but counted: astrobib reports how many keys a tag file names that it cannot find, because a line that silently does nothing is indistinguishable from a typo. The count is information, not an error — the file is not wrong, it is ahead of the library.
 - A tag is a property of the database, not of the entry. Tags are not BibTeX fields, so copying an entry between tiers moves no tags — by construction rather than by rule, which is the stronger form: there is no code path that could forget.
 
 Both tiers may carry tags, and the merge rule is the opposite of the one entries use:

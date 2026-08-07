@@ -153,6 +153,7 @@ pub struct Library {
     entries: Vec<Entry>,
     by_key: HashMap<String, usize>,
     by_bibcode: HashMap<String, usize>,
+    tags: crate::tags::Tags,
 }
 
 impl Library {
@@ -177,6 +178,10 @@ impl Library {
         let mut lib = Library {
             root: root.to_path_buf(),
             entries,
+            // eagerly, beside the entries: tags/ is a handful of small
+            // files next to a directory we have just read in full, and
+            // loading it lazily would buy nothing but a second code path
+            tags: crate::tags::Tags::load(root),
             by_key: HashMap::new(),
             by_bibcode: HashMap::new(),
         };
@@ -232,6 +237,17 @@ impl Library {
 
     pub fn entries(&self) -> &[Entry] {
         &self.entries
+    }
+
+    pub fn tags(&self) -> &crate::tags::Tags {
+        &self.tags
+    }
+
+    /// Re-read tags/ alone. A tag file changing says nothing about the
+    /// entries, and re-parsing every .bib to notice one edited line is
+    /// the kind of cost that grows with the library.
+    pub fn reload_tags(&mut self) {
+        self.tags = crate::tags::Tags::load(&self.root);
     }
 
     pub fn get(&self, key: &str) -> Option<&Entry> {
@@ -326,8 +342,8 @@ impl Library {
 }
 
 /// Personal library merged with an optional manuscript database. The
-/// personal entry wins when a key exists in both; stars are personal
-/// and never written to the manuscript.
+/// personal entry wins when a key exists in both, because the two are
+/// copies of one record; tags are the exception and union instead.
 pub struct MergedLibrary {
     /// Tier 1: the global personal library.
     pub personal: Library,
@@ -379,6 +395,33 @@ impl MergedLibrary {
         self.personal
             .get(key)
             .or_else(|| self.manuscript.as_ref().and_then(|m| m.get(key)))
+    }
+
+    /// Merged tags: the union of the active tiers', name by name.
+    ///
+    /// The opposite rule to `get` above, and deliberately so. Two copies
+    /// of an entry are one record, so the first tier holding it wins.
+    /// Two tag files of the same name are two halves of one collection,
+    /// so first-tier-wins would silently drop the other half. The
+    /// two-tier switch gates them exactly as it gates entries: tags of a
+    /// hidden tier leave the union with it, or a filter would match rows
+    /// that are not on screen.
+    pub fn tags(&self) -> std::collections::BTreeMap<String, std::collections::BTreeSet<String>> {
+        let mut out = std::collections::BTreeMap::new();
+        if self.global_active() {
+            self.personal.tags().union_into(&mut out);
+        }
+        if let Some(ms) = &self.manuscript {
+            ms.tags().union_into(&mut out);
+        }
+        out
+    }
+
+    pub fn reload_tags(&mut self) {
+        self.personal.reload_tags();
+        if let Some(ms) = &mut self.manuscript {
+            ms.reload_tags();
+        }
     }
 
     pub fn resolve(&self, input: &str) -> Option<&Entry> {
@@ -644,6 +687,42 @@ mod tests {
     fn seed(root: &Path, key: &str, d: &Data) {
         let path = root.join("bib").join(format!("{key}.bib"));
         std::fs::write(path, crate::bib::format_entry(d)).unwrap();
+    }
+
+    #[test]
+    fn tags_union_across_tiers_and_follow_the_two_tier_switch() {
+        let p_root = temp_root("tags-personal");
+        let m_root = temp_root("tags-manuscript");
+        for root in [&p_root, &m_root] {
+            std::fs::create_dir_all(crate::tags::dir(root)).unwrap();
+        }
+        // the same tag in both tiers, plus one tag private to each
+        std::fs::write(crate::tags::dir(&p_root).join("disks"), "A2019aaaaa\nB2020bbbbb\n").unwrap();
+        std::fs::write(crate::tags::dir(&p_root).join("read-later"), "A2019aaaaa\n").unwrap();
+        std::fs::write(crate::tags::dir(&m_root).join("disks"), "C2021ccccc\n").unwrap();
+        std::fs::write(crate::tags::dir(&m_root).join("section-3"), "C2021ccccc\n").unwrap();
+        let mut lib = MergedLibrary {
+            personal: Library::load(&p_root).unwrap(),
+            manuscript: Some(Library::load(&m_root).unwrap()),
+            global_on: true,
+        };
+        let tags = lib.tags();
+        assert_eq!(
+            tags.keys().map(String::as_str).collect::<Vec<_>>(),
+            ["disks", "read-later", "section-3"]
+        );
+        // union, not shadow: the manuscript's `disks` did not replace
+        // the library's, which is where entry resolution would differ
+        assert_eq!(tags["disks"].len(), 3);
+        assert!(tags["disks"].contains("A2019aaaaa"));
+        assert!(tags["disks"].contains("C2021ccccc"));
+        // hiding the global tier takes its tags with it
+        lib.global_on = false;
+        let local = lib.tags();
+        assert_eq!(local.keys().map(String::as_str).collect::<Vec<_>>(), ["disks", "section-3"]);
+        assert_eq!(local["disks"].len(), 1);
+        let _ = std::fs::remove_dir_all(&p_root);
+        let _ = std::fs::remove_dir_all(&m_root);
     }
 
     #[test]

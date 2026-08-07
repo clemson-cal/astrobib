@@ -7,5 +7,6 @@ pub mod metrics;
 pub mod pdf;
 pub mod query;
 pub mod tabs;
+pub mod tags;
 pub mod text;
 pub mod tui;

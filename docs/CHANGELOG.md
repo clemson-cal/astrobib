@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### Added
+- Tags: an optional `tags/` directory beside `bib/`, one plain-text file per collection, one cite key per line, versioned with the database. This lands the format and the reading of it — the loader, the cross-tier merge, and the watching. Nothing assigns a tag yet; a tag file written by hand or pulled from a coauthor is already first-class, which is the half worth having first. Tags union across tiers rather than shadowing: a paper tagged `disk-instability` in the library and `section-3` in a manuscript is genuinely both, and the entry-resolution rule (first tier wins) would silently discard one of them.
+- A tag file that names keys the library does not have says so, as a count. Skipping them is the correct behaviour — a cite key denotes a paper for life, so a dangling line is usually a paper not yet imported — but skipping them *silently* makes a typo indistinguishable from a paper you have yet to fetch. Reported once per wording, not once per poll.
+
+### Changed
+- The personal library is watched for external changes, not just the manuscript. A `git pull` in the library repo, or `astrobib add` in another terminal, used to go unseen until the next launch: the watcher ran only when a manuscript was open, and only ever looked at the manuscript's `bib/`. Tag files are watched per file rather than by directory mtime, because appending a key to a file that already exists — the ordinary way a tag changes — never moves the directory's.
+
 ### Removed
 - The last traces of starring. The feature went in 0.5.0, but `astrobib_starred` stayed behind in `FIELD_ORDER` and in two strip-on-copy calls guarding against a field nothing has written since. No entry in the library carries it and no golden vector mentions it, so there was nothing left to guard. Its design rule went with it: "personal fields are stripped from manuscript copies" described a plural that one dead field could not support, and the real rule — no astrobib semantics in any BibTeX field — was already stated and is what keeps tags out of `.bib` files by construction.
 

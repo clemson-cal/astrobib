@@ -1,8 +1,8 @@
-//! Ratatui TUI: library table with live filter, pub card, star toggle.
+//! Ratatui TUI: library table with live filter and pub card.
 //!
 //! The current cut centers on browsing — instant startup, live filtering
-//! with the full query language, manuscript ● and star ★ indicators, a
-//! toggleable pub card, star toggling, and instant quit.
+//! with the full query language, manuscript ● indicators, a toggleable
+//! pub card, ADS search and import, and instant quit.
 
 use crate::library::{has_cached_pdf, MergedLibrary};
 use crate::pdf;
@@ -230,12 +230,26 @@ struct MsRow {
     title: String,
 }
 
-/// Mtime snapshot backing the manuscript auto-rescan: every scanned
-/// source file paired with its mtime, plus the bib/ directory's mtime.
-type MsWatch = (
-    Vec<(std::path::PathBuf, std::time::SystemTime)>,
-    Option<std::time::SystemTime>,
-);
+/// Mtime snapshot backing the auto-reload. Three independent parts,
+/// because each answers a different question and each triggers a
+/// different amount of work.
+#[derive(Default, PartialEq)]
+struct Watch {
+    /// Every scanned manuscript source (.tex/.md, expansions included)
+    /// with its mtime. An edit here rescans citations, nothing more.
+    srcs: Vec<(std::path::PathBuf, std::time::SystemTime)>,
+    /// The bib/ directory mtime of each tier, personal first. Directory
+    /// granularity: this sees .bib files appear, vanish and get renamed
+    /// — a `git pull`, a coauthor's hand-drop, `astrobib add` in another
+    /// terminal — but not one edited in place. Per-file mtimes would
+    /// catch that too, at a stat per entry per poll, which is a cost
+    /// that grows with the library for a case that barely happens.
+    bibs: Vec<Option<std::time::SystemTime>>,
+    /// Every tag file of every tier, with its own mtime. Per file here,
+    /// because appending a key to an existing file *is* the ordinary
+    /// way a tag changes and a directory mtime would sleep through it.
+    tags: Vec<(std::path::PathBuf, std::time::SystemTime)>,
+}
 
 impl Scope {
     fn kind(&self) -> ScopeKind {
@@ -1059,10 +1073,13 @@ struct App {
     confirm_btns: Vec<(Rect, bool)>, // (rect, is_confirm)
     // plain clicks on the same row within 400ms form a double-click
     last_click: Option<(std::time::Instant, usize, usize)>, // (t, scope, pos)
-    // silent manuscript auto-rescan: mtime snapshot of the scanned
-    // sources and bib/, compared every ~1.5 s
-    ms_watch: MsWatch,
-    ms_watch_at: std::time::Instant,
+    // silent auto-reload: mtime snapshot of the manuscript sources, of
+    // both tiers' bib/, and of every tag file, compared every ~1.5 s
+    watch: Watch,
+    watch_at: std::time::Instant,
+    // the last tag report, so a check that runs every 1.5 s says the
+    // same thing once rather than every poll
+    tags_said: Vec<String>,
     // user-state stores whose last write failed: the latch behind
     // state_write, so an unwritable state dir reports once per store
     write_failed: HashSet<&'static str>,
@@ -1300,8 +1317,9 @@ impl App {
             pick_area: Rect::default(),
             confirm_btns: vec![],
             last_click: None,
-            ms_watch: (vec![], None),
-            ms_watch_at: std::time::Instant::now(),
+            watch: Watch::default(),
+            watch_at: std::time::Instant::now(),
+            tags_said: vec![],
             write_failed: HashSet::new(),
             kill_ring: String::new(),
             sort_menu: false,
@@ -1603,60 +1621,137 @@ impl App {
             Some(s @ Scope::Manuscript { .. }) => *s = Scope::Manuscript { rows },
             _ => self.scopes.insert(1, Scope::Manuscript { rows }),
         }
-        self.ms_watch = self.ms_watch_snapshot();
+        self.watch = self.watch_snapshot();
     }
 
-    /// Mtime snapshot of everything the manuscript scan depends on:
-    /// every .tex/.md source (\input and embed expansion included) plus
-    /// the bib/ directory itself. refs.bib lives in the manuscript root
-    /// and is never a scanned source, so regenerating it cannot
+    /// Mtime snapshot of everything a session reads from disk but does
+    /// not own: the manuscript's scanned sources, both tiers' bib/, and
+    /// every tag file of both tiers. refs.bib lives in the manuscript
+    /// root and is never a scanned source, so regenerating it cannot
     /// re-trigger the watcher.
-    fn ms_watch_snapshot(&self) -> MsWatch {
-        let Some(root) = self.ms_root() else { return (vec![], None) };
-        let mut files = crate::export::manuscript_tex_files(&root);
-        files.extend(crate::export::manuscript_md_files(&root));
-        let srcs = files
+    fn watch_snapshot(&self) -> Watch {
+        let mut w = Watch::default();
+        let ms_root = self.ms_root();
+        if let Some(root) = &ms_root {
+            let mut files = crate::export::manuscript_tex_files(root);
+            files.extend(crate::export::manuscript_md_files(root));
+            w.srcs = files
+                .into_iter()
+                .filter_map(|f| {
+                    let m = std::fs::metadata(&f).and_then(|m| m.modified()).ok()?;
+                    Some((f, m))
+                })
+                .collect();
+        }
+        let roots = [Some(self.lib.personal.root.clone()), ms_root]
             .into_iter()
-            .filter_map(|f| {
-                let m = std::fs::metadata(&f).and_then(|m| m.modified()).ok()?;
-                Some((f, m))
-            })
-            .collect();
-        let bib = std::fs::metadata(root.join("bib"))
-            .and_then(|m| m.modified())
-            .ok();
-        (srcs, bib)
+            .flatten();
+        for root in roots {
+            w.bibs.push(
+                std::fs::metadata(root.join("bib"))
+                    .and_then(|m| m.modified())
+                    .ok(),
+            );
+            w.tags.extend(crate::tags::watch(&root));
+        }
+        w
     }
 
-    /// Silent auto-rescan on external changes.
-    /// Every ~1.5 s compare the mtime snapshot:
-    /// edited sources rescan the manuscript (refs.bib regenerates along
-    /// the way); a changed bib/ reloads the library tiers from disk.
-    /// Our own writes touch bib/ too, but every mutation path ends in
+    /// Silent auto-reload on external changes, every ~1.5 s.
+    ///
+    /// A changed bib/ reloads both tiers from disk; a changed tag file
+    /// re-reads only tags/, which is far cheaper and all that can have
+    /// changed; edited sources rescan the manuscript (refs.bib
+    /// regenerates along the way). Unlike the manuscript-only watcher
+    /// this replaced, it runs with no manuscript open, because the
+    /// personal library is now watched too: a `git pull` in the library
+    /// repo, or `astrobib add` in another terminal, used to go unseen
+    /// until restart.
+    ///
+    /// The new snapshot is adopted *before* acting on it. Our own writes
+    /// move these mtimes too, and every mutation path ends in
     /// rescan_manuscript or rebuild_order, which refresh the snapshot —
-    /// and a redundant reload would be harmless anyway.
-    fn poll_manuscript(&mut self) {
-        if self.lib.manuscript.is_none()
-            || self.ms_watch_at.elapsed() < Duration::from_millis(1500)
-        {
+    /// but adopting first is what makes a missed refresh cost one
+    /// redundant reload instead of a reload on every poll forever.
+    fn poll_external(&mut self) {
+        if self.watch_at.elapsed() < Duration::from_millis(1500) {
             return;
         }
-        self.ms_watch_at = std::time::Instant::now();
-        let now = self.ms_watch_snapshot();
-        if now == self.ms_watch {
+        self.watch_at = std::time::Instant::now();
+        let now = self.watch_snapshot();
+        if now == self.watch {
             return;
         }
-        if now.1 != self.ms_watch.1 {
+        let was = std::mem::replace(&mut self.watch, now);
+        if self.watch.bibs != was.bibs {
             self.reload_library(); // rebuild_order rescans the manuscript too
+            self.report_tags();
+        } else if self.watch.tags != was.tags {
+            self.lib.reload_tags();
+            self.report_tags();
         } else {
             self.rescan_manuscript();
         }
     }
 
-    /// Reload both tiers from disk after an external change to the
-    /// manuscript's bib/ (a coauthor's pull, a hand-dropped .bib, …),
-    /// preserving the two-tier switch and UI state; rebuild_order
-    /// re-derives everything display-side.
+    /// Say what a hand-edited tag file got wrong — and only that.
+    ///
+    /// A key that resolves to nothing is skipped by design: cite keys
+    /// denote papers for life, so a dangling line is far more likely to
+    /// be a paper not yet imported than a mistake, and deleting it would
+    /// be the destructive behaviour the format exists to avoid. But
+    /// skipping it silently means a typo just disappears, so the count
+    /// is reported — as information, not an error. Unreadable files are
+    /// a real failure and warn.
+    ///
+    /// Reported only when the wording changes: the watcher re-checks
+    /// every 1.5 s and a line per poll is unreadable. Same latch idea as
+    /// state_write, one store rather than many.
+    fn report_tags(&mut self) {
+        let mut msgs: Vec<(MsgCat, String)> = vec![];
+        let tiers = [Some(&self.lib.personal), self.lib.manuscript.as_ref()];
+        for lib in tiers.into_iter().flatten() {
+            for (file, why) in lib.tags().errors() {
+                msgs.push((MsgCat::Warn, format!("tags/{file} unreadable: {why}")));
+            }
+        }
+        let mut per: Vec<String> = vec![];
+        let mut total = 0usize;
+        for (name, keys) in self.lib.tags() {
+            let n = keys.iter().filter(|k| self.lib.get(k).is_none()).count();
+            if n > 0 {
+                total += n;
+                per.push(format!("{name}: {n}"));
+            }
+        }
+        if total > 0 {
+            // the footer shows one line, so name a few tags and count
+            // the rest rather than running off the end
+            const SHOWN: usize = 3;
+            let rest = per.len().saturating_sub(SHOWN);
+            per.truncate(SHOWN);
+            if rest > 0 {
+                per.push(format!("+{rest} more"));
+            }
+            msgs.push((
+                MsgCat::Info,
+                format!("tags: {total} key(s) not in the library ({})", per.join(", ")),
+            ));
+        }
+        let said: Vec<String> = msgs.iter().map(|(_, m)| m.clone()).collect();
+        if said == self.tags_said {
+            return;
+        }
+        self.tags_said = said;
+        for (cat, m) in msgs {
+            self.note(cat, m);
+        }
+    }
+
+    /// Reload both tiers from disk after an external change to either
+    /// bib/ (a git pull, a hand-dropped .bib, an add from another
+    /// terminal, …), preserving the two-tier switch and UI state;
+    /// rebuild_order re-derives everything display-side.
     fn reload_library(&mut self) {
         match MergedLibrary::load(self.ms_root().as_deref()) {
             Ok(mut lib) => {
@@ -1665,9 +1760,8 @@ impl App {
                 self.rebuild_order();
             }
             Err(e) => {
-                // keep the stale library; refresh the snapshot so a
-                // persistent error can't warn every poll
-                self.ms_watch = self.ms_watch_snapshot();
+                // keep the stale library; the snapshot was already
+                // adopted, so a persistent error can't warn every poll
                 self.note(MsgCat::Warn, format!("library reload failed: {e}"));
             }
         }
@@ -2617,6 +2711,11 @@ impl App {
         debug_layout(&format!("{:>6}ms first paint", t0.elapsed().as_millis()));
         self.rescan_manuscript();
         debug_layout(&format!("{:>6}ms rescan_manuscript done", t0.elapsed().as_millis()));
+        // rescan_manuscript refreshes the snapshot, but only when there
+        // is a manuscript; without this the first poll would find every
+        // watched path "changed" and reload a library nothing touched
+        self.watch = self.watch_snapshot();
+        self.report_tags();
         self.restore_tabs();
         debug_layout(&format!("{:>6}ms restore_tabs done", t0.elapsed().as_millis()));
         while !self.quit {
@@ -2625,7 +2724,7 @@ impl App {
             self.drain_update();
             self.drain_bib_preview();
             self.drain_citations();
-            self.poll_manuscript();
+            self.poll_external();
             terminal.draw(|f| self.draw(f))?;
             if let Some(ev) = pending.take() {
                 debug_layout(&format!("{:>6}ms pending {ev:?}", t0.elapsed().as_millis()));
@@ -3069,11 +3168,11 @@ impl App {
         });
         self.selected.retain(|k| lib.get(k).is_some());
         self.refilter();
-        if self.lib.manuscript.is_some() {
-            // our own writes touch bib/; refresh the watch snapshot so
-            // the auto-rescan poll doesn't bounce them back as a reload
-            self.ms_watch = self.ms_watch_snapshot();
-        }
+        // our own writes touch bib/; refresh the watch snapshot so the
+        // poll doesn't bounce them back as a reload. No longer gated on
+        // a manuscript existing: the personal bib/ is watched too, and
+        // that is the one every import writes to.
+        self.watch = self.watch_snapshot();
     }
 
     /// The active scope's sort, or None where its rows have an inherent
