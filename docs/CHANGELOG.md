@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+### Removed
+- The last traces of starring. The feature went in 0.5.0, but `astrobib_starred` stayed behind in `FIELD_ORDER` and in two strip-on-copy calls guarding against a field nothing has written since. No entry in the library carries it and no golden vector mentions it, so there was nothing left to guard. Its design rule went with it: "personal fields are stripped from manuscript copies" described a plural that one dead field could not support, and the real rule — no astrobib semantics in any BibTeX field — was already stated and is what keeps tags out of `.bib` files by construction.
+
 ## 0.15.0 — 2026-08-05
 
 ### Added

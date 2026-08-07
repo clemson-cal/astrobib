@@ -332,8 +332,8 @@ mod tests {
             to_ads_query("^andersson year:2019- OR kw:jets"),
             r#"(author:"^andersson" year:2019-) OR keyword:"jets""#
         );
-        assert_eq!(to_ads_query("is:starred ^andersson"), r#"author:"^andersson""#);
-        assert_eq!(to_ads_query("is:starred OR is:pdf"), "");
+        assert_eq!(to_ads_query("is:ms ^andersson"), r#"author:"^andersson""#);
+        assert_eq!(to_ads_query("is:ms OR is:pdf"), "");
         assert_eq!(to_ads_query(""), "");
         assert_eq!(to_ads_query(r#""gamma ray" OR jets"#), r#""gamma ray" OR jets"#);
     }

@@ -439,17 +439,13 @@ impl MergedLibrary {
         Ok(())
     }
 
-    /// Copy an entry into the manuscript db (personal fields stripped).
-    /// Returns false if there is no manuscript, the entry is unknown, or
-    /// it is already a member.
+    /// Copy an entry into the manuscript db. Returns false if there is
+    /// no manuscript, the entry is unknown, or it is already a member.
     pub fn add_to_manuscript(&mut self, key: &str) -> std::io::Result<bool> {
         let Some(entry) = self.get(key) else {
             return Ok(false);
         };
-        let mut data = entry.data.clone();
-        // the legacy personal star field never enters a shared
-        // manuscript db
-        data.shift_remove("astrobib_starred");
+        let data = entry.data.clone();
         let Some(ms) = &mut self.manuscript else {
             return Ok(false);
         };
@@ -461,11 +457,10 @@ impl MergedLibrary {
     }
 
     /// Refresh an entry's metadata under the same key in every tier that
-    /// holds it. The cite key and filename
-    /// never change; each copy keeps its own user-curated keywords; the
-    /// legacy personal star field never enters the manuscript copy. Not
-    /// gated by global_on: a refresh rewrites existing copies wherever
-    /// they live, so the tiers stay in agreement.
+    /// holds it. The cite key and filename never change; each copy keeps
+    /// its own user-curated keywords. Not gated by global_on: a refresh
+    /// rewrites existing copies wherever they live, so the tiers stay in
+    /// agreement.
     pub fn update_entry(&mut self, key: &str, data: &Data) -> std::io::Result<bool> {
         let mut any = false;
         if let Some(old) = self.personal.get(key).map(|e| e.data.clone()) {
@@ -477,7 +472,6 @@ impl MergedLibrary {
         if let Some(ms) = &mut self.manuscript {
             if let Some(old) = ms.get(key).map(|e| e.data.clone()) {
                 let mut d = refreshed_data(data, &old);
-                d.shift_remove("astrobib_starred");
                 d.insert("ID".to_string(), key.to_string());
                 ms.write_entry(key, d)?;
                 any = true;
@@ -684,7 +678,6 @@ mod tests {
             ("year", "2025"),
             ("title", "Published title"),
             ("keywords", "ads-keyword"),
-            ("astrobib_starred", "true"),
             ("ENTRYTYPE", "article"),
             ("ID", "WrongKey2025zzzzz"),
         ]);
@@ -699,9 +692,6 @@ mod tests {
         assert_eq!(me.key(), key);
         assert_eq!(me.title(), "Published title");
         assert_eq!(me.data["keywords"], "curated-manuscript");
-        // the legacy star field never enters the manuscript copy
-        assert!(me.data.get("astrobib_starred").is_none());
-        assert!(lib.personal.get(key).unwrap().data.get("astrobib_starred").is_some());
         // bibcode index follows the new adsurl in each tier
         assert!(lib.personal.get_by_bibcode("2025ApJ...999...1Z").is_some());
         assert!(lib.personal.get_by_bibcode("2024arXiv240512345Z").is_none());

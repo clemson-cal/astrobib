@@ -40,7 +40,6 @@ pub const FIELD_ORDER: &[&str] = &[
     "adsnote",
     "keywords",
     "abstract",
-    "astrobib_starred",
 ];
 
 /// Parse the first entry in a .bib file into the flat data map the rest of
