@@ -81,6 +81,10 @@ Both tiers may carry tags, and the merge rule is the opposite of the one entries
 - A new tag is written to the database you are pointed at: the local tier when one is active, the global library otherwise. Section groupings then live in the manuscript repo, which is the whole reason for versioning them.
 - Untagging removes the key from every active tier that lists it, and reports which. Removing from one tier only would leave the tag still visible, so the gesture would appear to do nothing.
 
+One gesture covers both directions, the same ± reading `m` uses for manuscript membership: adding, unless every selected paper already carries the tag, in which case it removes. The direction is therefore a property of the name being typed rather than of the keystroke that opened the prompt, so it is recomputed and shown as the name is typed — a prompt that decided at open time would be lying by the second character.
+
+Rewriting a tag file keeps its comment lines and moves them to the top. Sorting takes the keys out from under a comment written beside them anyway, so there is no position left to preserve; dropping the text entirely is the only outcome actually worth ruling out.
+
 ## What is user state, and what is not
 
 Anything the user curates that describes *the user* — saved queries, per-paper priority, which columns a view shows and how wide — is user-local app state under `~/.local/share/astrobib/`, never written into a bib database. The test is not whether the thing is a paper, because tags are not papers either and they are versioned with the database. The test is whether it describes the literature or your attention: priority is a fact about your week, a topic tag is a fact about the papers. Disposable derivatives (fetched PDFs, cached query results) live under `~/.cache/astrobib/`, which is always safe to delete wholesale.

@@ -355,11 +355,20 @@ fn query_context(lib: &MergedLibrary) -> QueryContext {
         .iter()
         .filter_map(|(k, m)| m.citations.map(|v| (k.clone(), v as f64)))
         .collect();
+    let mut tagged: HashMap<String, Vec<String>> = HashMap::new();
+    for (name, keys) in lib.tags() {
+        for k in keys {
+            tagged.entry(k).or_default().push(name.to_lowercase());
+        }
+    }
     QueryContext {
         in_manuscript: Some(Box::new(move |k: &str| in_ms.contains(k))),
         has_pdf: Some(Box::new(astrobib::library::has_cached_pdf)),
         priority: Some(Box::new(move |k: &str| pri.get(k).copied())),
         citations: Some(Box::new(move |k: &str| cit.get(k).copied())),
+        tagged: Some(Box::new(move |k: &str, v: &str| {
+            tagged.get(k).is_some_and(|ts| ts.iter().any(|t| t.contains(v)))
+        })),
     }
 }
 
@@ -822,6 +831,16 @@ fn tidy_bib_dir(
             });
         if !canonical && !entries.is_empty() {
             foreign.push((path, entries));
+        }
+    }
+    // tags/ is canonicalized on the same pass: sorted, deduped, comments
+    // kept. Never filtered against the library — a key naming a paper
+    // not yet imported is the format working, and tidy dropping curated
+    // lines is exactly what the design forbids.
+    if !dry_run {
+        let moved = astrobib::tags::tidy(root);
+        if !moved.is_empty() {
+            println!("Tidied tags/: {}", moved.join(", "));
         }
     }
     if foreign.is_empty() {

@@ -424,6 +424,70 @@ impl MergedLibrary {
         }
     }
 
+    /// True when any active tier tags this key.
+    pub fn has_tag(&self, name: &str, key: &str) -> bool {
+        let tier = |l: &Library| l.tags().get(name).is_some_and(|ks| ks.contains(key));
+        (self.global_active() && tier(&self.personal))
+            || self.manuscript.as_ref().is_some_and(tier)
+    }
+
+    /// The tier a new tag is written to: the local one when there is
+    /// one, else the global library. Section groupings then live in the
+    /// manuscript repo, which is the whole reason for versioning them.
+    fn tag_target(&mut self) -> &mut Library {
+        match &mut self.manuscript {
+            Some(ms) => ms,
+            None => &mut self.personal,
+        }
+    }
+
+    /// Add keys to a tag in the write target. Returns the tier's label
+    /// for the report, since which repo just gained a line is exactly
+    /// what the user needs to know before committing.
+    pub fn tag(&mut self, name: &str, keys: &[String]) -> std::io::Result<&'static str> {
+        let local = self.manuscript.is_some();
+        let target = self.tag_target();
+        let mut set = target.tags().get(name).cloned().unwrap_or_default();
+        set.extend(keys.iter().cloned());
+        let root = target.root.clone();
+        crate::tags::write(&root, name, &set)?;
+        target.reload_tags();
+        Ok(if local { "local db" } else { "library" })
+    }
+
+    /// Remove keys from the tag in *every* active tier that lists them,
+    /// and report which. Removing from one tier only would leave the tag
+    /// still showing, so the gesture would appear to do nothing.
+    pub fn untag(&mut self, name: &str, keys: &[String]) -> std::io::Result<Vec<&'static str>> {
+        /// Drop the keys from one tier's copy of the tag; true if that
+        /// tier held any of them.
+        fn strip(lib: &mut Library, name: &str, keys: &[String]) -> std::io::Result<bool> {
+            let Some(set) = lib.tags().get(name) else {
+                return Ok(false);
+            };
+            let mut set = set.clone();
+            // filter().count(), not any(): any() stops at the first hit
+            // and would leave the rest of a multi-paper untag in place
+            if keys.iter().filter(|k| set.remove(*k)).count() == 0 {
+                return Ok(false);
+            }
+            let root = lib.root.clone();
+            crate::tags::write(&root, name, &set)?;
+            lib.reload_tags();
+            Ok(true)
+        }
+        let mut touched = vec![];
+        if self.global_active() && strip(&mut self.personal, name, keys)? {
+            touched.push("library");
+        }
+        if let Some(ms) = &mut self.manuscript {
+            if strip(ms, name, keys)? {
+                touched.push("local db");
+            }
+        }
+        Ok(touched)
+    }
+
     pub fn resolve(&self, input: &str) -> Option<&Entry> {
         if let Some(e) = self.get(input) {
             return Some(e);

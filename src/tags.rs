@@ -97,6 +97,23 @@ impl Tags {
         self.tags.is_empty()
     }
 
+    pub fn get(&self, name: &str) -> Option<&BTreeSet<String>> {
+        self.tags.get(name)
+    }
+
+    pub fn names(&self) -> impl Iterator<Item = &str> {
+        self.tags.keys().map(String::as_str)
+    }
+
+    /// Every tag this key belongs to, sorted.
+    pub fn of(&self, key: &str) -> Vec<&str> {
+        self.tags
+            .iter()
+            .filter(|(_, keys)| keys.contains(key))
+            .map(|(name, _)| name.as_str())
+            .collect()
+    }
+
     /// Files that would not read, as (name, why).
     pub fn errors(&self) -> &[(String, String)] {
         &self.errors
@@ -113,6 +130,87 @@ impl Tags {
             out.entry(name.clone()).or_default().extend(keys.iter().cloned());
         }
     }
+}
+
+/// A tag name that cannot become a filename, or would escape tags/.
+/// Empty, `.`-leading (a dotfile is skipped on read, so writing one
+/// would create a tag that vanishes), or path-bearing.
+pub fn bad_name(name: &str) -> Option<&'static str> {
+    if name.is_empty() {
+        Some("a tag needs a name")
+    } else if name.starts_with('.') {
+        Some("a tag name cannot start with a dot — dotfiles are not read back")
+    } else if name.contains('/') || name.contains('\\') || name == ".." {
+        Some("a tag name is a filename, not a path")
+    } else {
+        None
+    }
+}
+
+/// The comment lines of an existing tag file, in the order they appear.
+fn comments(path: &Path) -> Vec<String> {
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return vec![];
+    };
+    text.lines()
+        .map(str::trim)
+        .filter(|l| l.starts_with('#'))
+        .map(str::to_string)
+        .collect()
+}
+
+/// Rewrite one tag file in canonical form: its comments first, in the
+/// order they were written, then one key per line, sorted and deduped.
+///
+/// Comments migrate to the top rather than staying beside the keys they
+/// were written near — sorting moves the keys out from under them
+/// anyway, and dropping the text entirely is the one outcome worth
+/// ruling out. Keys are never dropped for failing to resolve: whether a
+/// key names a paper is the library's question, and a line naming a
+/// paper not yet imported is the format working as intended.
+///
+/// A tag left with no keys and no comments is deleted rather than left
+/// as an empty file, since there is then nothing in it to lose.
+pub fn write(root: &Path, name: &str, keys: &BTreeSet<String>) -> std::io::Result<()> {
+    let path = dir(root).join(name);
+    let head = comments(&path);
+    if keys.is_empty() && head.is_empty() {
+        return match std::fs::remove_file(&path) {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            r => r,
+        };
+    }
+    std::fs::create_dir_all(dir(root))?;
+    let mut out = String::new();
+    for line in head {
+        out.push_str(&line);
+        out.push('\n');
+    }
+    for key in keys {
+        out.push_str(key);
+        out.push('\n');
+    }
+    std::fs::write(&path, out)
+}
+
+/// Rewrite every tag file in canonical form — `astrobib tidy`'s share
+/// of the format. Returns the tags whose file actually changed.
+pub fn tidy(root: &Path) -> Vec<String> {
+    let mut changed = vec![];
+    for path in files(root) {
+        let name = path.file_name().unwrap_or_default().to_string_lossy().to_string();
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let keys = parse(&text);
+        let before = text;
+        if write(root, &name, &keys).is_ok()
+            && std::fs::read_to_string(&path).map(|t| t != before).unwrap_or(false)
+        {
+            changed.push(name);
+        }
+    }
+    changed
 }
 
 #[cfg(test)]
@@ -192,6 +290,61 @@ mod tests {
         assert!(tags.errors().is_empty());
         assert!(watch(&root).is_empty());
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn write_sorts_and_dedupes_and_keeps_the_comments() {
+        let root = temp_root("write");
+        let path = dir(&root).join("section-3");
+        std::fs::write(&path, "# spiral shocks\nZrake2019abcde\n# and disks\n").unwrap();
+        let keys: BTreeSet<String> = ["Zrake2019abcde", "Andersson2024fghij", "Zrake2019abcde"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        write(&root, "section-3", &keys).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "# spiral shocks\n# and disks\nAndersson2024fghij\nZrake2019abcde\n"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn an_emptied_tag_goes_away_unless_it_still_says_something() {
+        let root = temp_root("empty");
+        let bare = dir(&root).join("bare");
+        let noted = dir(&root).join("noted");
+        std::fs::write(&bare, "Zrake2019abcde\n").unwrap();
+        std::fs::write(&noted, "# section 3 references\nZrake2019abcde\n").unwrap();
+        write(&root, "bare", &BTreeSet::new()).unwrap();
+        write(&root, "noted", &BTreeSet::new()).unwrap();
+        assert!(!bare.exists(), "an empty tag with nothing in it should go");
+        assert_eq!(std::fs::read_to_string(&noted).unwrap(), "# section 3 references\n");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn tidy_canonicalizes_and_reports_only_what_moved() {
+        let root = temp_root("tidy");
+        std::fs::write(dir(&root).join("messy"), "  Zrake2019abcde\nAndersson2024fghij\nZrake2019abcde\n").unwrap();
+        std::fs::write(dir(&root).join("clean"), "Andersson2024fghij\nZrake2019abcde\n").unwrap();
+        assert_eq!(tidy(&root), ["messy"]);
+        assert_eq!(
+            std::fs::read_to_string(dir(&root).join("messy")).unwrap(),
+            "Andersson2024fghij\nZrake2019abcde\n"
+        );
+        // a second pass is a no-op: the canonical form is a fixed point
+        assert!(tidy(&root).is_empty());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn names_that_cannot_round_trip_are_refused() {
+        assert!(bad_name("section-3").is_none());
+        assert!(bad_name("").is_some());
+        assert!(bad_name(".hidden").is_some());
+        assert!(bad_name("a/b").is_some());
+        assert!(bad_name("..").is_some());
     }
 
     /// The property the whole watching scheme rests on: an edit inside

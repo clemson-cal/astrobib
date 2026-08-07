@@ -32,7 +32,7 @@ astrobib import refs.bib     # resolve a foreign .bib against ADS
 astrobib always works on up to two libraries: a **local** bib directory (tier 2) and your **global** personal library (tier 1, at `~/.local/share/astrobib/library/`).
 `astrobib [LIBRARY_DIR]` points tier 2 at any directory holding `bib/`; with no argument, the nearest ancestor of the current directory with a `bib/` is used. A `.tex` or `.md` manuscript alongside activates citation tracking, but any bib directory works.
 With the global tier enabled (the default), reads merge both tiers and imports write to both — the paper repo stands alone for coauthors while your collection accrues. Press `t` (or click the `global` badge) to hide the global tier: reads and writes become purely local. Removing a local paper never destroys a sole copy — it is rescued into the global library.
-Both stores are plain `bib/*.bib` files, one paper per file, indistinguishable from hand-written BibTeX. Nothing else is ever written into your repos.
+Both stores are plain `bib/*.bib` files, one paper per file, indistinguishable from hand-written BibTeX. The only other thing astrobib ever writes into your repos is `tags/`, and only once you make a tag.
 
 ---
 ## TUI overview
@@ -43,6 +43,7 @@ Scope capsules at the top switch between your library, saved ADS query tabs, and
 - `j k g G` — move; `[` `]` — switch scope (`]` past the last one composes a new query); `ctrl+w` — close query scope; `r` — refresh; `+` `-` — result count
 - `Space` — select row (iOS-style selection mode); `a` — select visible; `A` — select all; Esc — done
 - `i` — import ADS result(s); `m` — toggle manuscript/local membership; `⌫` — remove (with confirmation)
+- `T` — tag ± the selection: type a name, `⏎` applies. It adds, unless every selected paper already carries that tag, in which case it untags — the prompt says which before you commit. With an empty name it lists the tags you have, so one is harder to mistype into existence
 - `p` — download PDFs (ADS open-access, then arXiv); `B` — browser download (watches ~/Downloads); `o` — open PDF; `X` — clear PDF; double-click a row — open its PDF
 - `y` — copy chord: `yy` cite key, `yY` full key, `yb` bibcode, `ya`/`yx`/`yd` ADS/arXiv/DOI URL, `yp` PDF path, `yt` title, `yA` abstract; card title/abstract/key are click-to-copy
 - `y q` — copy the active query's whole configuration: its text, its result count and what ADS returns, as an ADS search URL. `P` — open the query configuration on the clipboard (it says so if the clipboard holds something else). Both round-trip, so a query pasted to a colleague arrives as the query you sent
@@ -67,6 +68,7 @@ abs:"fast radio burst" phrase in abstract
 kw:"compact objects"   keyword
 year:2015-2020         ranges; year:2020- open-ended
 is:ms                  local/manuscript members;  is:pdf  cached PDFs
+tag:section-3          papers in a tag (substring; tags are yours, not ADS's)
 pri:>0.5  cit:>100    metric comparisons (> < or bare for ≥); no metric never matches
 -abs:neutrino          leading - negates (NOT works too)
 ^andersson OR ^baxter  uppercase OR separates alternatives; AND binds tighter
@@ -80,6 +82,13 @@ abs:"fast radio burst"                phrase in the abstract
 is:pdf pri:>0.5                       has a PDF, high priority
 kw:"compact objects" -abs:neutrino    keyword, and a negation
 ```
+
+---
+## Tags
+A tag is a named collection of papers — "the spiral-shock references for section 3" — and it lives in the database under version control, because a topical grouping is a statement about the literature that your coauthors benefit from.
+It is a `tags/` directory beside `bib/`, one plain-text file per tag, one cite key per line, sorted. The file *is* the citekey dump: handing a collection to a colleague is `cat tags/section-3`, with no export step that can fall out of step with it.
+`T` tags the selection, `tag:` filters on the result. Tags are written to the tier you are pointed at — the local db when there is one, so a section's references live in the manuscript repo, else your global library. Reads take the union of both tiers rather than letting one shadow the other: a paper tagged `disk-instability` in your library and `section-3` in a manuscript is genuinely both.
+Hand-written tag files are first-class, and a key naming a paper you have not imported yet is kept rather than dropped — astrobib only says how many it could not find. `astrobib tidy` sorts and dedupes them, keeping your comment lines.
 
 ---
 ## ADS queries

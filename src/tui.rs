@@ -86,6 +86,12 @@ enum Mode {
     /// derived from the query text and outlives edits to it: a name you
     /// typed is a decision, and re-deriving would quietly discard it.
     Rename { input: tui_input::Input },
+    /// T — name a tag to add to, or remove from, the papers in `keys`.
+    /// `remove` is decided when the prompt opens, not when it closes:
+    /// the ± reading is "every one of these already has it, so this is
+    /// an untag", and the prompt says which way it will go before ⏎.
+    /// It flips as you type, because the answer depends on the name.
+    Tag { input: tui_input::Input, keys: Vec<String>, remove: bool },
     /// y pressed — the next key picks what to copy (the Copy panel tab
     /// shows the menu, which-key style); Esc cancels.
     Copy,
@@ -136,6 +142,7 @@ impl RemovalKind {
 enum Action {
     Select,
     Manuscript,
+    Tag,
     Download,
     OpenPdf,
     ClearPdf,
@@ -730,6 +737,7 @@ const HELP_ENTRIES: &[(&str, &str, Option<Action>, KeyCode)] = &[
     ("j k", "move cursor", None, KeyCode::Char('j')),
     ("g G", "first / last row", None, KeyCode::Char('g')),
     ("m", "manuscript ± (selection)", Some(Action::Manuscript), KeyCode::Char('m')),
+    ("T", "tag ± (selection)", Some(Action::Tag), KeyCode::Char('T')),
     ("p", "download PDF", Some(Action::Download), KeyCode::Char('p')),
     ("B", "browser download", Some(Action::BrowserDl), KeyCode::Char('B')),
     ("o", "open PDF", Some(Action::OpenPdf), KeyCode::Char('o')),
@@ -2224,6 +2232,9 @@ impl App {
             Action::Manuscript => {
                 self.lib.manuscript.is_some() && self.lib.global_on && !keys.is_empty()
             }
+            // unlike the manuscript ±, tagging needs no local db: with
+            // none, the tag is written to the global library
+            Action::Tag => !keys.is_empty(),
             Action::Download => {
                 self.dl_rx.is_none()
                     && keys.iter().any(|k| {
@@ -2289,6 +2300,8 @@ impl App {
                 "browser download takes one paper at a time".to_string()
             }
             Action::BrowserDl => "no DOI, ADS URL, or arXiv ID to open".to_string(),
+            Action::Tag if unimported => import_first("a tag names a library cite key"),
+            Action::Tag => "no paper to tag".to_string(),
             Action::Remove if unimported => import_first("removal acts on the library entry"),
             Action::Remove => "no paper to remove".to_string(),
             Action::Copy => "nothing to copy".to_string(),
@@ -2323,6 +2336,7 @@ impl App {
                 }
             }
             Action::Manuscript => self.toggle_manuscript(),
+            Action::Tag => self.open_tag_prompt(),
             Action::Download => self.download_pdfs(),
             Action::OpenPdf => self.open_pdfs(),
             Action::ClearPdf => self.clear_pdfs(),
@@ -2429,6 +2443,76 @@ impl App {
             return;
         };
         self.mode = Mode::Rename { input: tui_input::Input::from(tab.label.clone()) };
+    }
+
+    /// T — name a tag for the selection (or the cursor entry).
+    fn open_tag_prompt(&mut self) {
+        let keys = self.action_keys();
+        if keys.is_empty() {
+            self.note(MsgCat::Warn, self.unavailable_reason(Action::Tag));
+            return;
+        }
+        self.mode = Mode::Tag { input: tui_input::Input::default(), keys, remove: false };
+        self.retarget_tag();
+    }
+
+    /// Decide which way ⏎ will go, from the name as it stands: an untag
+    /// only when every target already carries the tag. Same ± reading
+    /// as `m`, and recomputed on each keystroke because the answer is a
+    /// property of the name being typed.
+    fn retarget_tag(&mut self) {
+        let Mode::Tag { input, keys, .. } = &self.mode else { return };
+        let name = input.value().trim().to_string();
+        let all = !name.is_empty() && keys.iter().all(|k| self.lib.has_tag(&name, k));
+        if let Mode::Tag { remove, .. } = &mut self.mode {
+            *remove = all;
+        }
+    }
+
+    /// Apply the tag prompt. Adding writes to the tier astrobib is
+    /// pointed at; removing takes the key out of every active tier that
+    /// lists it, because leaving one behind would look like a no-op.
+    fn do_tag(&mut self, name: &str, keys: &[String], remove: bool) {
+        if let Some(why) = crate::tags::bad_name(name) {
+            self.note(MsgCat::Warn, why.to_string());
+            return;
+        }
+        let n = keys.len();
+        let papers = if n == 1 { "paper" } else { "papers" };
+        if remove {
+            match self.lib.untag(name, keys) {
+                Ok(tiers) if tiers.is_empty() => {
+                    self.note(MsgCat::Warn, format!("no {papers} here carry {name}"))
+                }
+                Ok(tiers) => self.note(
+                    MsgCat::Ok,
+                    format!("untagged {n} {papers} — {name} ({})", tiers.join(", ")),
+                ),
+                Err(e) => self.note(MsgCat::Err, format!("could not write tags/{name}: {e}")),
+            }
+        } else {
+            match self.lib.tag(name, keys) {
+                Ok(tier) => self.note(
+                    MsgCat::Ok,
+                    format!("tagged {n} {papers} — {name} ({tier})"),
+                ),
+                Err(e) => self.note(MsgCat::Err, format!("could not write tags/{name}: {e}")),
+            }
+        }
+        // the tag files just moved under the watcher's feet; adopt the
+        // new snapshot so the poll does not report our own write back
+        self.watch = self.watch_snapshot();
+        self.tags_said.clear();
+        self.report_tags();
+        self.refilter(); // a tag: filter in force must follow the change
+    }
+
+    /// The tags already in the database, for the band under the prompt.
+    /// Typing a fresh name is how a tag is born, so the list is an aid
+    /// rather than a constraint — but a tag mistyped into existence is
+    /// the failure worth designing against.
+    fn known_tags(&self) -> Vec<String> {
+        self.lib.tags().into_keys().collect()
     }
 
     fn open_export_prompt(&mut self) {
@@ -2999,11 +3083,28 @@ impl App {
         } else {
             Default::default()
         };
+        // key → its tags, snapshotted only when the filter asks: tag:
+        // is rare and refilter runs on every keystroke, same reasoning
+        // as the metrics above
+        let tagged: std::collections::HashMap<String, Vec<String>> = if wants(query::Field::Tag) {
+            let mut m: std::collections::HashMap<String, Vec<String>> = Default::default();
+            for (name, keys) in self.lib.tags() {
+                for k in keys {
+                    m.entry(k).or_default().push(name.to_lowercase());
+                }
+            }
+            m
+        } else {
+            Default::default()
+        };
         let ctx = QueryContext {
             in_manuscript: Some(Box::new(move |k: &str| in_ms.iter().any(|x| x == k))),
             has_pdf: Some(Box::new(|k: &str| has_cached_pdf(k))),
             priority: Some(Box::new(move |k: &str| pri.get(k).copied())),
             citations: Some(Box::new(move |k: &str| cit.get(k).copied())),
+            tagged: Some(Box::new(move |k: &str, v: &str| {
+                tagged.get(k).is_some_and(|ts| ts.iter().any(|t| t.contains(v)))
+            })),
         };
         // filter_map, not filter: a key the library no longer holds
         // simply drops out of the visible set — which also keeps every
@@ -3864,6 +3965,7 @@ impl App {
                 | Mode::Setup { .. }
                 | Mode::Export { .. }
                 | Mode::Rename { .. }
+                | Mode::Tag { .. }
         ) {
             self.mode = Mode::Normal;
         }
@@ -4435,6 +4537,7 @@ impl App {
             Mode::AdsPrompt { input, .. }
             | Mode::Setup { input, .. }
             | Mode::Export { input, .. }
+            | Mode::Tag { input, .. }
             | Mode::Rename { input } => Some(input),
             _ => None,
         }
@@ -4694,6 +4797,30 @@ impl App {
                     input.handle_event(&ev);
                 }
             },
+            Mode::Tag { input, keys, remove } => match code {
+                KeyCode::Esc => self.mode = Mode::Normal,
+                KeyCode::Enter => {
+                    let (name, keys, remove) =
+                        (input.value().trim().to_string(), keys.clone(), *remove);
+                    // the prompt owns the footer; close it first or the
+                    // confirmation is drawn over and never seen
+                    self.mode = Mode::Normal;
+                    if !name.is_empty() {
+                        self.do_tag(&name, &keys, remove);
+                    }
+                }
+                _ => {
+                    use tui_input::backend::crossterm::EventHandler;
+                    if let Some(req) = word_motion(code, mods) {
+                        input.handle(req);
+                    } else {
+                        let ev = Event::Key(ratatui::crossterm::event::KeyEvent::new(code, mods));
+                        input.handle_event(&ev);
+                    }
+                    // which way ⏎ goes depends on the name typed so far
+                    self.retarget_tag();
+                }
+            },
             Mode::Export { input, keys } => match code {
                 KeyCode::Esc => self.mode = Mode::Normal,
                 KeyCode::Enter => {
@@ -4823,6 +4950,7 @@ impl App {
                 KeyCode::Char('q') => self.run_action(Action::Quit),
                 KeyCode::Char('/') => self.run_action(Action::Filter),
                 KeyCode::Char('m') => self.run_action(Action::Manuscript),
+                KeyCode::Char('T') => self.run_action(Action::Tag),
                 KeyCode::Delete | KeyCode::Backspace => self.run_action(Action::Remove),
                 KeyCode::Char('p') => self.run_action(Action::Download),
                 KeyCode::Char('o') => self.run_action(Action::OpenPdf),
@@ -7219,6 +7347,44 @@ impl App {
                         "   ⏎ rename · Esc cancel",
                         Style::default().fg(Color::DarkGray),
                     ),
+                ])
+            }
+            Mode::Tag { ref input, ref keys, remove } => {
+                // ASCII +/-, paired: the true minus sign U+2212 would
+                // be one more glyph for the width audit to carry, for a
+                // character that sits beside an ASCII plus
+                let label = format!("tag {} {} ", keys.len(), if remove { "-" } else { "+" });
+                let prefix = label.chars().count() as u16;
+                // the tail names what pressing ⏎ will do, since ± is
+                // decided from the name and can flip mid-word; when the
+                // name is still empty it offers the tags that exist,
+                // which is what stops one being mistyped into being
+                let tail = if input.value().trim().is_empty() {
+                    let known = self.known_tags();
+                    if known.is_empty() {
+                        "   ⏎ create · Esc cancel".to_string()
+                    } else {
+                        format!("   {}", known.join(" · "))
+                    }
+                } else if remove {
+                    "   ⏎ untag · Esc cancel".to_string()
+                } else {
+                    "   ⏎ tag · Esc cancel".to_string()
+                };
+                let avail = area.width.saturating_sub(prefix + tail.chars().count() as u16) as usize;
+                let scroll = input.visual_scroll(avail.max(10));
+                let shown: String = input.value().chars().skip(scroll).collect();
+                f.set_cursor_position((
+                    area.x + prefix + (input.visual_cursor().saturating_sub(scroll)) as u16,
+                    area.y,
+                ));
+                Line::from(vec![
+                    Span::styled(
+                        label,
+                        Style::default().fg(if remove { Color::Yellow } else { Color::Cyan }),
+                    ),
+                    Span::raw(shown),
+                    Span::styled(tail, Style::default().fg(Color::DarkGray)),
                 ])
             }
             Mode::Export { ref input, ref keys } => {

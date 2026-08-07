@@ -575,6 +575,39 @@ fn tidy_leaves_a_canonical_bib_dir_alone() {
     assert!(read(ms.join("refs.bib")).contains("@article{Andersson2021pombz,"));
 }
 
+/// tidy owns tags/ too: sorted, deduped, comments kept — and a key it
+/// cannot resolve stays, because the whole point of the format is that
+/// a line naming a paper you have not imported yet is legitimate.
+#[test]
+fn tidy_canonicalizes_tag_files_without_dropping_unknown_keys() {
+    let sb = Sandbox::new("tidy-tags");
+    let ms = sb.ms("paper");
+    write(ms.join("main.tex"), "\\citep{Andersson2021pombz}\n");
+    std::fs::copy(
+        sb.bib_dir().join("Andersson2021pombz.bib"),
+        ms.join("bib/Andersson2021pombz.bib"),
+    )
+    .unwrap();
+    std::fs::create_dir_all(ms.join("tags")).unwrap();
+    write(
+        ms.join("tags/section-3"),
+        "# the spiral-shock references\nZrake2019notyet\nAndersson2021pombz\nZrake2019notyet\n",
+    );
+
+    let r = sb.run_in(&ms, &["tidy"]);
+    assert!(r.ok(), "{}", r.report());
+    assert!(r.stdout.contains("Tidied tags/: section-3"), "{}", r.report());
+    assert_eq!(
+        read(ms.join("tags/section-3")),
+        "# the spiral-shock references\nAndersson2021pombz\nZrake2019notyet\n",
+    );
+
+    // idempotent: a second pass has nothing to say
+    let r = sb.run_in(&ms, &["tidy"]);
+    assert!(r.ok(), "{}", r.report());
+    assert!(!r.stdout.contains("Tidied tags/"), "{}", r.report());
+}
+
 #[test]
 fn tidy_canonicalizes_a_foreign_file_without_ads_when_the_key_is_reproducible() {
     let sb = Sandbox::new("tidy-foreign");

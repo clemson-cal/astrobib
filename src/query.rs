@@ -28,6 +28,7 @@ pub enum Field {
     Is,
     Pri,
     Cit,
+    Tag,
 }
 
 fn canon_field(name: &str) -> Option<Field> {
@@ -41,6 +42,7 @@ fn canon_field(name: &str) -> Option<Field> {
         "is" => Field::Is,
         "pri" | "priority" => Field::Pri,
         "cit" | "cites" | "citations" => Field::Cit,
+        "tag" | "tags" => Field::Tag,
         _ => return None,
     })
 }
@@ -120,6 +122,8 @@ pub struct QueryContext {
     pub has_pdf: Option<Box<dyn Fn(&str) -> bool>>,
     pub priority: Option<Box<dyn Fn(&str) -> Option<f64>>>,
     pub citations: Option<Box<dyn Fn(&str) -> Option<f64>>>,
+    /// (key, tag substring) — true when the key carries a matching tag.
+    pub tagged: Option<Box<dyn Fn(&str, &str) -> bool>>,
 }
 
 /// pri:>0.5 / cit:<100 — a comparison against a metric; a missing
@@ -168,6 +172,7 @@ fn term_matches(term: &Term, e: &Entry, ctx: &QueryContext) -> bool {
         Some(Field::Cit) => {
             metric_matches(&term.value, ctx.citations.as_ref().and_then(|f| f(e.key())))
         }
+        Some(Field::Tag) => ctx.tagged.as_ref().is_some_and(|f| f(e.key(), &v)),
         None => doc.all.contains(&v),
     };
     hit != term.neg
@@ -184,8 +189,11 @@ pub fn matches(groups: &[Vec<Term>], e: &Entry, ctx: &QueryContext) -> bool {
 }
 
 /// Translate a local filter string into an ADS search query: drops
-/// is:/key:/negations, quotes field values, maps kw: to keyword:,
-/// parenthesizes multi-term OR-groups.
+/// is:/key:/tag:/negations, quotes field values, maps kw: to keyword:,
+/// parenthesizes multi-term OR-groups. tag: goes with is: rather than
+/// with kw:: a tag is astrobib's own grouping of your library, and ADS
+/// has never heard of it — sending it as a keyword would silently
+/// return the wrong papers rather than nothing.
 pub fn to_ads_query(text: &str) -> String {
     let mut groups: Vec<Vec<String>> = vec![];
     for group in tokenize(text) {
@@ -194,7 +202,11 @@ pub fn to_ads_query(text: &str) -> String {
             if t.neg
                 || matches!(
                     t.field,
-                    Some(Field::Is) | Some(Field::Key) | Some(Field::Pri) | Some(Field::Cit)
+                    Some(Field::Is)
+                        | Some(Field::Key)
+                        | Some(Field::Pri)
+                        | Some(Field::Cit)
+                        | Some(Field::Tag)
                 )
                 || t.value.is_empty()
             {
@@ -259,6 +271,24 @@ mod tests {
             .filter(|(_, e)| matches(&g, e, &ctx))
             .map(|(n, _)| n)
             .collect()
+    }
+
+    #[test]
+    fn tag_terms_need_a_context_and_match_by_substring() {
+        let e = entry("Andersson", "Andersson, K.", "relativistic turbulence", "2019");
+        let key = e.key().to_string();
+        let ctx = QueryContext {
+            tagged: Some(Box::new(move |k: &str, v: &str| {
+                k == key && "section-3".contains(v)
+            })),
+            ..Default::default()
+        };
+        assert!(matches(&tokenize("tag:section-3"), &e, &ctx));
+        assert!(matches(&tokenize("tag:section"), &e, &ctx)); // substring, like kw:
+        assert!(!matches(&tokenize("tag:disks"), &e, &ctx));
+        assert!(matches(&tokenize("-tag:disks"), &e, &ctx));
+        // no context at all: the term matches nothing rather than erroring
+        assert!(!matches(&tokenize("tag:section-3"), &e, &QueryContext::default()));
     }
 
     #[test]
@@ -334,6 +364,10 @@ mod tests {
         );
         assert_eq!(to_ads_query("is:ms ^andersson"), r#"author:"^andersson""#);
         assert_eq!(to_ads_query("is:ms OR is:pdf"), "");
+        // a tag is astrobib's own grouping; ADS must not be sent it as
+        // a keyword, which would answer with the wrong papers
+        assert_eq!(to_ads_query("tag:section-3 ^andersson"), r#"author:"^andersson""#);
+        assert_eq!(to_ads_query("tag:section-3"), "");
         assert_eq!(to_ads_query(""), "");
         assert_eq!(to_ads_query(r#""gamma ray" OR jets"#), r#""gamma ray" OR jets"#);
     }
