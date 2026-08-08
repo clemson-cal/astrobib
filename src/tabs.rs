@@ -134,7 +134,7 @@ pub fn save(tabs: &[Tab], ms_root: Option<&Path>) -> std::io::Result<()> {
         std::fs::create_dir_all(dir)?;
     }
     let doc = serde_json::json!({ "contexts": contexts });
-    std::fs::write(file, serde_json::to_string_pretty(&doc).unwrap_or_default())
+    crate::library::write_atomic(&file, &serde_json::to_string_pretty(&doc).unwrap_or_default())
 }
 
 /// Readable tab label: drop field names, quotes, and operator wrapping,

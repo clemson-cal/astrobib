@@ -88,7 +88,10 @@ pub fn save_state_value(key: &str, value: serde_json::Value) -> std::io::Result<
         .and_then(|s| serde_json::from_str(&s).ok())
         .unwrap_or_else(|| serde_json::json!({ "version": 1 }));
     v[key] = value;
-    std::fs::write(&path, serde_json::to_string_pretty(&v)? + "\n")
+    // the mutex above orders this process's writers against each other;
+    // the temp-and-rename is what keeps a crash, or another process,
+    // from leaving a half-written state.json behind
+    crate::library::write_atomic(&path, &(serde_json::to_string_pretty(&v)? + "\n"))
 }
 
 /// Any structured field from state.json.

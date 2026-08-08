@@ -125,7 +125,8 @@ impl Metrics {
                 return false;
             }
         }
-        match std::fs::write(&path, serde_json::to_string_pretty(&v).unwrap_or_default() + "\n") {
+        let text = serde_json::to_string_pretty(&v).unwrap_or_default() + "\n";
+        match crate::library::write_atomic(&path, &text) {
             Ok(()) => {
                 self.dirty = false;
                 self.error = None;

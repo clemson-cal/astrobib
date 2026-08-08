@@ -890,6 +890,24 @@ fn config_reports_the_resolved_environment_and_saves_fields() {
     );
 }
 
+#[test]
+fn saving_a_field_replaces_state_json_whole_and_leaves_no_scratch_file() {
+    let sb = Sandbox::new("state-atomic");
+    assert!(sb.run(&["config", "ads_token", "seekrit"]).ok());
+    assert!(sb.run(&["config", "email", "jane@example.edu"]).ok());
+    // read-modify-write: the second save keeps the first field
+    assert_eq!(sb.state_json()["ads_token"], "seekrit");
+    assert_eq!(sb.state_json()["email"], "jane@example.edu");
+    // the write goes through a temp file and a rename, and the temp
+    // file is never what a later run finds instead of state.json
+    let names: Vec<String> = std::fs::read_dir(&sb.state)
+        .unwrap()
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(names, ["state.json"], "the state dir holds a leftover scratch file");
+}
+
 // ── gc ──────────────────────────────────────────────────────────────
 
 /// A sandbox with something in every cache: two PDFs, a query cache at

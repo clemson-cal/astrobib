@@ -735,6 +735,41 @@ pub fn shellexpand_home(p: &str) -> String {
     p.to_string()
 }
 
+/// Replace a file's contents in one indivisible step: write a sibling
+/// temp file, flush it to disk, then rename over the target. A rename
+/// within a directory is atomic, so a crash leaves either the whole old
+/// file or the whole new one, never a half-written one.
+///
+/// The user-state files (state.json, tabs.json, metrics.json) are
+/// written this way because a truncate-then-write is at its most
+/// destructive exactly where they are read: a state file that fails to
+/// parse is treated as absent and rewritten from scratch, so a ⌃c
+/// landing mid-write would not read as damage at the next launch — it
+/// would read as no token, or no saved queries. Cache files under
+/// ~/.cache are re-fetchable and do not need this.
+///
+/// The temp name carries the pid, since two astrobib processes can be
+/// saving the same file at once and must not share a scratch file. The
+/// sync matters as much as the rename: without it the directory entry
+/// can reach disk ahead of the bytes it names.
+pub fn write_atomic(path: &Path, contents: &str) -> std::io::Result<()> {
+    use std::io::Write;
+    let mut name = path.file_name().unwrap_or_default().to_os_string();
+    name.push(format!(".tmp.{}", std::process::id()));
+    let tmp = path.with_file_name(name);
+    let result = (|| {
+        let mut f = std::fs::File::create(&tmp)?;
+        f.write_all(contents.as_bytes())?;
+        f.sync_all()?;
+        std::fs::rename(&tmp, path)
+    })();
+    if result.is_err() {
+        // an aborted write leaves no litter in the state dir
+        let _ = std::fs::remove_file(&tmp);
+    }
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -862,5 +897,56 @@ mod tests {
         assert!(!lib.update_entry("Nobody2020aaaaa", &published).unwrap());
         let _ = std::fs::remove_dir_all(&p_root);
         let _ = std::fs::remove_dir_all(&m_root);
+    }
+
+    fn temp_dir(tag: &str) -> PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("astrobib-atomic-test-{}-{tag}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn names_in(dir: &Path) -> Vec<String> {
+        let mut v: Vec<String> = std::fs::read_dir(dir)
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+        v.sort();
+        v
+    }
+
+    #[test]
+    fn an_atomic_write_replaces_the_file_and_leaves_no_scratch_behind() {
+        let dir = temp_dir("write");
+        let path = dir.join("state.json");
+        write_atomic(&path, "{\n  \"ads_token\": \"first\"\n}\n").unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "{\n  \"ads_token\": \"first\"\n}\n");
+        // rewriting is a replacement, not an append, and the shorter
+        // second write must not leave a tail of the first behind
+        write_atomic(&path, "{\n  \"x\": 1\n}\n").unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "{\n  \"x\": 1\n}\n");
+        // a state dir that accumulates scratch files is a state dir in
+        // which nothing says which file is the real one
+        assert_eq!(names_in(&dir), ["state.json"]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_write_that_cannot_finish_keeps_the_old_file_and_cleans_up() {
+        let dir = temp_dir("fail");
+        let path = dir.join("tabs.json");
+        write_atomic(&path, "saved queries\n").unwrap();
+        // a directory in the target's place: the rename is what fails,
+        // so this exercises the late cleanup path, after the scratch
+        // file has already been written and synced
+        let blocked = dir.join("blocked");
+        std::fs::create_dir(&blocked).unwrap();
+        assert!(write_atomic(&blocked, "never lands\n").is_err());
+        assert_eq!(names_in(&dir), ["blocked", "tabs.json"]);
+        // the write that did succeed is untouched by the one that did not
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "saved queries\n");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
