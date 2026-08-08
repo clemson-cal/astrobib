@@ -4,4 +4,6 @@
 __pycache__/
 tests/tui/.venv/
 astrobib-export.bib
+# a tags/ written by running the binary from the repo root, not the format
+/tags/
 .claude/

@@ -68,6 +68,7 @@ abs:"fast radio burst" phrase in abstract
 kw:"compact objects"   keyword
 year:2015-2020         ranges; year:2020- open-ended
 is:ms                  local/manuscript members;  is:pdf  cached PDFs
+is:tagged              carries at least one tag;  -is:tagged  carries none
 tag:section-3          papers in a tag (substring; tags are yours, not ADS's)
 pri:>0.5  cit:>100    metric comparisons (> < or bare for ≥); no metric never matches
 -abs:neutrino          leading - negates (NOT works too)
@@ -87,7 +88,7 @@ kw:"compact objects" -abs:neutrino    keyword, and a negation
 ## Tags
 A tag is a named collection of papers — "the spiral-shock references for section 3" — and it lives in the database under version control, because a topical grouping is a statement about the literature that your coauthors benefit from.
 It is a `tags/` directory beside `bib/`, one plain-text file per tag, one cite key per line, sorted. The file *is* the citekey dump: handing a collection to a colleague is `cat tags/section-3`, with no export step that can fall out of step with it.
-`T` tags the selection, `tag:` filters on the result. Tags are written to the tier you are pointed at — the local db when there is one, so a section's references live in the manuscript repo, else your global library. Reads take the union of both tiers rather than letting one shadow the other: a paper tagged `disk-instability` in your library and `section-3` in a manuscript is genuinely both.
+`T` tags the selection, `tag:` filters on the result. The pub card names the tags each paper carries, and clicking one filters the library to it — following a grouping is a click, not a thing to retype. Tags are written to the tier you are pointed at — the local db when there is one, so a section's references live in the manuscript repo, else your global library. Reads take the union of both tiers rather than letting one shadow the other: a paper tagged `disk-instability` in your library and `section-3` in a manuscript is genuinely both.
 Hand-written tag files are first-class, and a key naming a paper you have not imported yet is kept rather than dropped — astrobib only says how many it could not find. `astrobib tidy` sorts and dedupes them, keeping your comment lines.
 
 ---
@@ -138,8 +139,9 @@ Migrating a manuscript that predates astrobib works the same way: in a directory
 
 ---
 ## CLI
-`list`, `search [--ads]`, `add <bibcode|ADS URL>`, `show <key>`, `rm <key> [--local-only]` (sole copies rescued), `import <file.bib> [--global-only|--local-only]`, `refs [FILE] [--prune|--no-sync|--check] [--dry-run]`, `tidy [--dry-run]`, `convert bibcode|full|short` (uniform cite keys, rewritten in your sources), `update [--all]` (arXiv → published refresh, same key forever), `config [ads_token|email <value>]` (show or set the environment), `gc` (report what the machine-local caches cost), plus `--library PATH` (relocate the global tier) and `--no-global`.
+`list`, `search [--ads]`, `add <bibcode|ADS URL>`, `show <key>`, `rm <key> [--local-only]` (sole copies rescued), `import <file.bib> [--global-only|--local-only] [--cited-only]`, `refs [FILE] [--prune|--no-sync|--check] [--dry-run]`, `tidy [--dry-run]`, `convert bibcode|full|short` (uniform cite keys, rewritten in your sources), `update [--all]` (arXiv → published refresh, same key forever), `config [ads_token|email <value>]` (show or set the environment, including how much of the day's ADS allowance the token has spent), `gc` (report what the machine-local caches cost), plus `--library PATH` (relocate the global tier) and `--no-global`.
 `import` resolves each entry against ADS (arXiv ID → DOI → exact title+author+year) unless its cite key is already reproducible from its own data — canonical astrobib entries import byte-identically — and prints copy-pasteable key replacements for your `.tex` files.
+`import --cited-only` takes just the entries your manuscript cites and leaves the rest of the file alone — the sane way to accept a coauthor's `refs.bib` when it is really their whole collection. Cites are read from your `.tex`/`.md` sources and matched against the file's own keys (full key, unambiguous prefix, or bibcode), before anything is sent to ADS.
 
 ---
 See [docs/DESIGN.md](docs/DESIGN.md) for the data-format contract. Bugs and feature requests: [github.com/clemson-cal/astrobib/issues](https://github.com/clemson-cal/astrobib/issues).

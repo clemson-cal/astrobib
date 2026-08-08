@@ -59,6 +59,10 @@ struct CardModel {
     pdf: Option<Vec<(&'static str, CardBtn, Color)>>,
     /// Whether a non-empty PDF status row is followed by a blank one.
     status_gap: bool,
+    /// The user's own tags for this paper, sorted. Empty when it has
+    /// none, and for a query result with no imported twin — tags name
+    /// cite keys, so a paper outside the library cannot carry any.
+    tags: Vec<String>,
     /// Footer keywords line (library entries only).
     keywords: String,
     /// The cite key as styled runs: real short key + dim hash suffix, or
@@ -180,6 +184,7 @@ impl App {
             copies,
             pdf: Some(buttons),
             status_gap: true,
+            tags: self.lib.tags_of(key),
             keywords: e.keywords().join(" · "),
             key_runs,
             key_affix,
@@ -297,6 +302,7 @@ impl App {
             copies,
             pdf,
             status_gap: true,
+            tags: lib_key.as_deref().map(|k| self.lib.tags_of(k)).unwrap_or_default(),
             keywords: String::new(),
             key_runs: vec![(hyp_key, Style::default().fg(Color::Cyan))],
             key_affix: Some(if in_lib {
@@ -323,7 +329,8 @@ impl App {
     /// line, the wheel-scrollable abstract, a rule, the two-column action
     /// block (links + ⌕ queries left, ⧉ copies right), a rule, the PDF
     /// button pills, the PDF status row, the footer (keywords, cite key,
-    /// manuscript chip / import affordance), and the pinned view toggler.
+    /// manuscript chip / import affordance). The card ⇄ bib toggler is
+    /// the footer's; this only says which side of it is active.
     /// Text is pre-wrapped so every row's click rect is exact.
     fn draw_card(&mut self, f: &mut Frame, area: Rect, m: CardModel) {
         let hv = self.hover;
@@ -350,13 +357,9 @@ impl App {
 
         let x0 = area.x + 3; // 3 cells of inset; the tint is the edge
         let w = area.width.saturating_sub(5) as usize;
-        // The view toggler is pinned to the card's last row, so the body
-        // stops one above it. Without that reservation a long keyword
-        // line simply drew over the toggler — invisible until the card
-        // was tall enough for the body to reach the bottom, which the
-        // log and keys panes used to prevent by shortening the card.
-        let card_bottom = area.y + area.height;
-        let bottom = card_bottom.saturating_sub(1);
+        // the body stops one row short of the pane: the blank last row is
+        // this surface's bottom inset, the way every panel here keeps one
+        let bottom = (area.y + area.height).saturating_sub(1);
         let mut y = area.y + 1;
         let line_at = |f: &mut Frame, y: u16, line: Line| {
             if y < bottom {
@@ -537,6 +540,58 @@ impl App {
         }
 
         // ── footer ───────────────────────────────────────────────────
+        // The user's own tags come before the record's own keywords: they
+        // are what this library says about the paper, which is the part
+        // you put there. Each name is a link to its own tag: filter, so
+        // they are laid out one at a time rather than joined and wrapped
+        // — a click rect has to know where its name starts. A hanging
+        // indent keeps the wrapped names clear of the label.
+        if !m.tags.is_empty() {
+            let label = "tags  ";
+            let iw = label.chars().count() as u16;
+            let right = x0 + w as u16;
+            let mut spans: Vec<Span> = vec![Span::styled(label, dim)];
+            let mut tx = x0 + iw;
+            // a tag name is only a filename, so it can be longer than the
+            // card is wide: those are shown cut, and still filter by the
+            // whole name when clicked
+            let avail = right.saturating_sub(x0 + iw);
+            for (i, name) in m.tags.iter().enumerate() {
+                let shown: String = if name.chars().count() as u16 > avail {
+                    name.chars().take(avail.saturating_sub(1) as usize).chain(['…']).collect()
+                } else {
+                    name.clone()
+                };
+                let nw = shown.chars().count() as u16;
+                if i > 0 {
+                    if tx + 3 + nw > right {
+                        line_at(f, y, Line::from(std::mem::take(&mut spans)));
+                        y += 1;
+                        tx = x0 + iw;
+                        spans.push(Span::raw(" ".repeat(iw as usize)));
+                    } else {
+                        spans.push(Span::styled(" · ", dim));
+                        tx += 3;
+                    }
+                }
+                let r = Rect { x: tx, y, width: nw, height: 1 };
+                let hovt = hit(r, hv.0, hv.1);
+                if y < bottom {
+                    self.card_tags.push((r, name.clone()));
+                }
+                if hovt {
+                    self.hover_hint = Some(tag_hint(name));
+                }
+                let style = Style::default().fg(Color::Cyan);
+                spans.push(Span::styled(
+                    shown,
+                    if hovt { style.add_modifier(Modifier::UNDERLINED) } else { style },
+                ));
+                tx += nw;
+            }
+            line_at(f, y, Line::from(spans));
+            y += 2;
+        }
         if !m.keywords.is_empty() {
             for l in wrap_text(&m.keywords, w) {
                 line_at(f, y, Line::from(Span::styled(l, dim)));
@@ -605,7 +660,8 @@ impl App {
             None => line_at(f, y, Line::from(spans)),
         }
         self.card_yanks = yanks;
-        self.draw_card_toggle(f, x0, w as u16, card_bottom, false);
+        // the footer draws the card ⇄ bib toggler for us, on the formatted side
+        self.card_toggle = Some(false);
     }
 
     /// The card for the highlighted ADS query result. Its `v` view is its
@@ -615,6 +671,7 @@ impl App {
     fn draw_article_card(&mut self, f: &mut Frame, area: Rect) {
         self.card_buttons.clear();
         self.card_links.clear();
+        self.card_tags.clear();
         let Some(Scope::Ads { articles, .. }) = self.scopes.get(self.active_scope) else {
             self.card_yanks.clear();
             return;

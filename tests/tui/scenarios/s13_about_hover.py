@@ -18,10 +18,11 @@ DESCRIPTION = "@ modal suppresses hover on covered surfaces"
 URL = "https://github.com/clemson-cal/astrobib/issues"
 
 COLS, ROWS = 100, 40
-# draw_about geometry at 100x40: w = min(52, 96) = 52 centered,
-# h = 17 centered (no update-status line).
-X0, X1 = 24, 76
-Y0, Y1 = 11, 28
+# draw_about geometry at 100x40: w = min(58, 96) = 58 centered, and
+# h = 19 + one ADS-use row (no calls recorded here) = 20, centered,
+# with no update-status line.
+X0, X1 = 21, 79
+Y0, Y1 = 10, 30
 
 
 def cell(t, x, y):

@@ -49,6 +49,30 @@ def _pre_launch(state_dir):
 PRE_LAUNCH = _pre_launch
 
 
+# Each option's two renderings, long then short, from COPY_CHORD. The
+# menu sheds words before it sheds options — that is the behaviour under
+# test — so which one appears depends on how much of the footer the view
+# badges and the card ⇄ bib toggler beside them have left it.
+_LABELS = {
+    "y": ("key", "key"),
+    "Y": ("full key", "full"),
+    "b": ("bibcode", "bib"),
+    "a": ("ADS", "ADS"),
+    "x": ("arXiv", "arXiv"),
+    "d": ("DOI", "DOI"),
+    "p": ("PDF path", "PDF"),
+    "t": ("title", "title"),
+    "A": ("abstract", "abs"),
+    "q": ("this query", "query"),
+}
+
+
+def _offers(line, key):
+    """Is this option on the menu, under either of its renderings?"""
+    long_, short = _LABELS[key]
+    return f"{key} {long_}" in line or f"{key} {short}" in line
+
+
 def _menu(t):
     footer = len(t.lines()) - 1
     t.send("y")
@@ -80,33 +104,29 @@ def run(t):
     # the library has no query, so it must not offer to copy one
     lib = _menu(t)
     require(
-        "this query" not in lib,
+        not _offers(lib, "q"),
         f"the library should not offer to copy a query: {lib!r}",
         t,
     )
     # what it does have is offered: the fixture carries an ADS URL and an
     # arXiv id, and every entry has a cite key
-    for shown in ("y key", "Y full key", "a ADS", "x arXiv", "t title", "A abstract"):
-        require(shown in lib, f"the library should offer {shown!r}: {lib!r}", t)
+    for key in ("y", "Y", "a", "x", "t", "A"):
+        require(_offers(lib, key), f"the library should offer {key!r}: {lib!r}", t)
     # …and what it does not have is not: no fixture has a DOI or a cached
     # PDF, and these are arXiv preprints with no journal bibcode of their
     # own in the file
-    require("p PDF path" not in lib, f"no PDF is cached in the fixtures: {lib!r}", t)
-    require("d DOI" not in lib, f"no fixture carries a DOI: {lib!r}", t)
+    require(not _offers(lib, "p"), f"no PDF is cached in the fixtures: {lib!r}", t)
+    require(not _offers(lib, "d"), f"no fixture carries a DOI: {lib!r}", t)
     _close_menu(t)
 
     # a query scope has one, so there it is offered
     t.send("]")
     t.wait_for("A cached result about magnetars", what="the restored query's rows")
     q = _menu(t)
-    require(
-        "q this query" in q,
-        f"a query scope should offer to copy its query: {q!r}",
-        t,
-    )
+    require(_offers(q, "q"), f"a query scope should offer to copy its query: {q!r}", t)
     # the cached article has a bibcode but no DOI, and the menu says so
-    require("b bibcode" in q, f"the query result has a bibcode: {q!r}", t)
-    require("d DOI" not in q, f"the query result has no DOI: {q!r}", t)
+    require(_offers(q, "b"), f"the query result has a bibcode: {q!r}", t)
+    require(not _offers(q, "d"), f"the query result has no DOI: {q!r}", t)
     _close_menu(t)
 
     # the badges share this line and are drawn over it, so the menu has

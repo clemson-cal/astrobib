@@ -417,6 +417,22 @@ impl MergedLibrary {
         out
     }
 
+    /// Every tag the active tiers give this key, sorted and deduped —
+    /// the union, for the reason `tags` above unions: a paper tagged in
+    /// both tiers is genuinely tagged by both.
+    pub fn tags_of(&self, key: &str) -> Vec<String> {
+        let mut out: Vec<String> = vec![];
+        if self.global_active() {
+            out.extend(self.personal.tags().of(key).into_iter().map(str::to_string));
+        }
+        if let Some(ms) = &self.manuscript {
+            out.extend(ms.tags().of(key).into_iter().map(str::to_string));
+        }
+        out.sort();
+        out.dedup();
+        out
+    }
+
     pub fn reload_tags(&mut self) {
         self.personal.reload_tags();
         if let Some(ms) = &mut self.manuscript {

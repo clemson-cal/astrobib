@@ -396,6 +396,114 @@ fn rm_local_only_rescues_a_sole_copy_into_the_global_tier() {
     assert!(r.stderr.contains("needs a local"), "{}", r.report());
 }
 
+// ── import ──────────────────────────────────────────────────────────
+
+#[test]
+fn import_cited_only_leaves_out_what_the_manuscript_never_cites() {
+    let sb = Sandbox::new("import-cited");
+    let ms = sb.ms("paper");
+    // a coauthor's whole collection: four papers, of which this
+    // manuscript cites three — by full key, by prefix, by bibcode
+    let (full, full_data) = variant(
+        "Delacroix2018jdgxd.bib",
+        &[
+            ("eprint", "1806.12121"),
+            ("title", "{Cited by its full key}"),
+            ("adsurl", "https://ui.adsabs.harvard.edu/abs/2018ApJ...860...12D"),
+        ],
+    );
+    let (prefixed, prefixed_data) = variant(
+        "Ekwueme2023ophaj.bib",
+        &[
+            ("eprint", "2303.13131"),
+            ("title", "{Cited by a prefix of its key}"),
+            ("adsurl", "https://ui.adsabs.harvard.edu/abs/2023ApJ...700...13E"),
+        ],
+    );
+    let (by_bibcode, bibcode_data) = variant(
+        "Baxter2019equxm.bib",
+        &[
+            ("eprint", "1904.15151"),
+            ("title", "{Cited by its bibcode}"),
+            ("adsurl", "https://ui.adsabs.harvard.edu/abs/2019ApJ...880...15B"),
+        ],
+    );
+    let (never, never_data) = variant(
+        "Cabrera2024txuze.bib",
+        &[
+            ("eprint", "2402.14141"),
+            ("title", "{Never cited anywhere}"),
+            ("adsurl", "https://ui.adsabs.harvard.edu/abs/2024ApJ...960...14C"),
+        ],
+    );
+    write(
+        ms.join("from-coauthor.bib"),
+        &format!(
+            "{}\n{}\n{}\n{}",
+            bib::format_entry(&full_data),
+            bib::format_entry(&prefixed_data),
+            bib::format_entry(&bibcode_data),
+            bib::format_entry(&never_data),
+        ),
+    );
+    let prefix = &prefixed[..prefixed.len() - 5];
+    write(
+        ms.join("main.tex"),
+        &format!("\\citep{{{full}, 2019ApJ...880...15B}} and \\citet{{{prefix}}}\n"),
+    );
+
+    let r = sb.run_in(&ms, &["import", "from-coauthor.bib", "--cited-only"]);
+    assert!(r.ok(), "{}", r.report());
+    assert!(r.stdout.contains("3 cites scanned"), "{}", r.report());
+    assert!(r.stdout.contains("3 imported"), "{}", r.report());
+    assert!(r.stdout.contains("1 entry left out"), "{}", r.report());
+    // both tiers, since a manuscript is open and no tier flag was given
+    assert!(ms.join(format!("bib/{full}.bib")).exists(), "{}", r.report());
+    assert!(ms.join(format!("bib/{by_bibcode}.bib")).exists(), "{}", r.report());
+    assert!(sb.bib_dir().join(format!("{prefixed}.bib")).exists(), "{}", r.report());
+    // the uncited entry is untouched in either tier
+    assert!(!ms.join(format!("bib/{never}.bib")).exists(), "{}", r.report());
+    assert!(!sb.bib_dir().join(format!("{never}.bib")).exists(), "{}", r.report());
+
+    // without the flag the same file brings the whole collection in
+    let r = sb.run_in(&ms, &["import", "from-coauthor.bib"]);
+    assert!(r.ok(), "{}", r.report());
+    assert!(r.stdout.contains("1 imported"), "{}", r.report());
+    assert!(r.stdout.contains("3 skipped"), "{}", r.report());
+    assert!(!r.stdout.contains("left out"), "{}", r.report());
+    assert!(ms.join(format!("bib/{never}.bib")).exists(), "{}", r.report());
+}
+
+#[test]
+fn import_cited_only_refuses_when_there_is_nothing_to_match_against() {
+    let sb = Sandbox::new("import-cited-errors");
+    let (_key, data) = variant(
+        "Delacroix2018jdgxd.bib",
+        &[
+            ("eprint", "1806.16161"),
+            ("title", "{A foreign reference}"),
+            ("adsurl", "https://ui.adsabs.harvard.edu/abs/2018ApJ...860...16D"),
+        ],
+    );
+
+    // no bib/ to walk up to: nothing here is a manuscript
+    let plain = sb.dir("loose");
+    write(plain.join("refs.bib"), &bib::format_entry(&data));
+    let r = sb.run_in(&plain, &["import", "refs.bib", "--cited-only"]);
+    assert_eq!(r.code(), 1, "{}", r.report());
+    assert!(r.has("needs a manuscript directory"), "{}", r.report());
+
+    // a manuscript db with no .tex or .md: every entry would be left
+    // out, and a silent no-op is indistinguishable from a foreign file
+    // that shares nothing with the paper
+    let ms = sb.ms("paper");
+    write(ms.join("refs.bib"), &bib::format_entry(&data));
+    let r = sb.run_in(&ms, &["import", "refs.bib", "--cited-only"]);
+    assert_eq!(r.code(), 1, "{}", r.report());
+    assert!(r.has("nothing to match cites against"), "{}", r.report());
+    assert_eq!(std::fs::read_dir(ms.join("bib")).unwrap().count(), 0, "{}", r.report());
+}
+
 // ── refs ────────────────────────────────────────────────────────────
 
 #[test]

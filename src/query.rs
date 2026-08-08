@@ -145,6 +145,24 @@ fn metric_matches(spec: &str, actual: Option<f64>) -> bool {
     }
 }
 
+/// The `is:` property that reads "has at least one tag". Named once,
+/// because two places have to agree on it: the one that answers it and
+/// the one that decides whether to build the tag snapshot it needs.
+pub const IS_TAGGED: &str = "tagged";
+
+/// Whether these groups need the caller's tag snapshot.
+///
+/// `tag:` asks for it by field and `is:tagged` by value, so a caller
+/// that only looked at the field would hand `is:tagged` an empty map —
+/// and an empty map answers "nothing is tagged" rather than erroring,
+/// which is the kind of wrong that looks like a working filter.
+pub fn needs_tags(groups: &[Vec<Term>]) -> bool {
+    groups.iter().flatten().any(|t| {
+        t.field == Some(Field::Tag)
+            || (t.field == Some(Field::Is) && t.value.eq_ignore_ascii_case(IS_TAGGED))
+    })
+}
+
 fn term_matches(term: &Term, e: &Entry, ctx: &QueryContext) -> bool {
     let doc = e.search_doc();
     let v = term.value.to_lowercase();
@@ -164,6 +182,10 @@ fn term_matches(term: &Term, e: &Entry, ctx: &QueryContext) -> bool {
         Some(Field::Is) => match v.as_str() {
             "ms" => ctx.in_manuscript.as_ref().is_some_and(|f| f(e.key())),
             "pdf" => ctx.has_pdf.as_ref().is_some_and(|f| f(e.key())),
+            // "does it carry any tag at all", which is what asking for
+            // the empty substring means: every name contains it, and a
+            // paper with no tags is not in the snapshot to be asked
+            IS_TAGGED => ctx.tagged.as_ref().is_some_and(|f| f(e.key(), "")),
             _ => false,
         },
         Some(Field::Pri) => {
@@ -289,6 +311,40 @@ mod tests {
         assert!(matches(&tokenize("-tag:disks"), &e, &ctx));
         // no context at all: the term matches nothing rather than erroring
         assert!(!matches(&tokenize("tag:section-3"), &e, &QueryContext::default()));
+    }
+
+    /// `is:tagged` asks whether a paper carries any tag at all — the
+    /// question `tag:` cannot put, since every value it takes names one.
+    #[test]
+    fn is_tagged_asks_for_any_tag() {
+        let tagged = entry("Andersson", "Andersson, K.", "relativistic turbulence", "2019");
+        let bare = entry("Baxter", "Baxter, R.", "kilonovae", "2017");
+        let key = tagged.key().to_string();
+        let ctx = QueryContext {
+            // the snapshot's shape: only tagged keys are in it, and a
+            // name contains the empty string the way any string does
+            tagged: Some(Box::new(move |k: &str, v: &str| k == key && "section-3".contains(v))),
+            ..Default::default()
+        };
+        assert!(matches(&tokenize("is:tagged"), &tagged, &ctx));
+        assert!(!matches(&tokenize("is:tagged"), &bare, &ctx));
+        assert!(!matches(&tokenize("-is:tagged"), &tagged, &ctx));
+        assert!(matches(&tokenize("-is:tagged"), &bare, &ctx));
+        // an unknown property still matches nothing, rather than everything
+        assert!(!matches(&tokenize("is:tagd"), &tagged, &ctx));
+    }
+
+    /// The snapshot `is:tagged` reads has to be built for it, and the
+    /// field alone does not say so — this is what stops it silently
+    /// answering "nothing is tagged".
+    #[test]
+    fn both_spellings_ask_for_the_tag_snapshot() {
+        assert!(needs_tags(&tokenize("tag:section-3")));
+        assert!(needs_tags(&tokenize("is:tagged")));
+        assert!(needs_tags(&tokenize("-is:TAGGED")));
+        assert!(needs_tags(&tokenize("year:2020- is:pdf is:tagged")));
+        assert!(!needs_tags(&tokenize("is:pdf year:2020-")));
+        assert!(!needs_tags(&tokenize("tagged")));
     }
 
     #[test]

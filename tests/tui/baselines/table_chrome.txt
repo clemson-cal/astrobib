@@ -34,7 +34,7 @@
 
 
 
-                                                                                                                            ▤ card │ @ bib
+
 
 ## library w=140 nocard
    ↓ ● Year ▼ Author                  Title                                                                             Key
@@ -110,7 +110,7 @@
 
 
 
-                                                                                                                            ▤ card │ @ bib
+
 
 ## query w=140 card
    ↓ ● Year ▼ Entered    Author          Title                          Key                    Cachette, Zylstra · 2020
@@ -148,7 +148,7 @@
 
 
 
-                                                                                                                            ▤ card │ @ bib
+
 
 ## library w=110 card
    ↓ ● Year ▼ Author         Title        Key
@@ -186,7 +186,7 @@
 
 
 
-                                                                                              ▤ card │ @ bib
+
 
 ## library w=110 nocard
    ↓ ● Year ▼ Author             Title                                                    Key
@@ -262,7 +262,7 @@
 
 
 
-                                                                                              ▤ card │ @ bib
+
 
 ## query w=110 card
    ↓ ● Year ▼ Entered    Author         Title Key                Cachette, Zylstra · 2020
@@ -300,7 +300,7 @@
 
 
 
-                                                                                              ▤ card │ @ bib
+
 
 ## library w=84 card
    ↓ ● Year ▼ Author         Title Key     Cabrera, Okafor · 2024
@@ -337,7 +337,7 @@
 
 
 
-                                                                    ▤ card │ @ bib
+
 
 ## library w=84 nocard
    ↓ ● Year ▼ Author         Title
@@ -412,7 +412,7 @@
 
 
 
-                                                                    ▤ card │ @ bib
+
 
 ## query w=84 card
    ↓ ● Year ▼ Entered    Author            TestJ 1, 1
@@ -449,7 +449,7 @@
 
 
 
-                                                                    ▤ card │ @ bib
+
 
 ## library w=64 card
    ↓ ● Year ▼ Author         Title Key     merger remnants
@@ -486,7 +486,7 @@
 
                                            Cabrera2024txuze
                                             ◇ add to manuscrip
-                                                ▤ card │ @ bib
+
 
 ## library w=64 nocard
    ↓ ● Year ▼ Author         Title
@@ -561,7 +561,7 @@
 
                                            Andersson2021pombz
                                             ◇ add to manuscrip
-                                                ▤ card │ @ bib
+
 
 ## query w=64 card
    ↓ ● Year ▼ Entered    Author            Cachette, Zylstra ·
@@ -598,7 +598,7 @@
 
 
 
-                                                ▤ card │ @ bib
+
 
 ## library sort=title asc
    ↓ ● Year   Author          Title ▲                                   Key
@@ -636,7 +636,7 @@
 
 
 
-                                                                                                                            ▤ card │ @ bib
+
 
 ## library sort=title desc
    ↓ ● Year   Author          Title ▼                                   Key
@@ -674,7 +674,7 @@
 
 
 
-                                                                                                                            ▤ card │ @ bib
+
 
 ## library sort=year
    ↓ ● Year ▼ Author          Title                                     Key
@@ -712,5 +712,5 @@
 
 
 
-                                                                                                                            ▤ card │ @ bib
+
 

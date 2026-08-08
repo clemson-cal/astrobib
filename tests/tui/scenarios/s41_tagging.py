@@ -1,5 +1,6 @@
 """T tags the selection and untags it again — the same ± reading as m —
-writing a plain-text file the filter can then select on with tag:."""
+writing a plain-text file the filter can then select on with tag:, or
+with is:tagged for the coarser question of whether a paper carries any."""
 
 import os
 
@@ -26,6 +27,27 @@ def run(t):
     first = open(path).read().strip()
     require(first.endswith("bz") or first, f"one cite key per line, got {first!r}", t)
     require(len(first.splitlines()) == 1, f"expected one line, got {first!r}", t)
+    # the pub card names the tags this paper carries
+    t.wait_for(lambda: "tags  section-3" in t.text(), what="the tag on the pub card")
+
+    # …and each name is a link to its own filter: it underlines under the
+    # pointer, the way every other clickable thing on the card does, and
+    # clicking it replaces the filter rather than narrowing it
+    row = next(i for i, ln in enumerate(t.lines()) if ln.strip().startswith("tags  "))
+    col = t.lines()[row].index("tags  ") + len("tags  ")
+    t.hover(col, row)
+    t.wait_for(
+        lambda: t.screen.buffer[row][col].underscore,
+        what="the tag to underline under the pointer",
+    )
+    t.click(col, row)
+    t.wait_for(
+        lambda: "filtered to tag:section-3" in t.text(),
+        what="the click to apply the tag as the filter",
+    )
+    require("1/5" in t.text(), f"one of five papers is tagged: {t.lines()[-1]!r}", t)
+    t.key("esc")  # back to the unfiltered library for the rest of this run
+    t.wait_for(lambda: "5/5" in t.text(), what="the filter to clear")
 
     # a second paper joins the same tag, and the file stays sorted
     t.send("j")
@@ -55,6 +77,19 @@ def run(t):
     t.send("-tag:section-3")
     t.key("enter")
     t.wait_for(lambda: "3/5" in t.text(), what="negation to show the other 3")
+    # is:tagged asks the question tag: cannot put — carries any tag at all
+    t.send("/")
+    for _ in range(len("-tag:section-3")):
+        t.key("backspace")
+    t.send("is:tagged")
+    t.key("enter")
+    t.wait_for(lambda: "2/5" in t.text(), what="is:tagged to show the tagged two")
+    t.send("/")
+    for _ in range(len("is:tagged")):
+        t.key("backspace")
+    t.send("-is:tagged")
+    t.key("enter")
+    t.wait_for(lambda: "3/5" in t.text(), what="-is:tagged to show the untagged three")
 
     # ± : the cursor paper already carries it, so T offers to untag
     t.send("/")
@@ -73,4 +108,9 @@ def run(t):
     t.wait_for(
         lambda: len(open(path).read().split()) == 1,
         what="one key left in tags/section-3",
+    )
+    # …and the card stops naming it for the paper it was taken from
+    t.wait_for(
+        lambda: "tags  section-3" not in t.text(),
+        what="the tag leaving the pub card",
     )

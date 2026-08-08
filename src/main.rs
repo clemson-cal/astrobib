@@ -87,6 +87,10 @@ enum Command {
         /// Write only to the local (tier-2) library
         #[arg(long)]
         local_only: bool,
+        /// Import only the entries this manuscript cites, skipping the
+        /// rest untouched (needs a manuscript with .tex/.md sources)
+        #[arg(long)]
+        cited_only: bool,
     },
     /// Canonicalize hand-dropped .bib files in the manuscript's bib/
     /// (re-key, rename, dedupe), then regenerate refs.bib
@@ -224,8 +228,8 @@ fn main() -> anyhow::Result<()> {
             println!("Added {display}  ({key})");
             Ok(())
         }
-        Some(Command::Import { file, global_only, local_only }) => {
-            import_bib(&mut lib, &file, global_only, local_only)
+        Some(Command::Import { file, global_only, local_only, cited_only }) => {
+            import_bib(&mut lib, &file, ms_root.as_deref(), global_only, local_only, cited_only)
         }
         Some(Command::Tidy { dry_run }) => {
             match ms_root.clone() {
@@ -458,8 +462,8 @@ fn run_update(lib: &mut MergedLibrary, all: bool) -> anyhow::Result<()> {
     if failed > 0 {
         summary.push_str(&format!(" · {failed} failed"));
     }
-    if let Some(q) = ads::get_quota() {
-        summary.push_str(&format!("  · ADS quota {}/{}", q.remaining, q.limit));
+    if let Some(use_) = ads::quota_summary() {
+        summary.push_str(&format!("  · ADS use today {use_}"));
     }
     println!("{summary}");
     Ok(())
@@ -577,8 +581,17 @@ fn run_config(lib: &MergedLibrary, ms_root: Option<&std::path::Path>, via_flag: 
         "email            {}",
         astrobib::ads::get_email().unwrap_or_else(|| "not set".to_string())
     );
-    if let Some(q) = astrobib::ads::get_quota() {
-        println!("ADS quota        {}/{} remaining", q.remaining, q.limit);
+    // ADS meters each endpoint on its own daily allowance, so the lines
+    // are per endpoint. The figures are whatever the last call to each
+    // one reported — no request is made to produce this report.
+    let quotas = astrobib::ads::quotas();
+    if quotas.is_empty() {
+        println!("ADS API use      no calls recorded yet");
+    } else {
+        for (i, (endpoint, q)) in quotas.iter().enumerate() {
+            let label = if i == 0 { "ADS API use" } else { "" };
+            println!("{label:<16} {endpoint:<9}{}", q.describe());
+        }
     }
     let cache = astrobib::library::pdf_cache_dir();
     let (n, bytes) = dir_usage(&cache);
@@ -1246,11 +1259,14 @@ fn run_refs(
 /// bibdata and import directly; everything else resolves against ADS
 /// (arXiv ID → DOI → exact title+author+year, which must be unique).
 /// Already-present entries are kept; renames print as perl one-liners.
+/// With `cited_only`, the manuscript's own cites decide what comes in.
 fn import_bib(
     lib: &mut MergedLibrary,
     file: &std::path::Path,
+    ms_root: Option<&std::path::Path>,
     global_only: bool,
     local_only: bool,
+    cited_only: bool,
 ) -> anyhow::Result<()> {
     let text = std::fs::read_to_string(file)?;
     let entries = astrobib::bib::parse_entries(&text);
@@ -1258,16 +1274,65 @@ fn import_bib(
         println!("No entries found in file.");
         return Ok(());
     }
+    // A coauthor's refs.bib is usually their whole collection rather
+    // than this paper's bibliography, so the manuscript's cites are the
+    // only statement of which part of it belongs here. The filter runs
+    // before ADS resolution, so what is left out costs nothing — which
+    // is the point when the file holds hundreds of entries and the
+    // paper cites thirty.
+    let cited: Option<Vec<String>> = if cited_only {
+        let Some(root) = ms_root else {
+            anyhow::bail!("--cited-only needs a manuscript directory — none found here.");
+        };
+        let tex = astrobib::export::manuscript_tex_files(root);
+        let md = astrobib::export::manuscript_md_files(root);
+        // No sources means no cites, and every entry would be skipped:
+        // a silent no-op is indistinguishable from a foreign file that
+        // happens to share nothing with the paper, so say so instead.
+        if tex.is_empty() && md.is_empty() {
+            anyhow::bail!(
+                "no .tex or .md sources in {} — nothing to match cites against.",
+                root.display()
+            );
+        }
+        let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut keys: Vec<String> = vec![];
+        // wikilinks count here even when they do not resolve, unlike in
+        // refs: the entries they would resolve to are precisely the ones
+        // this import is about to add
+        for c in astrobib::export::scan_tex_files(&tex)
+            .into_iter()
+            .chain(astrobib::export::scan_md_files(&md).into_iter().map(|c| c.raw))
+        {
+            if seen.insert(c.clone()) {
+                keys.push(c);
+            }
+        }
+        Some(keys)
+    } else {
+        None
+    };
     let dest = match (global_only, local_only, lib.manuscript.is_some()) {
         (true, _, _) | (_, _, false) => "global library".to_string(),
         (_, true, _) => "local library".to_string(),
         _ => "global + local libraries".to_string(),
     };
-    println!("Importing into {dest}\n");
-    let (mut added, mut skipped) = (0usize, 0usize);
+    match &cited {
+        Some(c) => println!(
+            "Importing into {dest} — only what the manuscript cites ({} cite{} scanned)\n",
+            c.len(),
+            if c.len() == 1 { "" } else { "s" }
+        ),
+        None => println!("Importing into {dest}\n"),
+    }
+    let (mut added, mut skipped, mut uncited) = (0usize, 0usize, 0usize);
     let mut renames: Vec<(String, String)> = vec![];
     for mut data in entries {
         let orig_key = data.get("ID").cloned().unwrap_or_else(|| "?".to_string());
+        if cited.as_deref().is_some_and(|c| !entry_is_cited(&orig_key, &data, c)) {
+            uncited += 1;
+            continue;
+        }
         if orig_key != astrobib::keys::generate_key(&data) {
             match astrobib::ads::lookup_entry(&data) {
                 Ok(resolved) => data = resolved,
@@ -1334,6 +1399,12 @@ fn import_bib(
         added += 1;
     }
     println!("\n{added} imported → {dest}, {skipped} skipped.");
+    if cited.is_some() {
+        println!(
+            "{uncited} entr{} left out — not cited by the manuscript.",
+            if uncited == 1 { "y" } else { "ies" }
+        );
+    }
     if !renames.is_empty() {
         println!("\nRe-keyed (old cites resolve by prefix or bibcode; others show as missing):");
         for (old, new) in renames {
@@ -1341,6 +1412,19 @@ fn import_bib(
         }
     }
     Ok(())
+}
+
+/// Does a foreign entry answer any cite in the manuscript? Exact key
+/// first, then astrobib's own prefix rule — a cite may be any prefix of
+/// a key, which is how a short key cites a full one — and finally the
+/// bibcode, citable in its own right. Matching is on the entry's *own*
+/// key, the one the manuscript was written against; the canonical key
+/// it will be imported under is not in the sources yet.
+fn entry_is_cited(orig_key: &str, data: &astrobib::bib::Data, cited: &[String]) -> bool {
+    let bibcode = data.get("adsurl").and_then(|u| astrobib::pdf::bibcode_from_adsurl(u));
+    cited
+        .iter()
+        .any(|c| orig_key.starts_with(c.as_str()) || bibcode == Some(c.as_str()))
 }
 
 fn print_entries(

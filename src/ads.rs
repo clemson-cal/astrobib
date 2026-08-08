@@ -4,6 +4,7 @@
 use crate::bib::{self, Data};
 use anyhow::{anyhow, bail, Result};
 use regex::Regex;
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
@@ -63,24 +64,21 @@ fn require_token() -> Result<String> {
     })
 }
 
+/// Every state.json write is read-modify-write, and the quota is
+/// written from whichever worker thread finished an ADS call — without
+/// this the two could interleave and one of them would lose its field.
+static STATE_WRITE: Mutex<()> = Mutex::new(());
+
 /// Persist one field into state.json (creating it if absent),
 /// preserving every other field.
 pub fn save_state_field(key: &str, value: &str) -> std::io::Result<()> {
-    let path = state_file();
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir)?;
-    }
-    let mut v: serde_json::Value = std::fs::read_to_string(&path)
-        .ok()
-        .and_then(|s| serde_json::from_str(&s).ok())
-        .unwrap_or_else(|| serde_json::json!({ "version": 1 }));
-    v[key] = serde_json::Value::String(value.to_string());
-    std::fs::write(&path, serde_json::to_string_pretty(&v)? + "\n")
+    save_state_value(key, serde_json::Value::String(value.to_string()))
 }
 
 /// The same, for a field whose value is structured rather than a
 /// string — the per-scope column configuration, for instance.
 pub fn save_state_value(key: &str, value: serde_json::Value) -> std::io::Result<()> {
+    let _guard = STATE_WRITE.lock().unwrap_or_else(|e| e.into_inner());
     let path = state_file();
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
@@ -120,14 +118,17 @@ fn agent() -> ureq::Agent {
         .build()
 }
 
-fn check(resp: std::result::Result<ureq::Response, ureq::Error>) -> Result<ureq::Response> {
+fn check(
+    endpoint: &str,
+    resp: std::result::Result<ureq::Response, ureq::Error>,
+) -> Result<ureq::Response> {
     match resp {
         Ok(r) => {
-            update_quota(&r);
+            update_quota(endpoint, &r);
             Ok(r)
         }
         Err(ureq::Error::Status(code, r)) => {
-            update_quota(&r);
+            update_quota(endpoint, &r);
             let detail = r.into_string().unwrap_or_default();
             bail!("ADS API error {code}: {}", detail.trim().chars().take(200).collect::<String>())
         }
@@ -135,36 +136,157 @@ fn check(resp: std::result::Result<ureq::Response, ureq::Error>) -> Result<ureq:
     }
 }
 
-/// Rate-limit state from the most recent ADS response.
+/// Rate-limit state from the most recent ADS response on one endpoint.
 #[derive(Clone, Copy, Debug)]
 pub struct Quota {
     pub limit: i64,
     pub remaining: i64,
+    /// Unix time at which the counter rolls back up to `limit`.
     pub reset: i64,
 }
 
-static QUOTA: Mutex<Option<Quota>> = Mutex::new(None);
+impl Quota {
+    /// Calls spent out of the day's allowance for this endpoint.
+    pub fn used(&self) -> i64 {
+        (self.limit - self.remaining).max(0)
+    }
 
-/// The quota captured from the last API round-trip, if any.
-pub fn get_quota() -> Option<Quota> {
-    *QUOTA.lock().unwrap()
+    /// Whether the window these counts were captured in has since
+    /// rolled over, which makes them history rather than the state of
+    /// the allowance now. The next call to that endpoint replaces them.
+    pub fn stale(&self) -> bool {
+        now_secs() >= self.reset
+    }
+
+    /// "4h 12m" until the counter resets, or None once it has.
+    pub fn resets_in(&self) -> Option<String> {
+        let left = self.reset - now_secs();
+        (left > 0).then(|| human_span(left))
+    }
+
+    /// This endpoint's line for a human: what is spent, and when the
+    /// allowance comes back.
+    pub fn describe(&self) -> String {
+        match self.resets_in() {
+            Some(span) => format!("{} of {} used · resets in {span}", self.used(), self.limit),
+            // the counts predate a reset, so nothing is known to be
+            // spent — only the size of the allowance survives
+            None => format!("0 of {} used · window reset since the last call", self.limit),
+        }
+    }
 }
 
-/// Parse the X-RateLimit-* headers into the quota slot: only when the
-/// Limit header is present, and skipped entirely if any present header
-/// fails to parse (missing ones read 0).
-fn update_quota(resp: &ureq::Response) {
+fn now_secs() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
+
+fn human_span(secs: i64) -> String {
+    let m = secs / 60;
+    match m {
+        0 => "<1m".to_string(),
+        1..=59 => format!("{m}m"),
+        _ => format!("{}h {}m", m / 60, m % 60),
+    }
+}
+
+/// ADS meters each endpoint separately — a day of searching does not
+/// touch the export allowance — so the quotas are kept apart and never
+/// summed. These are the endpoints this app calls, in reporting order.
+pub const QUOTA_ENDPOINTS: [&str; 3] = ["search", "export", "resolver"];
+
+/// None until first use, then the quotas seeded from state.json and
+/// updated by every round-trip this process makes.
+static QUOTA: Mutex<Option<BTreeMap<String, Quota>>> = Mutex::new(None);
+
+fn with_quotas<R>(f: impl FnOnce(&mut BTreeMap<String, Quota>) -> R) -> R {
+    let mut slot = QUOTA.lock().unwrap_or_else(|e| e.into_inner());
+    let map = slot.get_or_insert_with(load_quotas);
+    f(map)
+}
+
+/// The last-seen quota per endpoint — from this process if it has
+/// called ADS, else from what an earlier run recorded in state.json.
+/// Endpoints never called are simply absent.
+pub fn quotas() -> Vec<(&'static str, Quota)> {
+    with_quotas(|m| {
+        QUOTA_ENDPOINTS
+            .iter()
+            .filter_map(|ep| m.get(*ep).map(|q| (*ep, *q)))
+            .collect()
+    })
+}
+
+/// One line's worth of how much of the token's day is gone:
+/// "search 12/5000 · export 3/100". None when no call was ever
+/// recorded; endpoints whose window has since reset read 0.
+pub fn quota_summary() -> Option<String> {
+    let qs = quotas();
+    if qs.is_empty() {
+        return None;
+    }
+    Some(
+        qs.iter()
+            .map(|(ep, q)| {
+                let used = if q.stale() { 0 } else { q.used() };
+                format!("{ep} {used}/{}", q.limit)
+            })
+            .collect::<Vec<_>>()
+            .join(" · "),
+    )
+}
+
+fn load_quotas() -> BTreeMap<String, Quota> {
+    let mut m = BTreeMap::new();
+    let Some(v) = get_state_value("ads_quota") else {
+        return m;
+    };
+    for ep in QUOTA_ENDPOINTS {
+        let q = &v[ep];
+        if let (Some(limit), Some(remaining), Some(reset)) =
+            (q["limit"].as_i64(), q["remaining"].as_i64(), q["reset"].as_i64())
+        {
+            m.insert(ep.to_string(), Quota { limit, remaining, reset });
+        }
+    }
+    m
+}
+
+/// Parse the X-RateLimit-* headers into the endpoint's quota slot: only
+/// when the Limit header is present, and skipped entirely if any
+/// present header fails to parse (missing ones read 0).
+///
+/// Every update is mirrored to state.json, so a later process — the CLI
+/// reporting the day's use, say — can say what this one spent without
+/// having to spend another call to find out.
+fn update_quota(endpoint: &str, resp: &ureq::Response) {
     if resp.header("X-RateLimit-Limit").is_none() {
         return;
     }
     let h = |name: &str| resp.header(name).unwrap_or("0").parse::<i64>().ok();
-    if let (Some(limit), Some(remaining), Some(reset)) = (
+    let (Some(limit), Some(remaining), Some(reset)) = (
         h("X-RateLimit-Limit"),
         h("X-RateLimit-Remaining"),
         h("X-RateLimit-Reset"),
-    ) {
-        *QUOTA.lock().unwrap() = Some(Quota { limit, remaining, reset });
-    }
+    ) else {
+        return;
+    };
+    let snapshot = with_quotas(|m| {
+        m.insert(endpoint.to_string(), Quota { limit, remaining, reset });
+        m.clone()
+    });
+    let obj: serde_json::Map<String, serde_json::Value> = snapshot
+        .iter()
+        .map(|(ep, q)| {
+            (
+                ep.clone(),
+                serde_json::json!({ "limit": q.limit, "remaining": q.remaining, "reset": q.reset }),
+            )
+        })
+        .collect();
+    let _ = save_state_value("ads_quota", serde_json::Value::Object(obj));
 }
 
 /// What a saved query selects by when it has no stored preference:
@@ -185,6 +307,7 @@ pub fn search(query: &str, limit: usize) -> Result<Vec<Article>> {
 pub fn search_sorted(query: &str, limit: usize, sort: &str) -> Result<Vec<Article>> {
     let token = require_token()?;
     let resp = check(
+        "search",
         agent()
             .get(&format!("{ADS_API}/search/query"))
             .set("Authorization", &format!("Bearer {token}"))
@@ -258,6 +381,7 @@ pub(crate) fn article_from_doc(d: &serde_json::Value) -> Article {
 pub fn fetch_bibtex(bibcode: &str) -> Result<Option<Data>> {
     let token = require_token()?;
     let resp = check(
+        "export",
         agent()
             .post(&format!("{ADS_API}/export/bibtex"))
             .set("Authorization", &format!("Bearer {token}"))
@@ -295,6 +419,10 @@ pub fn resolve_pdf_url(bibcode: &str, link_type: &str) -> Option<String> {
         .set("Authorization", &format!("Bearer {token}"))
         .call()
         .ok()?;
+    // this one does not go through check() — it swallows its errors
+    // rather than reporting them — but its allowance is metered like
+    // any other, so the headers are still read
+    update_quota("resolver", &resp);
     if resp.status() != 200 {
         return None;
     }

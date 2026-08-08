@@ -485,6 +485,18 @@ fn ms_state_rank(r: &MsRow) -> u8 {
 /// the pub card keeps on either side of its rule.
 const COLUMNS_PANEL_W: u16 = 28;
 
+/// The two sides of the card ⇄ bib-source toggler, as
+/// `(label, is the bib side)`, left to right.
+const TOGGLE_SEGS: [(&str, bool); 2] = [("▤ card", false), ("@ bib", true)];
+
+/// The toggler's drawn width: both labels and the " │ " between them.
+const TOGGLE_W: u16 = 6 + 3 + 5;
+
+/// What the toggler takes out of the footer's right edge, so the view
+/// badges know where to stop: its width, its cell of air at the edge,
+/// and two cells of separation from the badges.
+const TOGGLE_RESERVE: u16 = TOGGLE_W + 3;
+
 /// One line of the columns sidebar, built before it is placed so the
 /// list can be windowed against the pane's height.
 struct PanelLine {
@@ -830,6 +842,14 @@ fn card_hint(btn: CardBtn) -> &'static str {
     }
 }
 
+/// What a hovered tag on the pub card says it will do. It names the
+/// library, because the filter is the library's and a click from a query
+/// scope goes there; and it says "replaces", because it does — what it
+/// lands on is the whole filter, not a term added to what was there.
+fn tag_hint(name: &str) -> String {
+    format!("⌕ filter the library to {}  ·  replaces the current filter", App::tag_term(name))
+}
+
 /// Clamp-and-window text lines by the card scroll offset (stored back
 /// clamped): the visible slice plus whether more exists above/below.
 fn scroll_window(
@@ -1065,9 +1085,18 @@ struct App {
     sort_headers: Vec<(Rect, Col)>,
     // footer view badges: clickable show/hide toggles per app-wide view
     footer_badges: Vec<(Rect, Action)>,
+    /// Set by the card while it draws, read by the footer just after:
+    /// `Some(showing the .bib source)` when a pub card is on screen and
+    /// the card ⇄ bib toggler therefore belongs in the footer, None when
+    /// there is no card to toggle. Cleared at the top of every frame.
+    card_toggle: Option<bool>,
     // pub card button and link rects, rebuilt each draw
     card_buttons: Vec<(Rect, CardBtn)>,
     card_links: Vec<(Rect, String)>,
+    /// The card's tag names and where they were drawn: each one filters
+    /// the scope to `tag:<name>` when clicked, so the whole name is kept
+    /// here even when the card had room to draw only part of it.
+    card_tags: Vec<(Rect, String)>,
     card_yanks: Vec<(Rect, CopyItem)>,
     // transient PDF status line shown on the card (waiting/result)
     pdf_status: String,
@@ -1315,8 +1344,10 @@ impl App {
             ms_sort: load_sort("manuscript_sort"),
             sort_headers: vec![],
             footer_badges: vec![],
+            card_toggle: None,
             card_buttons: vec![],
             card_links: vec![],
+            card_tags: vec![],
             card_yanks: vec![],
             pdf_status: String::new(),
             poll_cancel: None,
@@ -1998,7 +2029,15 @@ impl App {
                             // the tab's own sort decides what is shown
                             self.sort_ads_at(idx);
                             self.save_tabs();
-                            self.note(MsgCat::Ok, format!("{n} ADS result(s)"));
+                            // the search endpoint's meter, reported where
+                            // it was just spent (@ shows the standing
+                            // figures for every endpoint)
+                            let spent = crate::ads::quotas()
+                                .into_iter()
+                                .find(|(ep, q)| *ep == "search" && !q.stale())
+                                .map(|(_, q)| format!(" · {}/{} searches today", q.used(), q.limit))
+                                .unwrap_or_default();
+                            self.note(MsgCat::Ok, format!("{n} ADS result(s){spent}"));
                         }
                         Err(e) => {
                             // the page keeps the reason; a log line would
@@ -3048,6 +3087,44 @@ impl App {
         self.order.get(idx).map(String::as_str)
     }
 
+    /// The filter term that selects one tag — quoted when the name has
+    /// whitespace in it, which a tag name may: it is only a filename. A
+    /// name containing a double quote cannot be written as one term and
+    /// is left unquoted rather than escaped, the filter language having
+    /// no escape to use.
+    fn tag_term(name: &str) -> String {
+        if name.contains(char::is_whitespace) && !name.contains('"') {
+            format!("tag:\"{name}\"")
+        } else {
+            format!("tag:{name}")
+        }
+    }
+
+    /// Click a tag on the pub card: filter the library to it.
+    ///
+    /// The library, whichever scope the card was read from. The filter
+    /// cuts the library's rows and nothing else — a manuscript and a
+    /// query carry their own row lists — so applying it in place from a
+    /// query scope would change a count nothing on screen was showing.
+    /// The hover hint names the destination for that reason.
+    ///
+    /// Replace, not narrow. A tag is a coarse cut through the library and
+    /// the thing you do after following one is follow another, so anding
+    /// each onto what was already typed would mostly land on nothing —
+    /// and what it replaced is one keystroke away, since the strip chip
+    /// reopens the prompt with the text still in it.
+    fn filter_by_tag(&mut self, name: &str) {
+        let text = Self::tag_term(name);
+        self.filter = tui_input::Input::from(text.clone());
+        if self.active_scope != 0 {
+            self.set_scope(0);
+        }
+        self.refilter();
+        let n = self.filtered.len();
+        let total = self.order.len();
+        self.note(MsgCat::Ok, format!("filtered to {text} — {n} of {total}"));
+    }
+
     fn refilter(&mut self) {
         let groups = query::tokenize(self.filter.value());
         let in_ms: Vec<String> = self
@@ -3084,9 +3161,10 @@ impl App {
             Default::default()
         };
         // key → its tags, snapshotted only when the filter asks: tag:
-        // is rare and refilter runs on every keystroke, same reasoning
-        // as the metrics above
-        let tagged: std::collections::HashMap<String, Vec<String>> = if wants(query::Field::Tag) {
+        // and is:tagged are rare and refilter runs on every keystroke,
+        // same reasoning as the metrics above. Which terms count as
+        // asking is the query language's own question, not this one's.
+        let tagged: std::collections::HashMap<String, Vec<String>> = if query::needs_tags(&groups) {
             let mut m: std::collections::HashMap<String, Vec<String>> = Default::default();
             for (name, keys) in self.lib.tags() {
                 for k in keys {
@@ -4020,6 +4098,12 @@ impl App {
         // the card's ⧉ rows are the visible copy menu
         if matches!(self.mode, Mode::Copy) {
             self.exit_copy_mode();
+        }
+        // a tag on the card filters the scope to itself
+        if let Some((_, name)) = self.card_tags.iter().find(|(r, _)| hit(*r, x, y)) {
+            let name = name.clone();
+            self.filter_by_tag(&name);
+            return;
         }
         // pub card buttons (act on the card's entry)
         if let Some(&(_, btn)) = self.card_buttons.iter().find(|(r, _)| hit(*r, x, y)) {
@@ -5070,7 +5154,10 @@ impl App {
 
     fn draw(&mut self, f: &mut Frame) {
         self.card_buttons.clear();
+        self.card_tags.clear();
         self.hover_hint = None;
+        // the card claims the footer's toggler while it draws, below
+        self.card_toggle = None;
         // the menu belongs to the query prompt: whichever way the prompt
         // went away, it goes with it, rather than each exit having to
         // remember to close it
@@ -5685,11 +5772,35 @@ impl App {
             "https://pypi.org/project/astrobib",
         ];
         let frame = f.area();
+        let token_src = if std::env::var("ADS_API_TOKEN").is_ok_and(|t| !t.is_empty()) {
+            "from $ADS_API_TOKEN".to_string()
+        } else if crate::ads::get_token().is_some() {
+            "from state.json".to_string()
+        } else {
+            "none — press S to set one".to_string()
+        };
+        // one row per endpoint called, or a single row saying none was
+        let quotas = crate::ads::quotas();
+        let quota_rows: Vec<String> = if quotas.is_empty() {
+            vec!["no calls recorded yet".to_string()]
+        } else {
+            quotas
+                .iter()
+                .map(|(endpoint, q)| {
+                    let used = if q.stale() { 0 } else { q.used() };
+                    match q.resets_in() {
+                        Some(span) => format!("{endpoint} {used}/{} · resets in {span}", q.limit),
+                        None => format!("{endpoint} {used}/{}", q.limit),
+                    }
+                })
+                .collect()
+        };
         // emoji-set glyphs (⟳) can render double-width on some
         // terminals, shifting rows right — several columns of slack
         // beyond the longest line keep everything inside the borders
         let w = 58.min(frame.width.saturating_sub(4));
-        let h = (17 + u16::from(self.update_status.is_some())).min(frame.height);
+        let h = (19 + quota_rows.len() as u16 + u16::from(self.update_status.is_some()))
+            .min(frame.height);
         let area = Rect {
             x: frame.width.saturating_sub(w) / 2,
             y: frame.height.saturating_sub(h) / 2,
@@ -5707,7 +5818,21 @@ impl App {
             Line::from(Span::raw(" Clemson University Physics and Astronomy")),
             Line::from(Span::raw(" Supported by NSF award number 2408034")),
             Line::default(),
+            Line::from(vec![
+                Span::styled(" ADS token  ", dim),
+                Span::raw(token_src),
+            ]),
         ];
+        // What the day has cost the token. ADS meters each endpoint on
+        // its own allowance, so they get a line each and are never
+        // added up; the label sits against the first of them.
+        for (i, line) in quota_rows.iter().enumerate() {
+            lines.push(Line::from(vec![
+                Span::styled(if i == 0 { " ADS use    " } else { "            " }, dim),
+                Span::raw(line.clone()),
+            ]));
+        }
+        lines.push(Line::default());
         let link_row = |url: &str, lines: &mut Vec<Line>, about_links: &mut Vec<(Rect, String)>| {
             let y = area.y + 1 + lines.len() as u16;
             let r = Rect {
@@ -6629,45 +6754,73 @@ impl App {
             .collect()
     }
 
-    /// The pub card for an ADS result: body, links, citation count, an
-    /// import button, and click-to-copy regions like the library card.
-    /// The card ⇄ bib-source toggler, pinned to the card's bottom-right
-    /// corner: a segmented "▤ card │ @ bib" control — the active side
-    /// underlined, the inactive side dimmed and clickable (v toggles).
-    fn draw_card_toggle(&mut self, f: &mut Frame, x0: u16, w: u16, bottom: u16, source: bool) {
-        let segs: [(&str, bool); 2] = [("▤ card", false), ("@ bib", true)];
-        let total: u16 = segs.iter().map(|(l, _)| l.chars().count() as u16).sum::<u16>() + 3;
-        let y = bottom.saturating_sub(1);
-        let mut x = x0 + w.saturating_sub(total);
-        for (i, (label, is_bib)) in segs.iter().enumerate() {
+    /// Where the card ⇄ bib-source toggler's segments sit in the footer:
+    /// `(rect, label, is the bib side)`, or nothing while no pub card is
+    /// on screen. It is the rightmost thing in the footer, so the view
+    /// badges start `TOGGLE_RESERVE` cells further left.
+    ///
+    /// Split out from drawing for the same reason `badge_layout` is: the
+    /// hover hint has to be settled before the footer line is built.
+    fn toggle_layout(&self, area: Rect) -> Vec<(Rect, &'static str, bool)> {
+        if self.card_toggle.is_none() {
+            return vec![];
+        }
+        // one cell of air at the right edge, the way the badges leave one
+        let mut x = (area.x + area.width).saturating_sub(TOGGLE_W + 1);
+        TOGGLE_SEGS
+            .iter()
+            .map(|&(label, is_bib)| {
+                let lw = label.chars().count() as u16;
+                let r = Rect { x, y: area.y, width: lw, height: 1 };
+                x += lw + 3; // the " │ " divider between the segments
+                (r, label, is_bib)
+            })
+            .collect()
+    }
+
+    /// What a hovered toggler segment says in the footer. Only the
+    /// inactive side is clickable, so only it hints.
+    fn toggle_hint(&self, area: Rect) -> Option<String> {
+        let source = self.card_toggle?;
+        let (.., is_bib) = self
+            .toggle_layout(area)
+            .into_iter()
+            .find(|(r, ..)| hit(*r, self.hover.0, self.hover.1))?;
+        if is_bib == source {
+            return None;
+        }
+        Some(if is_bib {
+            card_hint(CardBtn::BibView).to_string()
+        } else {
+            "▤ back to the formatted card  ·  v".to_string()
+        })
+    }
+
+    /// The card ⇄ bib-source toggler, pinned to the footer's right edge:
+    /// a segmented "▤ card │ @ bib" control — the active side cyan, the
+    /// inactive side dimmed and clickable (v toggles). It lives in the
+    /// footer rather than in the card because it selects which view the
+    /// card shows, and every other view control is already there.
+    fn draw_card_toggle(&mut self, f: &mut Frame, area: Rect) {
+        let Some(source) = self.card_toggle else { return };
+        for (i, (r, label, is_bib)) in self.toggle_layout(area).into_iter().enumerate() {
             if i > 0 {
                 f.render_widget(
                     Paragraph::new(Line::from(Span::styled(" │ ", divider()))),
-                    Rect { x, y, width: 3, height: 1 },
+                    Rect { x: r.x.saturating_sub(3), y: r.y, width: 3, height: 1 },
                 );
-                x += 3;
             }
-            let lw = label.chars().count() as u16;
-            let r = Rect { x, y, width: lw, height: 1 };
-            let active = *is_bib == source;
-            let style = if active {
-                Style::default().add_modifier(Modifier::UNDERLINED)
+            let style = if is_bib == source {
+                Style::default().fg(Color::Cyan)
             } else {
-                let hov = hit(r, self.hover.0, self.hover.1);
                 self.card_buttons.push((r, CardBtn::BibView));
-                if hov {
-                    self.hover_hint = Some(if *is_bib {
-                        card_hint(CardBtn::BibView).to_string()
-                    } else {
-                        "▤ back to the formatted card  ·  v".to_string()
-                    });
-                    Style::default().fg(Color::Green).add_modifier(Modifier::UNDERLINED)
+                if hit(r, self.hover.0, self.hover.1) {
+                    Style::default().fg(Color::Cyan).add_modifier(Modifier::UNDERLINED)
                 } else {
                     Style::default().fg(Color::DarkGray)
                 }
             };
-            f.render_widget(Paragraph::new(Line::from(Span::styled(*label, style))), r);
-            x += lw;
+            f.render_widget(Paragraph::new(Line::from(Span::styled(label, style))), r);
         }
     }
 
@@ -6695,7 +6848,7 @@ impl App {
     }
 
     /// Shared renderer for the verbatim-BibTeX views: header line,
-    /// soft-wrapped body, the ⧉ copy stack, the pinned toggler.
+    /// soft-wrapped body, the ⧉ copy stack.
     fn draw_bib_panel(
         &mut self,
         f: &mut Frame,
@@ -6714,7 +6867,7 @@ impl App {
             Rect { x: x0, y, width: w, height: 1 },
         );
         y += 2;
-        // the copy stack sits above the toggler row; content stops there
+        // the copy stack sits above the pane's blank last row; text stops there
         let stack_h = copies.len() as u16 + 2; // sep + rows + air
         let content_end = bottom.saturating_sub(stack_h + 1);
         let mut rows: Vec<String> = vec![];
@@ -6771,11 +6924,13 @@ impl App {
             &mut yanks,
         );
         self.card_yanks = yanks;
-        self.draw_card_toggle(f, x0, w, bottom, true);
+        // the footer draws the card ⇄ bib toggler for us, on the bib side
+        self.card_toggle = Some(true);
     }
 
     /// Where the footer's view badges sit, and what each one is:
-    /// `(rect, action, label, currently on)`, right-aligned.
+    /// `(rect, action, label, currently on)`, right-aligned — inside
+    /// whatever the card ⇄ bib toggler has claimed of the right edge.
     ///
     /// Separate from drawing them because the hover hint has to be
     /// decided *before* the footer line is built — `draw_badges` runs
@@ -6792,7 +6947,9 @@ impl App {
             ("keys", self.show_help, Action::Help),
         ]);
         let total: u16 = badges.iter().map(|(l, _, _)| l.chars().count() as u16 + 3).sum();
-        let mut bx = (area.x + area.width).saturating_sub(total);
+        // the card ⇄ bib toggler is rightmost; the badges stop short of it
+        let reserve = if self.card_toggle.is_some() { TOGGLE_RESERVE } else { 0 };
+        let mut bx = (area.x + area.width).saturating_sub(total + reserve);
         badges
             .into_iter()
             .map(|(label, on, action)| {
@@ -6832,6 +6989,9 @@ impl App {
     /// Right-aligned clickable show/hide badges for each app-wide view.
     fn draw_badges(&mut self, f: &mut Frame, area: Rect) {
         let layout = self.badge_layout(area);
+        // where the cluster starts, which is not the right edge once the
+        // card ⇄ bib toggler has claimed it
+        let Some(x0) = layout.first().map(|(r, ..)| r.x) else { return };
         self.footer_badges.clear();
         let mut spans: Vec<Span> = vec![];
         let mut total = 0u16;
@@ -6851,11 +7011,10 @@ impl App {
             ));
             spans.push(Span::raw(" "));
         }
-        let w = total.min(area.width);
         let badge_area = Rect {
-            x: (area.x + area.width).saturating_sub(w),
+            x: x0,
             y: area.y,
-            width: w,
+            width: total.min((area.x + area.width).saturating_sub(x0)),
             height: 1,
         };
         f.render_widget(Paragraph::new(Line::from(spans)), badge_area);
@@ -7286,7 +7445,9 @@ impl App {
             area.x + lw as u16 + (cursor % body_w) as u16,
             area.y + crow.min(text_rows.saturating_sub(1)) as u16,
         ));
-        self.draw_badges(f, Rect { x: area.x, y: last_y, width: area.width, height: 1 });
+        let last = Rect { x: area.x, y: last_y, width: area.width, height: 1 };
+        self.draw_badges(f, last);
+        self.draw_card_toggle(f, last);
         true
     }
 
@@ -7298,9 +7459,10 @@ impl App {
             return;
         }
         let area = Rect { x: area.x, y: area.y, width: area.width, height: 1 };
-        // the badges live on this same line and are drawn after it, so
-        // their hover hint has to be settled before the line is built
-        if let Some(hint) = self.badge_hint(area) {
+        // the badges and the card ⇄ bib toggler live on this same line and
+        // are drawn after it, so their hover hints have to be settled
+        // before the line is built
+        if let Some(hint) = self.badge_hint(area).or_else(|| self.toggle_hint(area)) {
             self.hover_hint = Some(hint);
         }
         // room left of the badges, which are drawn after this line and
@@ -7572,6 +7734,7 @@ impl App {
         self.prompt_sort_rect = sort_rect;
         f.render_widget(line, area);
         self.draw_badges(f, area);
+        self.draw_card_toggle(f, area);
     }
 }
 
@@ -7671,6 +7834,34 @@ fn base64(data: &[u8]) -> String {
 mod tests {
     use super::*;
 
+    /// A tag name is only a filename, so it may hold the characters the
+    /// filter language reads as structure. What the card's tag links
+    /// build has to survive a round trip through `tokenize`, or clicking
+    /// a two-word tag would filter by its first word and a bare term.
+    #[test]
+    fn a_tag_term_round_trips_through_the_filter_language() {
+        for name in ["section-3", "to read", "intro lit review 2019"] {
+            let groups = query::tokenize(&App::tag_term(name));
+            assert_eq!(groups.len(), 1, "{name:?} is one group");
+            assert_eq!(groups[0].len(), 1, "{name:?} is one term: {:?}", groups[0]);
+            let term = &groups[0][0];
+            assert_eq!(term.field, Some(query::Field::Tag), "{name:?}");
+            assert_eq!(term.value, name, "{name:?}");
+            assert!(!term.neg, "{name:?}");
+        }
+        // and the hint quotes what it will do, so the two cannot drift
+        assert!(tag_hint("to read").contains("tag:\"to read\""));
+    }
+
+    /// `TOGGLE_W` has to be spelled out (no const `chars().count()`), so
+    /// nothing but this test stops the labels and the width the badges
+    /// give way to from drifting apart.
+    #[test]
+    fn toggle_width_matches_its_labels() {
+        let labels: u16 = TOGGLE_SEGS.iter().map(|(l, _)| l.chars().count() as u16).sum();
+        assert_eq!(TOGGLE_W, labels + 3, "both labels and the \" │ \" between them");
+    }
+
     /// The ADS-returns table is the one place a wrong field name would
     /// go unnoticed: ADS *silently drops* a sort it does not know — it
     /// answers 200 with `"sort": ""` and default ordering — so the app
@@ -7732,7 +7923,8 @@ mod tests {
                 );
                 if t.field == Some(crate::query::Field::Is) {
                     assert!(
-                        matches!(t.value.as_str(), "ms" | "pdf"),
+                        matches!(t.value.as_str(), "ms" | "pdf")
+                            || t.value == crate::query::IS_TAGGED,
                         "{q}: is:{} matches nothing",
                         t.value
                     );
