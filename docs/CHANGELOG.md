@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+### Added
+- `H` moves the query you are on between its two homes, and the footer says which one it is in: a `query  global │ local` control beside the view badges, the side it is in cyan, the other clickable and doing the same thing as the key. One gesture both ways, the same ± reading `m` and `T` have, because there are exactly two homes and asking which one you meant would be a question with one answer. The move is a single write of both sets, so a query leaves one and joins the other at once — never in both, which would be a duplicate id, and never in neither. Not offered outside a manuscript, where there is no second home to move anything to.
+
+### Changed
+- Saved queries have a global home as well as a per-manuscript one, and a session sees both: the global ones first, then the active manuscript's own, with the strip marking where one group ends and the other begins. Every query used to be filed under the manuscript you happened to be standing in, which made "which queries do I have?" a question about your working directory — and since discovery keys on the mere presence of a `bib/`, an empty one, which git cannot even record, was enough to take your saved queries off screen with nothing said about why. Nothing on disk changed shape: both homes are ordinary keys of the same `contexts` map, so queries already filed under a manuscript keep working and an older build reads whichever key it looks for.
+- A query you type is global by default, wherever you type it — it is about your reading, not about whichever paper you were standing in. The exception is a query that names one paper: `citations(…)` and `references(…)` are made from a card with one keystroke and are spent as soon as they are followed, so they are filed with the manuscript rather than trailing every paper you ever opened into every directory. Judged by the query's shape rather than by the gesture that made it, so one typed at the prompt is filed like one made by `C` — and `similar`, `trending` and `useful` take a query rather than a paper, so they are ordinary searches and stay global.
+
 ## 0.16.0 — 2026-08-08
 
 ### Added

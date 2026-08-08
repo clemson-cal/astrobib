@@ -155,6 +155,7 @@ enum Action {
     Help,
     Columns,
     GlobalTier,
+    QueryHome,
     Quit,
 }
 
@@ -209,6 +210,10 @@ enum Scope {
         tab: crate::tabs::Tab,
         articles: Vec<crate::ads::Article>,
         state: QueryState,
+        /// Which set this query is saved in — the global one, or the
+        /// active manuscript's. It decides where `save_tabs` files it
+        /// and which group it sits in on the strip.
+        home: crate::tabs::Home,
     },
 }
 
@@ -497,6 +502,19 @@ const TOGGLE_W: u16 = 6 + 3 + 5;
 /// and two cells of separation from the badges.
 const TOGGLE_RESERVE: u16 = TOGGLE_W + 3;
 
+/// The two homes a saved query can have, as a segmented control: the
+/// one it is in reads active, the other is clickable and moves it.
+const HOME_SEGS: [(&str, bool); 2] = [("global", false), ("local", true)];
+
+/// Written out because the footer already says "global" for the library
+/// tier a few cells to the right, and two unrelated "global"s on one
+/// line would be one too many. This says which global it means.
+const HOME_LABEL: &str = "query";
+
+/// The control's drawn width: the label, two cells of air, both sides
+/// and the " │ " between them.
+const HOME_W: u16 = 5 + 2 + 6 + 3 + 5;
+
 /// One line of the columns sidebar, built before it is placed so the
 /// list can be windowed against the pane's height.
 struct PanelLine {
@@ -709,6 +727,9 @@ fn rank_norm(vals: &[f64], v: f64) -> f64 {
 /// Sentinel scope-strip index for the active-filter chip ("+ new" is
 /// usize::MAX).
 const FILTER_CHIP: usize = usize::MAX - 1;
+/// The mark between the global queries and the active manuscript's own.
+/// Not a scope and not clickable — it names a boundary, not a thing.
+const GROUP_SEP: usize = usize::MAX - 2;
 
 /// The keys panel's entries and fixed column width.
 const HELP_COLW: u16 = 30;
@@ -761,6 +782,7 @@ const HELP_ENTRIES: &[(&str, &str, Option<Action>, KeyCode)] = &[
     ("|", "table columns…", Some(Action::Columns), KeyCode::Char('|')),
     ("N", "name this query…", None, KeyCode::Char('N')),
     ("E", "edit this query…", None, KeyCode::Char('E')),
+    ("H", "query home ±", Some(Action::QueryHome), KeyCode::Char('H')),
     ("y q", "copy this query", None, KeyCode::Char('y')),
     ("P", "open query on clipboard", None, KeyCode::Char('P')),
     ("L", "event log", Some(Action::Log), KeyCode::Char('L')),
@@ -1564,12 +1586,15 @@ impl App {
         // take a minute, and a tab that only materialises at the end
         // leaves nothing on screen to say the query was even sent.
         if refresh_of.is_none() {
+            let home = self.default_home(&query);
             self.scopes.push(Scope::Ads {
                 tab: tab.clone(),
                 articles: vec![],
                 state: QueryState::Pending,
+                home,
             });
             self.set_scope(self.scopes.len() - 1);
+            self.regroup_scopes();
         } else if let Some(Scope::Ads { state, .. }) =
             refresh_of.and_then(|i| self.scopes.get_mut(i))
         {
@@ -1831,18 +1856,108 @@ impl App {
     }
 
     /// Persist the current ADS scopes to the tabs.json state file,
-    /// user-local and keyed per manuscript context.
+    /// user-local, each query filed under the home it carries.
     fn save_tabs(&mut self) {
-        let tabs: Vec<crate::tabs::Tab> = self
+        let tabs: Vec<(crate::tabs::Tab, crate::tabs::Home)> = self
             .scopes
             .iter()
             .filter_map(|s| match s {
-                Scope::Ads { tab, .. } => Some(tab.clone()),
+                Scope::Ads { tab, home, .. } => Some((tab.clone(), *home)),
                 _ => None,
             })
             .collect();
         let res = crate::tabs::save(&tabs, self.ms_root().as_deref());
         self.state_write("saved queries (tabs.json)", res.err().map(|e| e.to_string()));
+    }
+
+    /// Move the active query to its other home — global to the
+    /// manuscript's own set, or back. One gesture both ways, the same ±
+    /// reading `m` and `T` have, because there are exactly two homes and
+    /// naming which one you meant would be a question with one answer.
+    ///
+    /// The move is one write: `save` lays down both sets together, so
+    /// the query leaves one key and joins the other atomically. It can
+    /// never be in both (a duplicate id, which would strand one of the
+    /// two scopes waiting for a result that routes to the other) or in
+    /// neither.
+    fn move_query_home(&mut self) {
+        let Some(Scope::Ads { tab, home, .. }) = self.scopes.get_mut(self.active_scope) else {
+            return;
+        };
+        *home = match *home {
+            crate::tabs::Home::Global => crate::tabs::Home::Local,
+            crate::tabs::Home::Local => crate::tabs::Home::Global,
+        };
+        let (label, moved_to) = (tab.label.clone(), *home);
+        self.regroup_scopes();
+        self.save_tabs();
+        // kept short: the footer gives this line only the room left in
+        // front of the control it is reporting on
+        let where_to = match moved_to {
+            crate::tabs::Home::Global => "the global queries",
+            crate::tabs::Home::Local => "this manuscript",
+        };
+        self.note(MsgCat::Ok, format!("'{label}' moved to {where_to}"));
+    }
+
+    /// Keep the query scopes grouped global-first, following the active
+    /// one by its tab id rather than by its index — the whole point of
+    /// this is that indices move.
+    ///
+    /// The strip reads the groups straight off `scopes` order, so a
+    /// query that arrives local, or one that has just been moved, has to
+    /// be put back among its own kind; otherwise a lone capsule sits
+    /// between the global ones and the grouping stops meaning anything.
+    /// The sort is stable, so order within each group is untouched.
+    fn regroup_scopes(&mut self) {
+        let active_id = match self.scopes.get(self.active_scope) {
+            Some(Scope::Ads { tab, .. }) => Some(tab.id.clone()),
+            _ => None,
+        };
+        // Library and Manuscript hold the front; every query scope is in
+        // the contiguous tail behind them
+        let Some(first) = self.scopes.iter().position(|s| matches!(s, Scope::Ads { .. })) else {
+            return;
+        };
+        let mut queries = self.scopes.split_off(first);
+        queries.sort_by_key(|s| match s {
+            Scope::Ads { home: crate::tabs::Home::Global, .. } => 0u8,
+            _ => 1u8,
+        });
+        self.scopes.append(&mut queries);
+        if let Some(id) = active_id {
+            if let Some(i) = self
+                .scopes
+                .iter()
+                .position(|s| matches!(s, Scope::Ads { tab, .. } if tab.id == id))
+            {
+                self.active_scope = i;
+            }
+        }
+    }
+
+    /// Where a newly minted query is filed. Yours by default: a search
+    /// you typed is about your reading, not about whichever paper you
+    /// happened to be standing in, and filing it locally is what made
+    /// saved queries seem to vanish when you walked away from a `bib/`.
+    ///
+    /// The exception is a query that names one paper. `citations(…)` and
+    /// `references(…)` are made from a card with a single keystroke and
+    /// are exhausted the moment you have followed them; left global they
+    /// would trail every paper you ever looked at through every
+    /// directory. Judged by the query's shape rather than by which
+    /// gesture made it, so one typed at the prompt is filed the same way
+    /// as one made by C or R. The other operators — `similar`,
+    /// `trending`, `useful` — take a query rather than a paper, so they
+    /// are ordinary searches and stay global.
+    fn default_home(&self, query: &str) -> crate::tabs::Home {
+        let q = query.trim_start().to_ascii_lowercase();
+        let about_one_paper = q.starts_with("citations(") || q.starts_with("references(");
+        if about_one_paper && self.lib.manuscript.is_some() {
+            crate::tabs::Home::Local
+        } else {
+            crate::tabs::Home::Global
+        }
     }
 
     /// Restore saved query scopes and refresh them all on one worker.
@@ -1854,12 +1969,20 @@ impl App {
             return;
         }
         let mut cached = 0usize;
-        for t in &saved {
+        // load hands them back global-first, which is the order the
+        // strip groups them in — pushing in that order is what keeps the
+        // groups contiguous without a sort
+        for (t, home) in &saved {
             let articles = crate::tabs::load_cached_articles(&t.id);
             if !articles.is_empty() {
                 cached += 1;
             }
-            self.scopes.push(Scope::Ads { tab: t.clone(), articles, state: QueryState::Ready });
+            self.scopes.push(Scope::Ads {
+                tab: t.clone(),
+                articles,
+                state: QueryState::Ready,
+                home: *home,
+            });
         }
         // the cache holds whatever order the results last arrived in;
         // each tab's stored sort is what it should come back showing
@@ -2023,8 +2146,15 @@ impl App {
                             let n = articles.len();
                             crate::tabs::save_cached_articles(&tab.id, &articles);
                             tab.refreshed = Some(crate::tabs::now_secs());
+                            // the scope is rebuilt, not edited, so its
+                            // home has to be carried across — a refresh
+                            // must not re-file the query it refreshed
+                            let home = match &self.scopes[idx] {
+                                Scope::Ads { home, .. } => *home,
+                                _ => self.default_home(&tab.query),
+                            };
                             self.scopes[idx] =
-                                Scope::Ads { tab, articles, state: QueryState::Ready };
+                                Scope::Ads { tab, articles, state: QueryState::Ready, home };
                             // ADS hands results back in its own order;
                             // the tab's own sort decides what is shown
                             self.sort_ads_at(idx);
@@ -2268,6 +2398,10 @@ impl App {
             Action::Select | Action::Filter | Action::Card | Action::Log | Action::Help
             | Action::Columns | Action::Quit => true,
             Action::GlobalTier => self.lib.manuscript.is_some(),
+            // with no manuscript open there is no second home to move a
+            // query to, so the gesture is not offered rather than being
+            // offered and refusing
+            Action::QueryHome => self.on_query() && self.lib.manuscript.is_some(),
             Action::Manuscript => {
                 self.lib.manuscript.is_some() && self.lib.global_on && !keys.is_empty()
             }
@@ -2347,6 +2481,10 @@ impl App {
             Action::GlobalTier => {
                 "no local db here — the global library is all there is".to_string()
             }
+            Action::QueryHome if self.lib.manuscript.is_none() => {
+                "no manuscript here — every saved query is already global".to_string()
+            }
+            Action::QueryHome => "no query on screen to move".to_string(),
             // always available; unreachable, but the match stays total
             Action::Select | Action::Filter | Action::Card | Action::Log | Action::Help
             | Action::Columns | Action::Quit => "not available here".to_string(),
@@ -2403,6 +2541,7 @@ impl App {
                 self.col_sel = self.col_sel.min(self.panel_rows().len().saturating_sub(1));
             }
             Action::GlobalTier => self.toggle_global(),
+            Action::QueryHome => self.move_query_home(),
             Action::Quit => self.quit = true,
         }
     }
@@ -5045,6 +5184,7 @@ impl App {
                 KeyCode::Char('|') => self.run_action(Action::Columns),
                 KeyCode::Char('N') => self.open_rename_prompt(),
                 KeyCode::Char('E') => self.open_edit_query_prompt(),
+                KeyCode::Char('H') => self.run_action(Action::QueryHome),
                 // the other half of the focus toggle; with no panel open
                 // there is only one thing the arrows could drive
                 KeyCode::Tab | KeyCode::BackTab if self.show_columns => {
@@ -5940,6 +6080,23 @@ impl App {
             .enumerate()
             .map(|(i, s)| (s.label().to_string(), i, true))
             .collect();
+        // The two homes are told apart by where a capsule sits, so the
+        // boundary is marked once instead of every capsule spending
+        // width on a badge. Only drawn when both groups have something
+        // in them: a mark with nothing on one side of it says nothing.
+        let first_local = self
+            .scopes
+            .iter()
+            .position(|s| matches!(s, Scope::Ads { home: crate::tabs::Home::Local, .. }));
+        let any_global = self
+            .scopes
+            .iter()
+            .any(|s| matches!(s, Scope::Ads { home: crate::tabs::Home::Global, .. }));
+        if let Some(at) = first_local {
+            if any_global {
+                v.insert(at, ("│".to_string(), GROUP_SEP, false));
+            }
+        }
         v.push(("+ new".to_string(), usize::MAX, false));
         // an active filter is visible state: it rides the strip as its
         // own chip (click to edit; Esc still clears)
@@ -5985,6 +6142,14 @@ impl App {
                 );
                 x = area.x;
                 y += 1;
+            }
+            // the group mark is chrome: no capsule, no hit rect, nothing
+            // to hover — clicking it would have to mean something
+            if idx == GROUP_SEP {
+                spans.push(Span::styled(format!(" {label} "), divider()));
+                spans.push(Span::raw(" "));
+                x += wl + 1;
+                continue;
             }
             let r = Rect { x, y, width: wl, height: 1 };
             self.scope_rects.push((r, idx));
@@ -6961,6 +7126,114 @@ impl App {
             .collect()
     }
 
+    /// The two sides of the query-home control, or nothing at all when
+    /// there is no query to move, no second home to move it to, or no
+    /// room left of the badges to say so in.
+    fn home_layout(&self, area: Rect) -> Vec<(Rect, bool)> {
+        if !self.available(Action::QueryHome) {
+            return vec![];
+        }
+        let badges_x = self
+            .badge_layout(area)
+            .first()
+            .map(|(r, ..)| r.x)
+            .unwrap_or(area.x + area.width);
+        // two cells of separation from the badges, and it goes entirely
+        // rather than half-drawn when the width is not there
+        if badges_x.saturating_sub(area.x) < HOME_W + 2 {
+            return vec![];
+        }
+        let x0 = badges_x - HOME_W - 2;
+        let mut x = x0 + HOME_LABEL.chars().count() as u16 + 2;
+        HOME_SEGS
+            .iter()
+            .map(|&(label, is_local)| {
+                let lw = label.chars().count() as u16;
+                let r = Rect { x, y: area.y, width: lw, height: 1 };
+                x += lw + 3; // the " │ " divider between the sides
+                (r, is_local)
+            })
+            .collect()
+    }
+
+    /// What the control takes out of the room left of the badges, so the
+    /// footer's own line knows where to stop.
+    fn home_reserve(&self, area: Rect) -> u16 {
+        if self.home_layout(area).is_empty() {
+            0
+        } else {
+            HOME_W + 2
+        }
+    }
+
+    /// The home a query is in now, for deciding which side reads active.
+    fn active_query_home(&self) -> Option<crate::tabs::Home> {
+        match self.scopes.get(self.active_scope) {
+            Some(Scope::Ads { home, .. }) => Some(*home),
+            _ => None,
+        }
+    }
+
+    /// What a hovered home side says. Only the side the query is not in
+    /// is clickable, so only it hints.
+    fn home_hint(&self, area: Rect) -> Option<String> {
+        let now = self.active_query_home()?;
+        let (_, is_local) = self
+            .home_layout(area)
+            .into_iter()
+            .find(|(r, _)| hit(*r, self.hover.0, self.hover.1))?;
+        if is_local == (now == crate::tabs::Home::Local) {
+            return None;
+        }
+        Some(if is_local {
+            "⌕ keep this query with the manuscript  ·  H".to_string()
+        } else {
+            "⌕ keep this query everywhere  ·  H".to_string()
+        })
+    }
+
+    /// The query-home control, left of the view badges: a segmented
+    /// "query  global │ local" naming where the active query is saved,
+    /// the side it is in cyan, the other dimmed and clickable. It sits
+    /// in the footer because that is where the rest of the chrome that
+    /// describes the current view already is.
+    fn draw_query_home(&mut self, f: &mut Frame, area: Rect) {
+        let Some(now) = self.active_query_home() else { return };
+        let layout = self.home_layout(area);
+        let Some(&(first, _)) = layout.first() else { return };
+        let label_x = first.x - HOME_LABEL.chars().count() as u16 - 2;
+        f.render_widget(
+            Paragraph::new(Line::from(Span::styled(HOME_LABEL, divider()))),
+            Rect {
+                x: label_x,
+                y: area.y,
+                width: HOME_LABEL.chars().count() as u16,
+                height: 1,
+            },
+        );
+        for (i, (r, is_local)) in layout.into_iter().enumerate() {
+            if i > 0 {
+                f.render_widget(
+                    Paragraph::new(Line::from(Span::styled(" │ ", divider()))),
+                    Rect { x: r.x.saturating_sub(3), y: r.y, width: 3, height: 1 },
+                );
+            }
+            let style = if is_local == (now == crate::tabs::Home::Local) {
+                Style::default().fg(Color::Cyan)
+            } else {
+                // the side it is not in is the one that does something
+                self.footer_badges.push((r, Action::QueryHome));
+                if hit(r, self.hover.0, self.hover.1) {
+                    Style::default().fg(Color::Cyan).add_modifier(Modifier::UNDERLINED)
+                } else {
+                    Style::default().fg(Color::DarkGray)
+                }
+            };
+            let label = HOME_SEGS[i].0;
+            f.render_widget(Paragraph::new(Line::from(Span::styled(label, style))), r);
+        }
+    }
+
     /// What a hovered view badge says in the footer: whether clicking it
     /// shows or hides, what, and which key does the same thing. The key
     /// comes from the cheat-sheet table so the two cannot drift apart.
@@ -7447,6 +7720,9 @@ impl App {
         ));
         let last = Rect { x: area.x, y: last_y, width: area.width, height: 1 };
         self.draw_badges(f, last);
+        // after the badges, whose layout it measures against, and which
+        // clear the hit-rect list it pushes into
+        self.draw_query_home(f, last);
         self.draw_card_toggle(f, last);
         true
     }
@@ -7462,16 +7738,22 @@ impl App {
         // the badges and the card ⇄ bib toggler live on this same line and
         // are drawn after it, so their hover hints have to be settled
         // before the line is built
-        if let Some(hint) = self.badge_hint(area).or_else(|| self.toggle_hint(area)) {
+        if let Some(hint) = self
+            .badge_hint(area)
+            .or_else(|| self.toggle_hint(area))
+            .or_else(|| self.home_hint(area))
+        {
             self.hover_hint = Some(hint);
         }
         // room left of the badges, which are drawn after this line and
-        // over it: whatever goes here has to fit in front of them
+        // over it: whatever goes here has to fit in front of them — and
+        // in front of the query-home control, which sits between
         let free = self
             .badge_layout(area)
             .first()
             .map(|(r, ..)| r.x.saturating_sub(area.x).saturating_sub(2))
-            .unwrap_or(area.width);
+            .unwrap_or(area.width)
+            .saturating_sub(self.home_reserve(area));
         // the prompt's control rect, published after the match: the arm
         // borrows self.mode, so it cannot write to self while building
         let mut sort_rect = Rect::default();
@@ -7734,6 +8016,7 @@ impl App {
         self.prompt_sort_rect = sort_rect;
         f.render_widget(line, area);
         self.draw_badges(f, area);
+        self.draw_query_home(f, area);
         self.draw_card_toggle(f, area);
     }
 }
@@ -7860,6 +8143,16 @@ mod tests {
     fn toggle_width_matches_its_labels() {
         let labels: u16 = TOGGLE_SEGS.iter().map(|(l, _)| l.chars().count() as u16).sum();
         assert_eq!(TOGGLE_W, labels + 3, "both labels and the \" │ \" between them");
+    }
+
+    /// `HOME_W` is spelled out for the same reason, and gates whether
+    /// the control draws at all — too small and it would overlap the
+    /// badges, too large and it would vanish at widths that had room.
+    #[test]
+    fn home_width_matches_its_labels() {
+        let labels: u16 = HOME_SEGS.iter().map(|(l, _)| l.chars().count() as u16).sum();
+        let prefix = HOME_LABEL.chars().count() as u16 + 2;
+        assert_eq!(HOME_W, prefix + labels + 3, "the label, both sides, and the \" │ \"");
     }
 
     /// The ADS-returns table is the one place a wrong field name would

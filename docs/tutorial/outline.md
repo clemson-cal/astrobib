@@ -42,7 +42,7 @@ Who it's for: astrophysics researchers and grad students who frequently use LaTe
 *After this chapter you can turn a research question into a curated set of papers.*
 
 - **Ad-hoc queries** — `S` sends your query to ADS unmodified, so the full search syntax works (`^author`, `bibstem:ApJL`, `citations(...)`, boolean grouping); ↑/↓ sets the result count.
-- **Query scopes are tabs** — each query becomes a persistent capsule (saved per library context), refreshed with `r`, resized with `+`/`-`, closed with `ctrl+w`.
+- **Query scopes are tabs** — each query becomes a persistent capsule (saved globally, or with the manuscript you are in; `H` moves it), refreshed with `r`, resized with `+`/`-`, closed with `ctrl+w`.
 - **Importing results** — `i` on a row or a selection; the results table already shows the cite key each paper *would* get.
 - **Direct adds** — paste a DOI or ADS URL into the `S` prompt to import in one step; `astrobib add <bibcode>` from the shell.
 - **Running example** — build the FRB paper's starting set: `^lyubarsky year:2014-`, `kw:"fast radio bursts"`, a `bibstem:` sweep.
