@@ -55,7 +55,13 @@ def _pre_launch(state_dir):
     # the app resolves symlinks in cwd and Python does not, so the
     # manuscript's own key is written under both spellings
     contexts = {
-        "global": [_tab("g1", "kilonova ejecta", "kilonovae")],
+        # two global queries, so a move out and back has somewhere wrong
+        # to land: without a stable order the first would come to rest
+        # behind the second
+        "global": [
+            _tab("g1", "kilonova ejecta", "kilonovae"),
+            _tab("g2", "pulsar timing", "pulsars"),
+        ],
         OTHER: [_tab("x1", "someone else's query", "theirs")],
         ms: [local],
         os.path.realpath(ms): [local],
@@ -65,7 +71,9 @@ def _pre_launch(state_dir):
     cache = os.path.join(scratch, "home", ".cache", "astrobib")
     os.makedirs(cache, exist_ok=True)
     with open(os.path.join(cache, "query_cache.json"), "w") as f:
-        json.dump({"version": 1, "tabs": {"g1": [_ARTICLE], "l1": [_ARTICLE]}}, f)
+        json.dump(
+            {"version": 1, "tabs": {"g1": [_ARTICLE], "g2": [_ARTICLE], "l1": [_ARTICLE]}}, f
+        )
 
 
 PRE_LAUNCH = _pre_launch
@@ -117,14 +125,31 @@ def run(t):
         t,
     )
 
+    # H twice is a no-op. Both halves matter: the query has to come back
+    # to where it was in the strip rather than to the end of its group,
+    # and the gesture must never leave you on a different tab — which is
+    # what the move reporting the same query's name twice proves, since
+    # it always acts on the one you are on.
+    before = t.lines()[t.row_of("kilonovae")]
+    t.send("H")
+    t.wait_for(lambda: "'kilonovae' moved to this manuscript" in t.text(), what="out")
+    t.send("H")
+    t.wait_for(lambda: "'kilonovae' moved to the global queries" in t.text(), what="and back")
+    require(
+        t.lines()[t.row_of("kilonovae")] == before,
+        f"H twice should put the strip back as it was:\n{before}\n{t.lines()[t.row_of('kilonovae')]}",
+        t,
+    )
+
     # H moves the manuscript's own query to the global set
     t.send("]")
+    t.send("]")  # past the second global query, onto the manuscript's own
     t.wait_for(lambda: "magnetar bursts" in t.text() or "magnetars" in t.text(), what="local query")
     t.send("H")
     t.wait_for(lambda: "moved to the global queries" in t.text(), what="the move to global")
     require(
-        sorted(_ids(_contexts(t), "global")) == ["g1", "l1"],
-        f"the query should have joined the global set:\n{_contexts(t)}",
+        _ids(_contexts(t), "global") == ["g1", "g2", "l1"],
+        f"the query should have joined the global set, at its end:\n{_contexts(t)}",
         t,
     )
     # only the spelling the app resolved to is rewritten; the other is a
@@ -152,7 +177,7 @@ def run(t):
     t.click(x, y)
     t.wait_for(lambda: "moved to this manuscript" in t.text(), what="the move back")
     require(
-        _ids(_contexts(t), "global") == ["g1"],
+        _ids(_contexts(t), "global") == ["g1", "g2"],
         f"the query should have left the global set:\n{_contexts(t)}",
         t,
     )

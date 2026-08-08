@@ -214,6 +214,10 @@ enum Scope {
         /// active manuscript's. It decides where `save_tabs` files it
         /// and which group it sits in on the strip.
         home: crate::tabs::Home,
+        /// The order this scope arrived in, which survives being
+        /// regrouped. Session-local and never stored: on disk the order
+        /// is the order of each set's array.
+        seq: usize,
     },
 }
 
@@ -1090,6 +1094,12 @@ struct App {
     // table scopes: index 0 is always Library; ADS query results follow
     scopes: Vec<Scope>,
     active_scope: usize,
+    /// Next sequence number for a query scope. Grouping the strip means
+    /// sorting the scopes, and a sort needs a tiebreak that outlives the
+    /// grouping — otherwise a query moved to the other home and back
+    /// would come to rest at the end of its group rather than where it
+    /// started, and H twice would not be the no-op it reads as.
+    scope_seq: usize,
     scope_rects: Vec<(Rect, usize)>,
     help_rects: Vec<(Rect, KeyCode)>, // keys-panel rows → synthesized key
     ads_rx: Option<std::sync::mpsc::Receiver<AdsMsg>>,
@@ -1359,6 +1369,7 @@ impl App {
             started: std::time::Instant::now(),
             scopes: vec![Scope::Library],
             active_scope: 0,
+            scope_seq: 0,
             scope_rects: vec![],
             help_rects: vec![],
             ads_rx: None,
@@ -1592,7 +1603,9 @@ impl App {
                 articles: vec![],
                 state: QueryState::Pending,
                 home,
+                seq: self.scope_seq,
             });
+            self.scope_seq += 1;
             self.set_scope(self.scopes.len() - 1);
             self.regroup_scopes();
         } else if let Some(Scope::Ads { state, .. }) =
@@ -1920,9 +1933,14 @@ impl App {
             return;
         };
         let mut queries = self.scopes.split_off(first);
+        // by home, then by the order they arrived in — the second half
+        // is what makes moving a query out and back a no-op rather than
+        // a quiet trip to the end of the group
         queries.sort_by_key(|s| match s {
-            Scope::Ads { home: crate::tabs::Home::Global, .. } => 0u8,
-            _ => 1u8,
+            Scope::Ads { home, seq, .. } => {
+                (if *home == crate::tabs::Home::Global { 0u8 } else { 1u8 }, *seq)
+            }
+            _ => (2u8, 0),
         });
         self.scopes.append(&mut queries);
         if let Some(id) = active_id {
@@ -1982,7 +2000,9 @@ impl App {
                 articles,
                 state: QueryState::Ready,
                 home: *home,
+                seq: self.scope_seq,
             });
+            self.scope_seq += 1;
         }
         // the cache holds whatever order the results last arrived in;
         // each tab's stored sort is what it should come back showing
@@ -2147,14 +2167,15 @@ impl App {
                             crate::tabs::save_cached_articles(&tab.id, &articles);
                             tab.refreshed = Some(crate::tabs::now_secs());
                             // the scope is rebuilt, not edited, so its
-                            // home has to be carried across — a refresh
-                            // must not re-file the query it refreshed
-                            let home = match &self.scopes[idx] {
-                                Scope::Ads { home, .. } => *home,
-                                _ => self.default_home(&tab.query),
+                            // home and its place in the order have to be
+                            // carried across — a refresh must not re-file
+                            // the query it refreshed, nor move it
+                            let (home, seq) = match &self.scopes[idx] {
+                                Scope::Ads { home, seq, .. } => (*home, *seq),
+                                _ => (self.default_home(&tab.query), self.scope_seq),
                             };
                             self.scopes[idx] =
-                                Scope::Ads { tab, articles, state: QueryState::Ready, home };
+                                Scope::Ads { tab, articles, state: QueryState::Ready, home, seq };
                             // ADS hands results back in its own order;
                             // the tab's own sort decides what is shown
                             self.sort_ads_at(idx);
