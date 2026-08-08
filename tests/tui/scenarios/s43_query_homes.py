@@ -115,13 +115,15 @@ def run(t):
     between = strip[strip.index("kilonovae") : strip.index("magnetars")]
     require("│" in between, f"the two groups should be marked apart:\n{strip}", t)
 
-    # the footer names the home of the query you are on
+    # the footer names where the query you are on is visible — one label
+    # stating the home it is in, not two sides leaving you to guess which
+    # of them is the state and which is the button
     t.send("]")
     t.send("]")  # 0 Library, 1 Manuscript, 2 the global query
-    t.wait_for(lambda: "query" in t.lines()[-1], what="the query-home control")
+    t.wait_for(lambda: "everywhere" in t.lines()[-1], what="the query-home indicator")
     require(
-        "local" in t.lines()[-1] and "global" in t.lines()[-1],
-        f"the control should offer both homes:\n{t.lines()[-1]}",
+        "this paper" not in t.lines()[-1],
+        f"only the home it is in should be named:\n{t.lines()[-1]}",
         t,
     )
 
@@ -133,8 +135,20 @@ def run(t):
     before = t.lines()[t.row_of("kilonovae")]
     t.send("H")
     t.wait_for(lambda: "'kilonovae' moved to this manuscript" in t.text(), what="out")
+    # the indicator's words change, so the move is visible without
+    # reading a colour
+    require(
+        "this paper" in t.lines()[-1] and "everywhere" not in t.lines()[-1],
+        f"the indicator should now name the manuscript:\n{t.lines()[-1]}",
+        t,
+    )
     t.send("H")
     t.wait_for(lambda: "'kilonovae' moved to the global queries" in t.text(), what="and back")
+    require(
+        "everywhere" in t.lines()[-1],
+        f"and read as global again:\n{t.lines()[-1]}",
+        t,
+    )
     require(
         t.lines()[t.row_of("kilonovae")] == before,
         f"H twice should put the strip back as it was:\n{before}\n{t.lines()[t.row_of('kilonovae')]}",
@@ -172,8 +186,8 @@ def run(t):
         t,
     )
 
-    # clicking the other side of the footer control moves it back
-    x, y = t.find("local")
+    # clicking the indicator moves the query back
+    x, y = t.find("everywhere")
     t.click(x, y)
     t.wait_for(lambda: "moved to this manuscript" in t.text(), what="the move back")
     require(

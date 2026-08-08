@@ -506,18 +506,23 @@ const TOGGLE_W: u16 = 6 + 3 + 5;
 /// and two cells of separation from the badges.
 const TOGGLE_RESERVE: u16 = TOGGLE_W + 3;
 
-/// The two homes a saved query can have, as a segmented control: the
-/// one it is in reads active, the other is clickable and moves it.
-const HOME_SEGS: [(&str, bool); 2] = [("global", false), ("local", true)];
+/// Where the query you are on is visible, as one label rather than two
+/// sides. A segmented control cannot say whether the lit side is the
+/// state or the button, and since a move changed only the colour, the
+/// line read as though nothing had happened. One label that changes its
+/// words says the state and shows the move in the same stroke.
+///
+/// "everywhere" and "this paper" rather than global and local: the
+/// footer already says "global" for the library tier a few cells right,
+/// and these name what the user actually wants to know — where the
+/// query will turn up. The ⌕ carries the query sense that a spelled-out
+/// "query" was spending five cells on.
+const HOME_GLOBAL: &str = "⌕ everywhere";
+const HOME_LOCAL: &str = "⌕ this paper";
 
-/// Written out because the footer already says "global" for the library
-/// tier a few cells to the right, and two unrelated "global"s on one
-/// line would be one too many. This says which global it means.
-const HOME_LABEL: &str = "query";
-
-/// The control's drawn width: the label, two cells of air, both sides
-/// and the " │ " between them.
-const HOME_W: u16 = 5 + 2 + 6 + 3 + 5;
+/// Both labels are this wide, which is what lets the indicator hold its
+/// place when it changes.
+const HOME_W: u16 = 12;
 
 /// One line of the columns sidebar, built before it is placed so the
 /// list can be windowed against the pane's height.
@@ -7147,12 +7152,12 @@ impl App {
             .collect()
     }
 
-    /// The two sides of the query-home control, or nothing at all when
-    /// there is no query to move, no second home to move it to, or no
-    /// room left of the badges to say so in.
-    fn home_layout(&self, area: Rect) -> Vec<(Rect, bool)> {
+    /// Where the query-home indicator sits, or nothing at all when there
+    /// is no query to move, no second home to move it to, or no room
+    /// left of the badges to say so in.
+    fn home_rect(&self, area: Rect) -> Option<Rect> {
         if !self.available(Action::QueryHome) {
-            return vec![];
+            return None;
         }
         let badges_x = self
             .badge_layout(area)
@@ -7162,28 +7167,18 @@ impl App {
         // two cells of separation from the badges, and it goes entirely
         // rather than half-drawn when the width is not there
         if badges_x.saturating_sub(area.x) < HOME_W + 2 {
-            return vec![];
+            return None;
         }
-        let x0 = badges_x - HOME_W - 2;
-        let mut x = x0 + HOME_LABEL.chars().count() as u16 + 2;
-        HOME_SEGS
-            .iter()
-            .map(|&(label, is_local)| {
-                let lw = label.chars().count() as u16;
-                let r = Rect { x, y: area.y, width: lw, height: 1 };
-                x += lw + 3; // the " │ " divider between the sides
-                (r, is_local)
-            })
-            .collect()
+        Some(Rect { x: badges_x - HOME_W - 2, y: area.y, width: HOME_W, height: 1 })
     }
 
-    /// What the control takes out of the room left of the badges, so the
-    /// footer's own line knows where to stop.
+    /// What the indicator takes out of the room left of the badges, so
+    /// the footer's own line knows where to stop.
     fn home_reserve(&self, area: Rect) -> u16 {
-        if self.home_layout(area).is_empty() {
-            0
-        } else {
+        if self.home_rect(area).is_some() {
             HOME_W + 2
+        } else {
+            0
         }
     }
 
@@ -7195,64 +7190,39 @@ impl App {
         }
     }
 
-    /// What a hovered home side says. Only the side the query is not in
-    /// is clickable, so only it hints.
+    /// What the hovered indicator says: where the query would go, not
+    /// where it is — the label already says where it is, and a hint that
+    /// repeated it would leave the click meaning nothing in particular.
     fn home_hint(&self, area: Rect) -> Option<String> {
         let now = self.active_query_home()?;
-        let (_, is_local) = self
-            .home_layout(area)
-            .into_iter()
-            .find(|(r, _)| hit(*r, self.hover.0, self.hover.1))?;
-        if is_local == (now == crate::tabs::Home::Local) {
+        let r = self.home_rect(area)?;
+        if !hit(r, self.hover.0, self.hover.1) {
             return None;
         }
-        Some(if is_local {
-            "⌕ keep this query with the manuscript  ·  H".to_string()
-        } else {
-            "⌕ keep this query everywhere  ·  H".to_string()
+        Some(match now {
+            crate::tabs::Home::Global => "⌕ keep this query with the manuscript  ·  H".to_string(),
+            crate::tabs::Home::Local => "⌕ keep this query everywhere  ·  H".to_string(),
         })
     }
 
-    /// The query-home control, left of the view badges: a segmented
-    /// "query  global │ local" naming where the active query is saved,
-    /// the side it is in cyan, the other dimmed and clickable. It sits
-    /// in the footer because that is where the rest of the chrome that
-    /// describes the current view already is.
+    /// The query-home indicator, left of the view badges: where the
+    /// active query is visible, and clicking it moves the query to the
+    /// other home. It sits in the footer because that is where the rest
+    /// of the chrome describing the current view already is.
     fn draw_query_home(&mut self, f: &mut Frame, area: Rect) {
         let Some(now) = self.active_query_home() else { return };
-        let layout = self.home_layout(area);
-        let Some(&(first, _)) = layout.first() else { return };
-        let label_x = first.x - HOME_LABEL.chars().count() as u16 - 2;
-        f.render_widget(
-            Paragraph::new(Line::from(Span::styled(HOME_LABEL, divider()))),
-            Rect {
-                x: label_x,
-                y: area.y,
-                width: HOME_LABEL.chars().count() as u16,
-                height: 1,
-            },
-        );
-        for (i, (r, is_local)) in layout.into_iter().enumerate() {
-            if i > 0 {
-                f.render_widget(
-                    Paragraph::new(Line::from(Span::styled(" │ ", divider()))),
-                    Rect { x: r.x.saturating_sub(3), y: r.y, width: 3, height: 1 },
-                );
-            }
-            let style = if is_local == (now == crate::tabs::Home::Local) {
-                Style::default().fg(Color::Cyan)
-            } else {
-                // the side it is not in is the one that does something
-                self.footer_badges.push((r, Action::QueryHome));
-                if hit(r, self.hover.0, self.hover.1) {
-                    Style::default().fg(Color::Cyan).add_modifier(Modifier::UNDERLINED)
-                } else {
-                    Style::default().fg(Color::DarkGray)
-                }
-            };
-            let label = HOME_SEGS[i].0;
-            f.render_widget(Paragraph::new(Line::from(Span::styled(label, style))), r);
-        }
+        let Some(r) = self.home_rect(area) else { return };
+        self.footer_badges.push((r, Action::QueryHome));
+        let style = if hit(r, self.hover.0, self.hover.1) {
+            Style::default().fg(Color::Cyan).add_modifier(Modifier::UNDERLINED)
+        } else {
+            Style::default().fg(Color::Cyan)
+        };
+        let label = match now {
+            crate::tabs::Home::Global => HOME_GLOBAL,
+            crate::tabs::Home::Local => HOME_LOCAL,
+        };
+        f.render_widget(Paragraph::new(Line::from(Span::styled(label, style))), r);
     }
 
     /// What a hovered view badge says in the footer: whether clicking it
@@ -8166,14 +8136,16 @@ mod tests {
         assert_eq!(TOGGLE_W, labels + 3, "both labels and the \" │ \" between them");
     }
 
-    /// `HOME_W` is spelled out for the same reason, and gates whether
-    /// the control draws at all — too small and it would overlap the
-    /// badges, too large and it would vanish at widths that had room.
+    /// `HOME_W` gates whether the indicator draws at all — too small and
+    /// it would overlap the badges, too large and it would vanish at
+    /// widths that had room. Both labels must also be the same width, or
+    /// the indicator would shift sideways when the query moves and the
+    /// eye would read the jump rather than the word.
     #[test]
-    fn home_width_matches_its_labels() {
-        let labels: u16 = HOME_SEGS.iter().map(|(l, _)| l.chars().count() as u16).sum();
-        let prefix = HOME_LABEL.chars().count() as u16 + 2;
-        assert_eq!(HOME_W, prefix + labels + 3, "the label, both sides, and the \" │ \"");
+    fn both_home_labels_are_the_declared_width() {
+        for label in [HOME_GLOBAL, HOME_LOCAL] {
+            assert_eq!(label.chars().count() as u16, HOME_W, "{label}");
+        }
     }
 
     /// The ADS-returns table is the one place a wrong field name would
