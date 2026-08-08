@@ -31,7 +31,12 @@ def _pre_launch(state_dir):
                     "search": {
                         "limit": 5000,
                         "remaining": 4988,
-                        "reset": now + 4 * 3600 + 12 * 60,
+                        # the 45 is margin, not decoration: the countdown
+                        # floors to whole minutes, so a reset landing
+                        # exactly on the boundary reads a minute lower as
+                        # soon as one second of the run has passed — and
+                        # on a loaded machine one second always has
+                        "reset": now + 4 * 3600 + 12 * 60 + 45,
                     },
                     # a window that has already rolled over: history, not
                     # the state of the allowance now

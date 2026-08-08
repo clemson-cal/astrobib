@@ -1,6 +1,9 @@
 # Changelog
 
-## Unreleased
+## 0.17.0 — 2026-08-08
+
+### Fixed
+- A TUI scenario that seeded the ADS quota's reset exactly on a minute boundary passed or failed depending on how loaded the machine was. The countdown floors to whole minutes, so one second into the run it read a minute lower than the test asserted. The app was right and the test was wrong, which is the ordering worth recording: the seed now sits 45 seconds past the boundary, so a run has margin instead of a race.
 
 ### Added
 - `H` moves the query you are on between its two homes, and the footer says which one it is in: `⌕ everywhere` or `⌕ this paper`, beside the view badges, clickable to do the same thing as the key. One label rather than a two-sided control, because a control with a lit side cannot say whether the lit side is the state or the button — and since a move changed only which side was lit, the line read as though nothing had happened. The words change now, so the move is visible without reading a colour. They are not "global" and "local" because the footer already says "global" for the library tier a few cells to the right, and because where a query will turn up is the thing worth naming. One gesture both ways, the same ± reading `m` and `T` have, because there are exactly two homes and asking which one you meant would be a question with one answer. The move is a single write of both sets, so a query leaves one and joins the other at once — never in both, which would be a duplicate id, and never in neither. Not offered outside a manuscript, where there is no second home to move anything to. Pressing it twice is a no-op in both senses that matter: the query comes back to the place it held rather than to the end of its group, and it never leaves you on a different tab — grouping the strip means sorting the scopes, so each carries the order it arrived in as a tiebreak, and the active one is re-found by its tab id rather than by an index the sort has just moved.
