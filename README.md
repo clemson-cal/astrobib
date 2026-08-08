@@ -50,6 +50,7 @@ Scope capsules at the top switch between your library, saved ADS query tabs, and
 - In any prompt: `⌃k` / `⌃u` / `⌃w` kill to end of line, to start of line, and the previous word, and `⌃y` yanks the last of them back; `⌥w` copies what you are composing (from a query, the same URL as `y q`)
 - `E` — edit the active query in place (text, result count and what ADS returns); `S` always composes a new one
 - `N` — name the active query (the capsule label; persists across edits to the query, empty restores the derived name)
+- `H` — move the active query between its two homes: the global set, visible from every directory, and the manuscript you are in. The footer's `query  global │ local` control says which it is in, and its other side does the same thing on a click. Pressing it twice puts the query back where it was
 - `C` / `R` — open a citations / references query for the shown paper; `v` — pub view (the raw .bib); `e` — export the selection to a .bib file
 - `M` — pick the metric the swatch column shows (priority or citations, distinct colormaps; show the column itself from `|`); `.` — priority 1.0, `0` — clear, `<` `>` — scale it (decays weekly); the wheel over a swatch does the same for that row
 - `|` — table panel: show/hide columns, `←`/`→` to resize, `s` to sort by any of them (shown or not); `Tab` swaps the arrow keys between the panel and the table, `Esc` hands them back

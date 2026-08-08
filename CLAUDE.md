@@ -8,6 +8,29 @@ Read [docs/DESIGN.md](docs/DESIGN.md) before adding features or changing data fo
 
 ---
 
+## "new task" protocol
+
+When the user says **"new task"**, they are about to clear the context and start fresh. Before confirming, do the following:
+
+1. **Check for incomplete work.** Verify that clearing the context would not interrupt an in-progress workflow: uncommitted changes, a half-finished refactor, failing tests, or an unresolved discussion. If work is incomplete, say so and either finish it or bring the tree to a coherent stopping point first.
+2. **Update design docs.** If the project is at a suitable stopping point, update the design docs (`docs/`, and the README status section) so the next steps are easily discoverable by a fresh session with no prior context.
+3. **Commit.** Commit the doc updates along with any outstanding work, with a clear message.
+4. **Confirm.** Only then tell the user it is safe to clear the context.
+
+---
+
+## Open threads
+
+Known and deliberately deferred, with the reasoning already done. None is a defect in shipped behaviour; each is a judgement call left for a session with a real case to argue over.
+
+- **State-file versioning is unresolved.** `docs/DESIGN.md` "Config and app state versioning" contradicts "Future-proof by dumbness", and the code follows neither. Noted in DESIGN.md itself; settle it the next time a state file changes shape.
+- **`src/tags.rs` still writes tag files with a plain `fs::write`.** Every other curated file goes through `library::write_atomic`. Tag files are git-versioned and so recoverable, which is why they were left — but they are the last truncate-then-write on data a user curates.
+- **`load_cached_articles` re-reads and re-parses all of `query_cache.json` per tab** (`src/tabs.rs`, called per tab from `restore_tabs` in `src/tui.rs`). Invisible at a handful of tabs; now that a session shows both homes' queries at once, larger sets are likelier. Measure before fixing.
+- **The `@` panel does not name the active manuscript.** It reports where the ADS token came from and what it has spent; which database you are pointed at is inferable only from the Manuscript capsule being present.
+
+---
+
+
 ## Development commands
 
 ```bash

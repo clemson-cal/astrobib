@@ -113,6 +113,8 @@ Both `config.toml` and any future app state files must include a `schema_version
 
 This rule stops at the bib database. Tag files carry no version field and never will: they are line-oriented text whose whole value is that `cat` and any text editor are sufficient tools. A format that needs a header is the wrong format for that job.
 
+**Unresolved, and deliberately so.** This section and "Future-proof by dumbness" above do not agree, and the code follows neither. `state.json`, `metrics.json` and `query_cache.json` carry a `"version": 1` that no reader ever branches on; `tabs.json` carries nothing. What has actually kept these files compatible is the tolerant reader — unknown keys ignored, missing keys defaulted to what the older build ran with — which is the first section's rule, not this one. Both changes that might have needed a migration (the tab's `ads_sort`, and a query's two homes) were instead shaped so that none was required. The open question is whether to rewrite this section to describe that, or to make the code honour it; it should be settled the next time a state file changes shape, and not before, because the answer wants a real case to argue over.
+
 ## Dev vs. stable coexistence
 
 When running a dev install alongside the system-installed version, use `ASTROBIB_STATE_DIR` to redirect user-local app state to a scratch path. The bib database and config are shared between versions and must remain compatible.
