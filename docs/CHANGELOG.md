@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.16.0 — 2026-08-08
 
 ### Added
 - What the ADS token has spent today is readable, in the `@` panel beside where the token came from and in `astrobib config`. ADS meters a token daily and the meter is invisible: nothing says how much of the allowance is gone until a call comes back refusing to work. Every response carries the figures in its rate-limit headers, so the last reading is kept per endpoint — ADS meters search, export and the link resolver on separate allowances, and adding them up would answer a question nobody asked — and persisted, so a run that has made no call can still report the day so far. A window that has since rolled over reads as spent nothing rather than as history, and an ADS search notes the day's search count on the footer where it was just spent.
