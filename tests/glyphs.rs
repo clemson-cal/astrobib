@@ -47,14 +47,65 @@
 use unicode_properties::UnicodeEmoji;
 use unicode_width::UnicodeWidthChar;
 
-/// Every source file that renders TUI chrome. A new module under
-/// `src/tui/` belongs here the moment it draws anything, or its glyphs
-/// ship unreviewed — the guard is only as wide as this list.
+/// Every source file that renders TUI chrome — which is every file
+/// under `src/tui/`, listed rather than globbed because `include_str!`
+/// needs a literal path. The guard is only as wide as this list, so
+/// `every_tui_source_is_scanned` below reads the directory and fails if
+/// a module has been added without a line here: splitting one file into
+/// twenty is exactly the edit that would otherwise carry glyphs out of
+/// view, and it is not the sort of thing anyone would think to check.
 const SOURCES: &[(&str, &str)] = &[
-    ("src/tui.rs", include_str!("../src/tui.rs")),
+    ("src/tui/mod.rs", include_str!("../src/tui/mod.rs")),
+    ("src/tui/actions.rs", include_str!("../src/tui/actions.rs")),
     ("src/tui/card.rs", include_str!("../src/tui/card.rs")),
+    ("src/tui/card_view.rs", include_str!("../src/tui/card_view.rs")),
+    ("src/tui/columns.rs", include_str!("../src/tui/columns.rs")),
+    ("src/tui/copy.rs", include_str!("../src/tui/copy.rs")),
+    ("src/tui/entries.rs", include_str!("../src/tui/entries.rs")),
+    ("src/tui/footer.rs", include_str!("../src/tui/footer.rs")),
+    ("src/tui/input.rs", include_str!("../src/tui/input.rs")),
+    ("src/tui/manuscript.rs", include_str!("../src/tui/manuscript.rs")),
+    ("src/tui/metric.rs", include_str!("../src/tui/metric.rs")),
+    ("src/tui/mouse.rs", include_str!("../src/tui/mouse.rs")),
+    ("src/tui/overlays.rs", include_str!("../src/tui/overlays.rs")),
+    ("src/tui/pdfs.rs", include_str!("../src/tui/pdfs.rs")),
+    ("src/tui/rows.rs", include_str!("../src/tui/rows.rs")),
+    ("src/tui/scopes.rs", include_str!("../src/tui/scopes.rs")),
+    ("src/tui/search.rs", include_str!("../src/tui/search.rs")),
     ("src/tui/table.rs", include_str!("../src/tui/table.rs")),
+    ("src/tui/table_view.rs", include_str!("../src/tui/table_view.rs")),
+    ("src/tui/tagging.rs", include_str!("../src/tui/tagging.rs")),
+    ("src/tui/tasks.rs", include_str!("../src/tui/tasks.rs")),
+    ("src/tui/theme.rs", include_str!("../src/tui/theme.rs")),
+    ("src/tui/watch.rs", include_str!("../src/tui/watch.rs")),
 ];
+
+/// `SOURCES` names every `.rs` file under `src/tui/`.
+///
+/// The list is compile-time and the directory is not, so nothing else
+/// connects them: a new module simply would not be scanned, and the
+/// suite would stay green while the glyphs in it went unreviewed. This
+/// is the one test here that reads the filesystem, and it exists so the
+/// answer to "is the guard still complete?" is not "somebody remembered".
+#[test]
+fn every_tui_source_is_scanned() {
+    let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/src/tui");
+    let mut on_disk: Vec<String> = std::fs::read_dir(dir)
+        .expect("src/tui/ should be readable")
+        .filter_map(|e| e.ok())
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .filter(|n| n.ends_with(".rs"))
+        .map(|n| format!("src/tui/{n}"))
+        .collect();
+    on_disk.sort();
+    let mut listed: Vec<String> = SOURCES.iter().map(|(p, _)| p.to_string()).collect();
+    listed.sort();
+    assert_eq!(
+        on_disk, listed,
+        "SOURCES is out of step with src/tui/ — add the new module to it, \
+         or its glyphs ship unscanned"
+    );
+}
 
 /// Where a glyph sits, which decides how bad a width surprise is.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]

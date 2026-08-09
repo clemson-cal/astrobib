@@ -21,7 +21,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 static LIGHT: AtomicBool = AtomicBool::new(false);
 
-pub(super) fn light() -> bool {
+fn light() -> bool {
     LIGHT.load(Ordering::Relaxed)
 }
 
