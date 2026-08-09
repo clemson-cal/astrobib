@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "astrobib"
-version = "0.17.0"
+version = "0.17.1"
 description = "ADS-native literature manager for astrophysics: search, BibTeX libraries, manuscripts"
 readme = "README.md"
 license = { text = "MIT" }

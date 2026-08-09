@@ -24,9 +24,8 @@ When the user says **"new task"**, they are about to clear the context and start
 Known and deliberately deferred, with the reasoning already done. None is a defect in shipped behaviour; each is a judgement call left for a session with a real case to argue over.
 
 - **State-file versioning is unresolved.** `docs/DESIGN.md` "Config and app state versioning" contradicts "Future-proof by dumbness", and the code follows neither. Noted in DESIGN.md itself; settle it the next time a state file changes shape.
-- **`src/tags.rs` still writes tag files with a plain `fs::write`.** Every other curated file goes through `library::write_atomic`. Tag files are git-versioned and so recoverable, which is why they were left — but they are the last truncate-then-write on data a user curates.
-- **`load_cached_articles` re-reads and re-parses all of `query_cache.json` per tab** (`src/tabs.rs`, called per tab from `restore_tabs` in `src/tui.rs`). Invisible at a handful of tabs; now that a session shows both homes' queries at once, larger sets are likelier. Measure before fixing.
-- **The `@` panel does not name the active manuscript.** It reports where the ADS token came from and what it has spent; which database you are pointed at is inferable only from the Manuscript capsule being present.
+- **`load_cached_articles` re-reads and re-parses all of `query_cache.json` per tab** (`src/tabs.rs`, called per tab from `restore_tabs` in `src/tui/scopes.rs`). Invisible at a handful of tabs; now that a session shows both homes' queries at once, larger sets are likelier. Measure before fixing.
+- **`s32_edit_query` sets the TUI suite's floor at ~10s.** It twice waits out the ageing of a startup note so the footer affordance it tests can take the line. Everything else overlaps around it, so the whole roster costs about what that one scenario does; shortening it is the only thing that would make the suite meaningfully faster.
 
 ---
 
@@ -39,9 +38,18 @@ cargo test                   # includes the golden format/key vectors
 cargo run --release          # TUI
 cargo run --release -- list  # CLI
 tests/tui/run.py             # TUI integration scenarios (see tests/tui/README.md)
+tests/tui/run.py -k s26 -j 1 # one scenario, serially
 ```
 
-Verify TUI changes headlessly with the committed pyte pty harness (`tests/tui/run.py`): it drives the real binary in a pseudo-terminal against a scratch `ASTROBIB_LIBRARY` / `ASTROBIB_STATE_DIR` built from `tests/tui/fixtures/` — never the real library — and reconstructs screens with pyte rather than grepping raw bytes. It bootstraps its own venv; add new scenarios under `tests/tui/scenarios/`.
+Verify TUI changes headlessly with the committed pyte pty harness (`tests/tui/run.py`): it drives the real binary in a pseudo-terminal against a scratch `ASTROBIB_LIBRARY` / `ASTROBIB_STATE_DIR` built from `tests/tui/fixtures/` — never the real library — and reconstructs screens with pyte rather than grepping raw bytes. It bootstraps its own venv; add new scenarios under `tests/tui/scenarios/`. Scenarios run eight at a time (the whole roster in ~12s); they are isolated by construction, so `-j 1` is for reading the log, not for correctness.
+
+---
+
+## The TUI is one struct and twenty modules
+
+`App`'s state is a single struct on purpose — nearly every keystroke reads across concerns, and splitting it would turn field access into plumbing — but its `impl` is spread across `src/tui/*.rs`, one topic per file. A method's home is what it is *about*, not which surface it draws on. Cross-module calls are `pub(super)` and nothing else is, so each file's public surface is the list of things other topics genuinely reach for; keep it that way rather than blanket-publishing. `src/tui/mod.rs` holds the struct, the event loop, `draw`'s frame layout, and the chrome helpers everyone uses; `card`, `table` and `theme` are older App-free widget modules.
+
+A new module under `src/tui/` must be added to `SOURCES` in `tests/glyphs.rs`, which is enforced by a test rather than remembered.
 
 ---
 

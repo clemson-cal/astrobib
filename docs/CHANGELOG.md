@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.17.1 — 2026-08-09
+
+Maintenance: three things the app should have been saying, and a large amount of moving furniture with nothing on the screen changing.
+
+### Fixed
+- Tag files are written whole or not at all, like every other file you curate. They were the last truncate-then-write in the tree, left there because `tags/` is git-versioned and so recoverable — but recovery means running `git checkout` on damage you did not know about, and `astrobib tidy` rewrites every tag in turn. The scratch file the write goes through is a dotfile, which matters for the one case cleanup cannot cover: nothing runs when a process is killed outright, so the name has to be one every reader already skips. `tags/` skips dotfiles for the `.DS_Store` reason and `bib/` filters on the extension, so a leftover is litter to sweep rather than a tag named after a crash.
+- The `@` panel names both databases the session is pointed at. It reported where the ADS token came from and what the day had cost it — everything about your environment except the part you are standing in. The global tier's path is settable with `--library` and appeared nowhere at all; the local tier could only be inferred from the Manuscript capsule existing, which tells you that there is one and never which one. A hidden global tier says so on its own row, because that changes what the counts above it mean.
+- Every CLI argument has help text. `search --ads`, `add --force`, the `-n` limits and several positionals were bare, so `--help` could not be quoted or read.
+
+### Changed
+- The TUI source is nineteen modules instead of one 8,300-line file. `impl App` was 6,700 of those lines and 191 methods; an inherent impl can be spread across the modules of its own crate, so it now is, each file holding one topic together with the types that exist only to serve it. The state stays a single struct — nearly every keystroke reads across concerns, and splitting it would turn field access into plumbing. Cross-module calls are `pub(super)` and nothing else is, which makes each file's surface the list of things other topics actually reach for: `input` and `mouse` expose two methods each, being pure sinks for events, while `scopes` and `search` expose two dozen, being the hubs. Nothing about the screen changed, and this is checked rather than asserted: 6,363 lines of code before and after, and `s26_table_chrome` — the golden-screen scenario that exists to make exactly this kind of edit provable — matches byte for byte.
+- The TUI integration suite runs in about 12 seconds instead of 63. It was never slow, it was serialized: 41 scenarios at 8% CPU, with almost all of that minute spent waiting on a repaint to land or on the app's own 1.5-second external-change throttle. Scenarios were already isolated by construction — a session owns its scratch directory, its pty and its process — so the runner only had to stop running them one at a time. No scenario was dropped to get there.
+- The glyph guard, which scans TUI string literals for characters a terminal might draw two cells wide, now checks its own coverage. Its source list is compile-time and the directory is not, so splitting one file into twenty is precisely the edit that carries glyphs out of its view while the suite stays green; a test reads `src/tui/` and fails if the list has fallen behind.
+- `cargo clippy` is clean, from fourteen warnings. The boxed predicates in `QueryContext` have names, a negated comparison that was not one reads as what it does, and `src/tabs.rs` no longer keeps three functions below its test module. One warning is silenced with a reason rather than fixed: two arms of the scope-strip colour match return the same cyan for opposite reasons, and folding them together would bury two rules in one place.
+
 ## 0.17.0 — 2026-08-08
 
 ### Fixed
