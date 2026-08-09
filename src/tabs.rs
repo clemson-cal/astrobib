@@ -285,6 +285,69 @@ pub fn make_tab(query: &str, limit: usize) -> Tab {
     }
 }
 
+// ── cached query results ────────────────────────────────────────────
+//
+// The last results of every saved tab: startup restores scopes from
+// here instantly (and offline) instead of re-querying ADS; r refreshes
+// on demand.
+//
+// This is cache, not state — every byte of it is one ADS round-trip
+// away from coming back — so it lives in the machine-local cache dir
+// beside the PDFs rather than next to tabs.json. `rm -rf ~/.cache/
+// astrobib` is then the supported way to reclaim it, with nothing
+// curated in the blast radius. (A file left at the old state-dir path
+// by an earlier build is simply ignored. Safe here for a narrow reason
+// that does not generalise: the cache was introduced and moved within
+// 0.8.0's development, so the state-dir path was never in a released
+// build. Every other state file has real versions in the wild.)
+
+pub fn cache_file() -> PathBuf {
+    crate::library::cache_dir().join("query_cache.json")
+}
+
+fn read_cache() -> serde_json::Map<String, serde_json::Value> {
+    std::fs::read_to_string(cache_file())
+        .ok()
+        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+        .and_then(|v| v.get("tabs").and_then(|c| c.as_object()).cloned())
+        .unwrap_or_default()
+}
+
+fn write_cache(tabs: serde_json::Map<String, serde_json::Value>) {
+    let v = serde_json::json!({ "version": 1, "tabs": tabs });
+    if let Some(dir) = cache_file().parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let _ = std::fs::write(
+        cache_file(),
+        serde_json::to_string(&v).unwrap_or_default(),
+    );
+}
+
+pub fn load_cached_articles(tab_id: &str) -> Vec<crate::ads::Article> {
+    read_cache()
+        .get(tab_id)
+        .and_then(|v| v.as_array())
+        .map(|a| a.iter().map(crate::ads::article_from_doc).collect())
+        .unwrap_or_default()
+}
+
+pub fn save_cached_articles(tab_id: &str, articles: &[crate::ads::Article]) {
+    let mut tabs = read_cache();
+    tabs.insert(
+        tab_id.to_string(),
+        serde_json::Value::Array(articles.iter().map(crate::ads::article_to_json).collect()),
+    );
+    write_cache(tabs);
+}
+
+pub fn drop_cached_articles(tab_id: &str) {
+    let mut tabs = read_cache();
+    if tabs.remove(tab_id).is_some() {
+        write_cache(tabs);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #[test]
@@ -449,68 +512,5 @@ mod tests {
         assert_eq!(t.limit, super::DEFAULT_LIMIT);
         assert_eq!((t.sort_col.as_str(), t.sort_asc), super::DEFAULT_SORT);
         assert_eq!(t.ads_sort, crate::ads::DEFAULT_ADS_SORT);
-    }
-}
-
-// ── cached query results ────────────────────────────────────────────
-//
-// The last results of every saved tab: startup restores scopes from
-// here instantly (and offline) instead of re-querying ADS; r refreshes
-// on demand.
-//
-// This is cache, not state — every byte of it is one ADS round-trip
-// away from coming back — so it lives in the machine-local cache dir
-// beside the PDFs rather than next to tabs.json. `rm -rf ~/.cache/
-// astrobib` is then the supported way to reclaim it, with nothing
-// curated in the blast radius. (A file left at the old state-dir path
-// by an earlier build is simply ignored. Safe here for a narrow reason
-// that does not generalise: the cache was introduced and moved within
-// 0.8.0's development, so the state-dir path was never in a released
-// build. Every other state file has real versions in the wild.)
-
-pub fn cache_file() -> PathBuf {
-    crate::library::cache_dir().join("query_cache.json")
-}
-
-fn read_cache() -> serde_json::Map<String, serde_json::Value> {
-    std::fs::read_to_string(cache_file())
-        .ok()
-        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
-        .and_then(|v| v.get("tabs").and_then(|c| c.as_object()).cloned())
-        .unwrap_or_default()
-}
-
-fn write_cache(tabs: serde_json::Map<String, serde_json::Value>) {
-    let v = serde_json::json!({ "version": 1, "tabs": tabs });
-    if let Some(dir) = cache_file().parent() {
-        let _ = std::fs::create_dir_all(dir);
-    }
-    let _ = std::fs::write(
-        cache_file(),
-        serde_json::to_string(&v).unwrap_or_default(),
-    );
-}
-
-pub fn load_cached_articles(tab_id: &str) -> Vec<crate::ads::Article> {
-    read_cache()
-        .get(tab_id)
-        .and_then(|v| v.as_array())
-        .map(|a| a.iter().map(crate::ads::article_from_doc).collect())
-        .unwrap_or_default()
-}
-
-pub fn save_cached_articles(tab_id: &str, articles: &[crate::ads::Article]) {
-    let mut tabs = read_cache();
-    tabs.insert(
-        tab_id.to_string(),
-        serde_json::Value::Array(articles.iter().map(crate::ads::article_to_json).collect()),
-    );
-    write_cache(tabs);
-}
-
-pub fn drop_cached_articles(tab_id: &str) {
-    let mut tabs = read_cache();
-    if tabs.remove(tab_id).is_some() {
-        write_cache(tabs);
     }
 }

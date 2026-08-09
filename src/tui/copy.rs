@@ -387,7 +387,7 @@ impl App {
     }
 
     pub(super) fn finish_copy(&mut self, text: &str) {
-        if copy_to_clipboard(&text) {
+        if copy_to_clipboard(text) {
             let first = text.lines().next().unwrap_or("");
             let mut shown: String = first.chars().take(60).collect();
             if shown.len() < text.len() {

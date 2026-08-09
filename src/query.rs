@@ -105,7 +105,7 @@ fn year_matches(value: &str, entry_year: &str) -> bool {
                 Ok(y) => y,
                 Err(_) => return false,
             };
-            return lo.map_or(true, |l| y >= l) && hi.map_or(true, |h| y <= h);
+            return lo.is_none_or(|l| y >= l) && hi.is_none_or(|h| y <= h);
         }
     }
     if value.len() == 4 && value.chars().all(|c| c.is_ascii_digit()) {
@@ -114,16 +114,24 @@ fn year_matches(value: &str, entry_year: &str) -> bool {
     entry_year.contains(value)
 }
 
+/// Does this cite key have the property? Answered by the caller,
+/// because the query language knows nothing about libraries.
+pub type KeyIs = Box<dyn Fn(&str) -> bool>;
+/// What is this cite key's metric worth, if it has one at all?
+pub type KeyMetric = Box<dyn Fn(&str) -> Option<f64>>;
+/// Does this cite key carry a tag matching this substring?
+pub type KeyTagged = Box<dyn Fn(&str, &str) -> bool>;
+
 /// Context for the is:ms / is:pdf terms; a term with no context matches
 /// nothing, mirroring compile_query's optional callbacks.
 #[derive(Default)]
 pub struct QueryContext {
-    pub in_manuscript: Option<Box<dyn Fn(&str) -> bool>>,
-    pub has_pdf: Option<Box<dyn Fn(&str) -> bool>>,
-    pub priority: Option<Box<dyn Fn(&str) -> Option<f64>>>,
-    pub citations: Option<Box<dyn Fn(&str) -> Option<f64>>>,
+    pub in_manuscript: Option<KeyIs>,
+    pub has_pdf: Option<KeyIs>,
+    pub priority: Option<KeyMetric>,
+    pub citations: Option<KeyMetric>,
     /// (key, tag substring) — true when the key carries a matching tag.
-    pub tagged: Option<Box<dyn Fn(&str, &str) -> bool>>,
+    pub tagged: Option<KeyTagged>,
 }
 
 /// pri:>0.5 / cit:<100 — a comparison against a metric; a missing
@@ -276,7 +284,7 @@ mod tests {
         let mut d = Data::new();
         d.insert("ID".to_string(), format!("{first}{year}aaaaa"));
         d.insert("ENTRYTYPE".to_string(), "article".to_string());
-        d.insert("author".to_string(), format!("{author}"));
+        d.insert("author".to_string(), author.to_string());
         d.insert("title".to_string(), title.to_string());
         d.insert("year".to_string(), year.to_string());
         Entry::new(d, PathBuf::new())

@@ -315,15 +315,15 @@ impl App {
             .iter()
             .find(|c| c.id == id)
             .is_some_and(|c| c.default_visible);
+        let shown_after = !now_shown;
         let cfg = self.columns.entry(kind).or_default();
         // storing an override that agrees with the default would pin a
         // responsive rule in place, so put the column back under it
-        if !now_shown == default {
+        if shown_after == default {
             cfg.visible.remove(&id);
         } else {
-            cfg.visible.insert(id, !now_shown);
+            cfg.visible.insert(id, shown_after);
         }
-        let shown_after = !now_shown;
         // the metric strip is also a sort target; hiding it while it is
         // the sort would leave the marker on a column nobody can see
         if now_shown && id == Col::Metric && self.sort().is_some_and(|(c, _)| c == Col::Metric) {

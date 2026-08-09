@@ -249,7 +249,7 @@ impl App {
             let mut spans: Vec<Span> = vec![];
             for c in 0..cols {
                 if let Some((key, label, action, click)) = HELP_ENTRIES.get(r + c * rows) {
-                    let avail = action.map_or(true, |a| self.available(a));
+                    let avail = action.is_none_or(|a| self.available(a));
                     // every row is a click target for its own key
                     let rect = Rect {
                         x: area.x + 1 + (c as u16) * HELP_COLW,

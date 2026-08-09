@@ -435,6 +435,13 @@ impl App {
             // editing an existing one leaves it where it is, since that
             // is the query being changed
             let composing_new = matches!(self.mode, Mode::AdsPrompt { edit: None, .. });
+            // The two cyan arms below are deliberately separate. They
+            // give the same colour for opposite reasons — one because
+            // the "+ new" slot is where composing happens, one because
+            // the active scope is where it does not — and folding them
+            // into a single `||` would put the two rules where a reader
+            // has to take them apart again to change either.
+            #[allow(clippy::if_same_then_else)]
             let (bg, fg) = if idx == FILTER_CHIP {
                 if hov {
                     (filter_chip_bg_hover(), filter_chip_fg())
