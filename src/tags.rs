@@ -190,7 +190,12 @@ pub fn write(root: &Path, name: &str, keys: &BTreeSet<String>) -> std::io::Resul
         out.push_str(key);
         out.push('\n');
     }
-    std::fs::write(&path, out)
+    // Atomically, like every other file the user curates. A tag file is
+    // git-versioned and so recoverable, which is why this was the last
+    // truncate-then-write in the tree — but "recoverable" means the user
+    // runs git checkout on a file they did not know had been damaged,
+    // and the rewrite path here is `tidy` walking every tag in turn.
+    crate::library::write_atomic(&path, &out)
 }
 
 /// Rewrite every tag file in canonical form — `astrobib tidy`'s share
@@ -261,6 +266,35 @@ mod tests {
         assert!(view["section-3"].contains("Zrake2019abcde"));
         // the dotfile is neither a tag nor an error
         assert!(tags.errors().is_empty());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The write is atomic, so a tag file is never seen half-rewritten —
+    /// and the scratch file it goes through is a dotfile, so the one
+    /// case cleanup cannot cover (the process killed mid-write) leaves
+    /// something every reader already skips. A litter file must not
+    /// become a tag named after the crash that made it.
+    #[test]
+    fn a_rewrite_is_atomic_and_its_litter_is_not_a_tag() {
+        let root = temp_root("atomic");
+        let path = dir(&root).join("section-3");
+        std::fs::write(&path, "# spiral shocks\nZrake2019abcde\n").unwrap();
+
+        let keys: BTreeSet<String> =
+            ["Andersson2024fghij".to_string(), "Zrake2019abcde".to_string()].into();
+        write(&root, "section-3", &keys).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "# spiral shocks\nAndersson2024fghij\nZrake2019abcde\n"
+        );
+        // nothing but the tag itself is left behind
+        assert_eq!(files(&root), vec![path]);
+
+        // what a kill mid-write would strand, and what it must not do
+        std::fs::write(dir(&root).join(".section-3.tmp.4021"), "Zrake2019abcde\n").unwrap();
+        let mut view = BTreeMap::new();
+        Tags::load(&root).union_into(&mut view);
+        assert_eq!(view.keys().map(String::as_str).collect::<Vec<_>>(), ["section-3"]);
         let _ = std::fs::remove_dir_all(&root);
     }
 

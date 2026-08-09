@@ -25,25 +25,35 @@ struct Cli {
 enum Command {
     /// List library entries, newest first
     List {
+        /// How many entries to print
         #[arg(short = 'n', long, default_value_t = 20)]
         limit: usize,
     },
     /// Search the local library, or ADS with --ads
     Search {
+        /// The filter language (author:, ^first, abs:"…", year:2015-2020,
+        /// is:pdf, tag:, OR, leading -); passed to ADS unchanged with --ads
         query: String,
+        /// How many results to print
         #[arg(short = 'n', long, default_value_t = 10)]
         limit: usize,
+        /// Search ADS instead of the local library
         #[arg(long)]
         ads: bool,
     },
     /// Add a paper by ADS bibcode (or pasted ADS URL)
     Add {
+        /// An ADS bibcode, or any ADS URL naming one
         bibcode: String,
+        /// Overwrite the entry if this paper is already in the library
         #[arg(short, long)]
         force: bool,
     },
     /// Print the BibTeX entry for a cite key (full or shortened)
-    Show { key: String },
+    Show {
+        /// A cite key, an unambiguous prefix of one, or a bibcode
+        key: String,
+    },
     /// Show the resolved environment, or set a value (token, email)
     Config {
         /// Field to set: ads_token | email
@@ -66,6 +76,7 @@ enum Command {
     },
     /// Remove an entry by cite key (unambiguous prefix or bibcode)
     Rm {
+        /// A cite key, an unambiguous prefix of one, or a bibcode
         key: String,
         /// Remove only the local (tier-2) copy; a sole copy is rescued
         /// into the global library first
@@ -80,6 +91,7 @@ enum Command {
     },
     /// Import papers from a .bib file, resolving each against ADS
     Import {
+        /// The .bib file to read; it is never modified
         file: std::path::PathBuf,
         /// Write only to the global (tier-1) library
         #[arg(long)]

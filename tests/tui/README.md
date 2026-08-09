@@ -9,9 +9,14 @@ tests/tui/run.py            # builds the binary, then runs every scenario
 tests/tui/run.py --no-build # reuse the existing target/release/astrobib
 tests/tui/run.py -k sort    # only scenarios whose filename matches
 tests/tui/run.py --list     # show the scenario roster
+tests/tui/run.py -j 1       # serially, for a clean log or a stubborn flake
 ```
 
 On first use `run.py` creates `tests/tui/.venv` (any python3 works), installs pyte into it, and re-execs itself — no manual setup. Exit status is nonzero if any scenario fails; failures print the reconstructed screen.
+
+Scenarios run concurrently (`-j`, default 8). They are isolated by construction — a `Session` owns its scratch directory, its pty and its process, and nothing in the suite reaches outside that sandbox — so the only contended resource is the machine, and the suite barely uses it: run serially it takes a minute at 8% CPU, because almost all of that minute is *waiting* on a repaint to land or on the app's own timers. Overlapped, the whole roster costs about what its slowest single scenario does.
+
+That makes the slowest scenario the thing to watch: `s32_edit_query` sets the floor at ~10s, because it twice waits out the ageing of a startup note so the footer affordance it is testing can take the line. Results print as they land, so completion order is roughly fastest-first and a hung scenario shows up as the line that never arrives; failures are named again in roster order at the end.
 
 Network scenarios (ADS search) are skipped unless `RUN_ADS_TESTS=1` is set; the ADS scenario additionally needs `ADS_API_TOKEN` in the environment.
 

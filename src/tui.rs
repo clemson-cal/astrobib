@@ -1256,6 +1256,21 @@ fn push_pill<'a>(spans: &mut Vec<Span<'a>>, label: &str, bg: Color, fg: Color) {
 
 /// Greedy word wrap producing the exact lines we render — placement math
 /// (links/buttons following variable-height text) depends on the count.
+/// Shorten a path to fit, taking the cut off the *front*.
+///
+/// The usual `…` at the end is wrong for a path: every path in a
+/// two-tier setup shares a long prefix with the others, so truncating
+/// the tail is the one choice that reliably discards the part that says
+/// which database this is.
+fn elide_left(s: &str, max: usize) -> String {
+    let n = s.chars().count();
+    if n <= max {
+        return s.to_string();
+    }
+    let tail: String = s.chars().skip(n + 1 - max).collect();
+    format!("…{tail}")
+}
+
 fn wrap_text(s: &str, w: usize) -> Vec<String> {
     if w == 0 {
         return vec![String::new()];
@@ -5965,7 +5980,32 @@ impl App {
         // terminals, shifting rows right — several columns of slack
         // beyond the longest line keep everything inside the borders
         let w = 58.min(frame.width.saturating_sub(4));
-        let h = (19 + quota_rows.len() as u16 + u16::from(self.update_status.is_some()))
+        // Which databases this session is actually pointed at. Nothing
+        // else on screen says: the global tier's path is settable with
+        // --library and appears nowhere, and the local tier could only
+        // be inferred from the Manuscript capsule existing — which says
+        // that there is one, never which one.
+        let tiers: Vec<(&str, String)> = vec![
+            (
+                " Global     ",
+                match (&self.lib.manuscript, self.lib.global_on) {
+                    // the switch reads as off only when there is a local
+                    // tier for reads to fall back to; alone, it is moot
+                    (Some(_), false) => {
+                        format!("{} · hidden (t)", elide_left(&crate::library::contract_home(&self.lib.personal.root), 30))
+                    }
+                    _ => elide_left(&crate::library::contract_home(&self.lib.personal.root), 44),
+                },
+            ),
+            (
+                " Local      ",
+                match &self.lib.manuscript {
+                    Some(m) => elide_left(&crate::library::contract_home(&m.root), 44),
+                    None => "none — the global library only".to_string(),
+                },
+            ),
+        ];
+        let h = (22 + quota_rows.len() as u16 + u16::from(self.update_status.is_some()))
             .min(frame.height);
         let area = Rect {
             x: frame.width.saturating_sub(w) / 2,
@@ -5996,6 +6036,13 @@ impl App {
             lines.push(Line::from(vec![
                 Span::styled(if i == 0 { " ADS use    " } else { "            " }, dim),
                 Span::raw(line.clone()),
+            ]));
+        }
+        lines.push(Line::default());
+        for (label, value) in &tiers {
+            lines.push(Line::from(vec![
+                Span::styled(*label, dim),
+                Span::raw(value.clone()),
             ]));
         }
         lines.push(Line::default());

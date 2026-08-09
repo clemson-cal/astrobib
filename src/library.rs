@@ -735,6 +735,28 @@ pub fn shellexpand_home(p: &str) -> String {
     p.to_string()
 }
 
+/// The other direction, for showing a path back to the user: an absolute
+/// path under $HOME reads as `~/…`. Display only — nothing round-trips
+/// through this, so a $HOME that is not a prefix simply yields the path
+/// unchanged.
+pub fn contract_home(p: &Path) -> String {
+    let home = home_dir();
+    if home.as_os_str().len() > 1 {
+        // Resolved on both sides before comparing: a path found by
+        // walking up from the cwd arrives canonical, while $HOME is
+        // whatever the shell exported, and on macOS those spell the same
+        // directory differently (/var is a symlink to /private/var). The
+        // string that gets displayed is still the caller's own.
+        let rp = p.canonicalize();
+        let rh = home.canonicalize();
+        let (rp, rh) = (rp.as_deref().unwrap_or(p), rh.as_deref().unwrap_or(&home));
+        if let Ok(rest) = rp.strip_prefix(rh) {
+            return format!("~/{}", rest.display());
+        }
+    }
+    p.display().to_string()
+}
+
 /// Replace a file's contents in one indivisible step: write a sibling
 /// temp file, flush it to disk, then rename over the target. A rename
 /// within a directory is atomic, so a crash leaves either the whole old
@@ -752,9 +774,20 @@ pub fn shellexpand_home(p: &str) -> String {
 /// saving the same file at once and must not share a scratch file. The
 /// sync matters as much as the rename: without it the directory entry
 /// can reach disk ahead of the bytes it names.
+///
+/// It is also a dotfile, which matters once this is used on a directory
+/// somebody reads rather than only the state dir. The cleanup below runs
+/// when the write fails, but nothing runs when the process is killed
+/// outright, so the scratch name has to be one that every reader of the
+/// directory already ignores. `tags/` skips dotfiles for the `.DS_Store`
+/// reason (docs/DESIGN.md) and so is covered by construction; `bib/`
+/// filters on the `.bib` extension, which `.X.bib.tmp.4021` also fails.
+/// A leftover is then litter to be swept, never a tag named after a
+/// crash or an entry that git offers to commit.
 pub fn write_atomic(path: &Path, contents: &str) -> std::io::Result<()> {
     use std::io::Write;
-    let mut name = path.file_name().unwrap_or_default().to_os_string();
+    let mut name = std::ffi::OsString::from(".");
+    name.push(path.file_name().unwrap_or_default());
     name.push(format!(".tmp.{}", std::process::id()));
     let tmp = path.with_file_name(name);
     let result = (|| {
