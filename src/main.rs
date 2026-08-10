@@ -161,7 +161,7 @@ fn main() -> anyhow::Result<()> {
         // (read before any thread starts)
         std::env::set_var("ASTROBIB_LIBRARY", p);
     }
-    let ms_root = match &cli.path {
+    let local_root = match &cli.path {
         Some(p) => {
             // an explicit tier-2 root must at least be a directory
             // (bib/ inside it is created lazily on first write) — a
@@ -180,11 +180,11 @@ fn main() -> anyhow::Result<()> {
         None => find_manuscript_db(),
     };
     let t_load = std::time::Instant::now();
-    let mut lib = MergedLibrary::load(ms_root.as_deref())?;
+    let mut lib = MergedLibrary::load(local_root.as_deref())?;
     astrobib::tui::debug_startup(&format!(
         "library load {:?} ms={}",
         t_load.elapsed(),
-        ms_root.is_some()
+        local_root.is_some()
     ));
     if cli.no_global && lib.manuscript.is_some() {
         lib.global_on = false;
@@ -241,10 +241,10 @@ fn main() -> anyhow::Result<()> {
             Ok(())
         }
         Some(Command::Import { file, global_only, local_only, cited_only }) => {
-            import_bib(&mut lib, &file, ms_root.as_deref(), global_only, local_only, cited_only)
+                import_bib(&mut lib, &file, local_root.as_deref(), global_only, local_only, cited_only)
         }
         Some(Command::Tidy { dry_run }) => {
-            match ms_root.clone() {
+            match local_root.clone() {
                 Some(root) => tidy_bib_dir(&mut lib, &root, dry_run),
                 // no bib/ anywhere: a legacy manuscript (sources plus
                 // loose .bib files) can be adopted wholesale
@@ -252,7 +252,7 @@ fn main() -> anyhow::Result<()> {
             }
         }
         Some(Command::Refs { file, dry_run, prune, no_sync, check, output }) => {
-            let Some(root) = ms_root.clone() else {
+            let Some(root) = local_root.clone() else {
                 eprintln!("No local bib root here — refs needs a manuscript directory.");
                 std::process::exit(1);
             };
@@ -267,7 +267,7 @@ fn main() -> anyhow::Result<()> {
         }
         Some(Command::Update { all }) => run_update(&mut lib, all),
         Some(Command::Convert { format, dry_run }) => {
-            let Some(root) = ms_root.clone() else {
+            let Some(root) = local_root.clone() else {
                 eprintln!("No local bib root here — convert needs a manuscript directory.");
                 std::process::exit(1);
             };
@@ -283,7 +283,7 @@ fn main() -> anyhow::Result<()> {
             Ok(())
         }
         Some(Command::Config { .. }) => {
-            run_config(&lib, ms_root.as_deref(), cli.library.is_some());
+            run_config(&lib, local_root.as_deref(), cli.library.is_some());
             Ok(())
         }
         Some(Command::Rm { key, local_only }) => {
@@ -557,7 +557,7 @@ fn run_gc() {
 }
 
 /// astrobib config — the resolved environment, for humans debugging it.
-fn run_config(lib: &MergedLibrary, ms_root: Option<&std::path::Path>, via_flag: bool) {
+fn run_config(lib: &MergedLibrary, local_root: Option<&std::path::Path>, via_flag: bool) {
     let lib_src = if via_flag {
         "--library"
     } else if std::env::var("ASTROBIB_LIBRARY").is_ok() {
@@ -571,7 +571,7 @@ fn run_config(lib: &MergedLibrary, ms_root: Option<&std::path::Path>, via_flag: 
         lib.personal.root.display(),
         lib.personal.entries().len()
     );
-    match (ms_root, &lib.manuscript) {
+    match (local_root, &lib.manuscript) {
         (Some(root), Some(ms)) => {
             println!(
                 "local library    {}  ({} entries)",
@@ -1275,7 +1275,7 @@ fn run_refs(
 fn import_bib(
     lib: &mut MergedLibrary,
     file: &std::path::Path,
-    ms_root: Option<&std::path::Path>,
+    local_root: Option<&std::path::Path>,
     global_only: bool,
     local_only: bool,
     cited_only: bool,
@@ -1293,7 +1293,7 @@ fn import_bib(
     // is the point when the file holds hundreds of entries and the
     // paper cites thirty.
     let cited: Option<Vec<String>> = if cited_only {
-        let Some(root) = ms_root else {
+        let Some(root) = local_root else {
             anyhow::bail!("--cited-only needs a manuscript directory — none found here.");
         };
         let tex = astrobib::export::manuscript_tex_files(root);

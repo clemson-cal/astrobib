@@ -166,7 +166,7 @@ impl App {
                 _ => None,
             })
             .collect();
-        let res = crate::tabs::save(&tabs, self.ms_root().as_deref());
+        let res = crate::tabs::save(&tabs, self.manuscript_root().as_deref());
         self.state_write("saved queries (tabs.json)", res.err().map(|e| e.to_string()));
     }
 
@@ -185,8 +185,8 @@ impl App {
             return;
         };
         *home = match *home {
-            crate::tabs::Home::Global => crate::tabs::Home::Local,
-            crate::tabs::Home::Local => crate::tabs::Home::Global,
+            crate::tabs::Home::Global => crate::tabs::Home::Manuscript,
+            crate::tabs::Home::Manuscript => crate::tabs::Home::Global,
         };
         let (label, moved_to) = (tab.label.clone(), *home);
         self.regroup_scopes();
@@ -195,7 +195,7 @@ impl App {
         // front of the control it is reporting on
         let where_to = match moved_to {
             crate::tabs::Home::Global => "the global queries",
-            crate::tabs::Home::Local => "this manuscript",
+            crate::tabs::Home::Manuscript => "this manuscript",
         };
         self.note(MsgCat::Ok, format!("'{label}' moved to {where_to}"));
     }
@@ -258,8 +258,8 @@ impl App {
     pub(super) fn default_home(&self, query: &str) -> crate::tabs::Home {
         let q = query.trim_start().to_ascii_lowercase();
         let about_one_paper = q.starts_with("citations(") || q.starts_with("references(");
-        if about_one_paper && self.lib.manuscript.is_some() {
-            crate::tabs::Home::Local
+        if about_one_paper && self.manuscript_root().is_some() {
+            crate::tabs::Home::Manuscript
         } else {
             crate::tabs::Home::Global
         }
@@ -269,7 +269,7 @@ impl App {
     /// Saved tabs restore with their cached results — instant and
     /// offline-friendly; nothing re-queries ADS until r asks.
     pub(super) fn restore_tabs(&mut self) {
-        let saved = crate::tabs::load(self.ms_root().as_deref());
+        let saved = crate::tabs::load(self.manuscript_root().as_deref());
         if saved.is_empty() {
             return;
         }
@@ -359,7 +359,7 @@ impl App {
         let first_local = self
             .scopes
             .iter()
-            .position(|s| matches!(s, Scope::Ads { home: crate::tabs::Home::Local, .. }));
+            .position(|s| matches!(s, Scope::Ads { home: crate::tabs::Home::Manuscript, .. }));
         let any_global = self
             .scopes
             .iter()

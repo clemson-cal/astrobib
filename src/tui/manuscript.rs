@@ -34,7 +34,7 @@ impl App {
     /// pandoc @cites always count and surface as missing.
     pub(super) fn ms_rows(&self) -> Vec<MsRow> {
         use crate::library::CiteState;
-        let Some(root) = self.ms_root() else { return vec![] };
+        let Some(root) = self.local_root() else { return vec![] };
         let files = crate::export::manuscript_tex_files(&root);
         let mut cited = crate::export::scan_tex_files(&files);
         let md_files = crate::export::manuscript_md_files(&root);
@@ -80,7 +80,17 @@ impl App {
     }
 
     pub(super) fn rescan_manuscript(&mut self) {
-        if self.lib.manuscript.is_none() {
+        let active = self.manuscript_root().is_some();
+        if !active {
+            if matches!(self.scopes.get(1), Some(Scope::Manuscript { .. })) {
+                self.scopes.remove(1);
+                if self.active_scope == 1 {
+                    self.active_scope = 0;
+                } else if self.active_scope > 1 {
+                    self.active_scope -= 1;
+                }
+            }
+            self.watch = self.watch_snapshot();
             return;
         }
         let rows = self.ms_rows();
@@ -97,7 +107,7 @@ impl App {
     /// manuscripts (astrobib refs opts a markdown one in); once the
     /// file exists it is kept fresh whatever the sources.
     pub(super) fn sync_refs_bib(&mut self, rows: &[MsRow]) {
-        let Some(root) = self.ms_root() else { return };
+        let Some(root) = self.local_root() else { return };
         let out = root.join("refs.bib");
         if !out.exists() && crate::export::manuscript_tex_files(&root).is_empty() {
             return;
@@ -112,8 +122,16 @@ impl App {
         self.state_write("refs.bib", res.err().map(|e| e.to_string()));
     }
 
-    pub(super) fn ms_root(&self) -> Option<std::path::PathBuf> {
+    pub(super) fn local_root(&self) -> Option<std::path::PathBuf> {
         self.lib.manuscript.as_ref().map(|m| m.root.clone())
+    }
+
+    /// The local tier's root only when it is also a manuscript. A local
+    /// bib-only library remains valid, but has no manuscript scope or local
+    /// manuscript query home.
+    pub(super) fn manuscript_root(&self) -> Option<std::path::PathBuf> {
+        let root = self.local_root()?;
+        crate::export::has_manuscript_sources(&root).then_some(root)
     }
 
     /// The library entries an action applies to: the selection (in

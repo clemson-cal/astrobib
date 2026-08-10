@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Home {
     Global,
-    Local,
+    Manuscript,
 }
 
 /// The context key of the set that is not any manuscript's.
@@ -69,8 +69,8 @@ fn state_file() -> PathBuf {
 
 /// The context key of a manuscript's own set: its root path, as this
 /// process resolved it.
-fn context_key(ms_root: &Path) -> String {
-    ms_root.to_string_lossy().into_owned()
+fn context_key(manuscript_root: &Path) -> String {
+    manuscript_root.to_string_lossy().into_owned()
 }
 
 fn read_contexts() -> serde_json::Map<String, serde_json::Value> {
@@ -141,23 +141,23 @@ fn tabs_under(
 /// duplicate id is not cosmetic: results route to the first scope whose
 /// id matches, so the twin would wait for a result that never arrives,
 /// and closing either one drops the cache entry both were reading.
-pub fn load(ms_root: Option<&Path>) -> Vec<(Tab, Home)> {
-    collect(&read_contexts(), ms_root.map(context_key).as_deref())
+pub fn load(manuscript_root: Option<&Path>) -> Vec<(Tab, Home)> {
+    collect(&read_contexts(), manuscript_root.map(context_key).as_deref())
 }
 
 /// `load` without the file, which is where its whole behaviour lives.
 fn collect(
     contexts: &serde_json::Map<String, serde_json::Value>,
-    ms_key: Option<&str>,
+    manuscript_key: Option<&str>,
 ) -> Vec<(Tab, Home)> {
     let mut out: Vec<(Tab, Home)> = tabs_under(contexts, GLOBAL)
         .into_iter()
         .map(|t| (t, Home::Global))
         .collect();
-    if let Some(key) = ms_key {
+    if let Some(key) = manuscript_key {
         for t in tabs_under(contexts, key) {
             if !out.iter().any(|(seen, _)| seen.id == t.id) {
-                out.push((t, Home::Local));
+                out.push((t, Home::Manuscript));
             }
         }
     }
@@ -189,14 +189,14 @@ fn arr_of(tabs: &[(Tab, Home)], home: Home) -> serde_json::Value {
 fn filed(
     mut contexts: serde_json::Map<String, serde_json::Value>,
     tabs: &[(Tab, Home)],
-    ms_key: Option<&str>,
+    manuscript_key: Option<&str>,
 ) -> serde_json::Map<String, serde_json::Value> {
     contexts.insert(GLOBAL.to_string(), arr_of(tabs, Home::Global));
     // with no manuscript active there is no second home to write to,
     // and nothing can be filed under one — the gesture that would do it
     // is not offered
-    if let Some(key) = ms_key {
-        contexts.insert(key.to_string(), arr_of(tabs, Home::Local));
+    if let Some(key) = manuscript_key {
+        contexts.insert(key.to_string(), arr_of(tabs, Home::Manuscript));
     }
     contexts
 }
@@ -210,8 +210,8 @@ fn filed(
 /// The caller reports a failure: saved queries are user state, and a
 /// state dir that has gone unwritable must not be discovered only at
 /// the next launch.
-pub fn save(tabs: &[(Tab, Home)], ms_root: Option<&Path>) -> std::io::Result<()> {
-    let contexts = filed(read_contexts(), tabs, ms_root.map(context_key).as_deref());
+pub fn save(tabs: &[(Tab, Home)], manuscript_root: Option<&Path>) -> std::io::Result<()> {
+    let contexts = filed(read_contexts(), tabs, manuscript_root.map(context_key).as_deref());
     let file = state_file();
     if let Some(dir) = file.parent() {
         std::fs::create_dir_all(dir)?;
@@ -395,7 +395,7 @@ mod tests {
         // the strip groups them that way and the order is decided here
         assert_eq!(
             ids(&collect(&c, Some(MS))),
-            vec![("g1", Home::Global), ("g2", Home::Global), ("l1", Home::Local)]
+            vec![("g1", Home::Global), ("g2", Home::Global), ("l1", Home::Manuscript)]
         );
     }
 
@@ -466,7 +466,7 @@ mod tests {
             collect(&ctx(r#"{"contexts": {"global": [{"id": "t", "query": "q"}]}}"#), None)
                 .remove(0)
                 .0,
-            Home::Local,
+            Home::Manuscript,
         )];
         let out = filed(serde_json::Map::new(), &tabs, Some(MS));
         assert!(out["global"].as_array().unwrap().is_empty());

@@ -79,7 +79,7 @@ impl App {
             // with no manuscript open there is no second home to move a
             // query to, so the gesture is not offered rather than being
             // offered and refusing
-            Action::QueryHome => self.on_query() && self.lib.manuscript.is_some(),
+            Action::QueryHome => self.on_query() && self.manuscript_root().is_some(),
             Action::Manuscript => {
                 self.lib.manuscript.is_some() && self.lib.global_on && !keys.is_empty()
             }
@@ -159,7 +159,7 @@ impl App {
             Action::GlobalTier => {
                 "no local db here — the global library is all there is".to_string()
             }
-            Action::QueryHome if self.lib.manuscript.is_none() => {
+            Action::QueryHome if self.manuscript_root().is_none() => {
                 "no manuscript here — every saved query is already global".to_string()
             }
             Action::QueryHome => "no query on screen to move".to_string(),

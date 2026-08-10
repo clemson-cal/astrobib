@@ -180,6 +180,7 @@ const INVENTORY: &[(char, Zone, Risk, &str)] = &[
     // -- card affordances and badges -------------------------------------
     ('⧉', Zone::Hit, Risk::Narrow, "copy-row badge in the card link stack"),
     ('⌕', Zone::Hit, Risk::Narrow, "query-row badge, filter chip, task labels"),
+    ('⌂', Zone::Hit, Risk::Narrow, "query-home indicator in the footer"),
     ('✕', Zone::Hit, Risk::Narrow, "\"Clear ✕\" button, \"cancel ✕\" click target"),
     ('◌', Zone::Hit, Risk::Narrow, "\"◌ waiting for download…\" prefix (was ⏳)"),
     ('◆', Zone::Hit, Risk::Ambiguous, "manuscript toggle badge"),

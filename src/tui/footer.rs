@@ -11,11 +11,11 @@ use super::*;
 /// "everywhere" and "this paper" rather than global and local: the
 /// footer already says "global" for the library tier a few cells right,
 /// and these name what the user actually wants to know — where the
-/// query will turn up. The ⌕ carries the query sense that a spelled-out
-/// "query" was spending five cells on.
-pub(super) const HOME_GLOBAL: &str = "⌕ everywhere";
+/// query will turn up. The ⌂ marks this as a query home rather than the
+/// search/action glyph used by other in-app query affordances.
+pub(super) const HOME_GLOBAL: &str = "⌂ everywhere";
 
-pub(super) const HOME_LOCAL: &str = "⌕ this paper";
+pub(super) const HOME_MANUSCRIPT: &str = "⌂ this paper";
 
 /// Both labels are this wide, which is what lets the indicator hold its
 /// place when it changes.
@@ -106,8 +106,8 @@ impl App {
             return None;
         }
         Some(match now {
-            crate::tabs::Home::Global => "⌕ keep this query with the manuscript  ·  H".to_string(),
-            crate::tabs::Home::Local => "⌕ keep this query everywhere  ·  H".to_string(),
+            crate::tabs::Home::Global => "⌂ keep this query with the manuscript  ·  H".to_string(),
+            crate::tabs::Home::Manuscript => "⌂ keep this query everywhere  ·  H".to_string(),
         })
     }
 
@@ -126,7 +126,7 @@ impl App {
         };
         let label = match now {
             crate::tabs::Home::Global => HOME_GLOBAL,
-            crate::tabs::Home::Local => HOME_LOCAL,
+            crate::tabs::Home::Manuscript => HOME_MANUSCRIPT,
         };
         f.render_widget(Paragraph::new(Line::from(Span::styled(label, style))), r);
     }
@@ -637,7 +637,7 @@ mod tests {
     /// eye would read the jump rather than the word.
     #[test]
     fn both_home_labels_are_the_declared_width() {
-        for label in [HOME_GLOBAL, HOME_LOCAL] {
+        for label in [HOME_GLOBAL, HOME_MANUSCRIPT] {
             assert_eq!(label.chars().count() as u16, HOME_W, "{label}");
         }
     }

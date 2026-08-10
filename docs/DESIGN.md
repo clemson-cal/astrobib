@@ -106,7 +106,7 @@ The only acceptable additions to the bib database layout are:
 - More `.bib` files in `bib/`
 - More tag files in `tags/`
 
-Any new directory or file added to the bib repo must be safely ignored by all astrobib versions that predate it. If this cannot be guaranteed, the addition is wrong. This was checked before `tags/` was admitted rather than assumed: the library loader and `astrobib tidy` both enumerate `bib/` filtered on `extension == "bib"`, and manuscript discovery keys on the presence of `bib/` alone, so no earlier build ever looks at a sibling directory.
+Any new directory or file added to the bib repo must be safely ignored by all astrobib versions that predate it. If this cannot be guaranteed, the addition is wrong. This was checked before `tags/` was admitted rather than assumed: the library loader and `astrobib tidy` both enumerate `bib/` filtered on `extension == "bib"`, and local-library discovery keys on the presence of `bib/` alone, so no earlier build ever looks at a sibling directory. The TUI's separate Manuscript scope is source-driven: it appears only when `.tex` or `.md` sources are present.
 
 ## Config and app state versioning
 

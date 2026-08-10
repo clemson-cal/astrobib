@@ -258,7 +258,9 @@ impl App {
     /// Rebuild the display order (entries changed or sort changed),
     /// and refresh the manuscript classification when present.
     pub(super) fn rebuild_order(&mut self) {
-        if matches!(self.scopes.get(1), Some(Scope::Manuscript { .. })) {
+        if self.manuscript_root().is_some()
+            && matches!(self.scopes.get(1), Some(Scope::Manuscript { .. }))
+        {
             let rows = self.ms_rows();
             self.sync_refs_bib(&rows);
             if let Some(s) = self.scopes.get_mut(1) {

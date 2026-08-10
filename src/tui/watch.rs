@@ -31,8 +31,9 @@ impl App {
     /// re-trigger the watcher.
     pub(super) fn watch_snapshot(&self) -> Watch {
         let mut w = Watch::default();
-        let ms_root = self.ms_root();
-        if let Some(root) = &ms_root {
+        let local_root = self.local_root();
+        if self.manuscript_root().is_some() {
+            let root = local_root.as_ref().expect("manuscript root implies local root");
             let mut files = crate::export::manuscript_tex_files(root);
             files.extend(crate::export::manuscript_md_files(root));
             w.srcs = files
@@ -43,7 +44,7 @@ impl App {
                 })
                 .collect();
         }
-        let roots = [Some(self.lib.personal.root.clone()), ms_root]
+        let roots = [Some(self.lib.personal.root.clone()), local_root]
             .into_iter()
             .flatten();
         for root in roots {
@@ -153,7 +154,7 @@ impl App {
     /// terminal, …), preserving the two-tier switch and UI state;
     /// rebuild_order re-derives everything display-side.
     fn reload_library(&mut self) {
-        match MergedLibrary::load(self.ms_root().as_deref()) {
+        match MergedLibrary::load(self.local_root().as_deref()) {
             Ok(mut lib) => {
                 lib.global_on = self.lib.global_on;
                 self.lib = lib;

@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.18.0 — 2026-08-10
+
+### Changed
+- A local `bib/` directory still activates the project library and its two-tier behavior, but no longer creates a Manuscript scope by itself. The Manuscript scope and manuscript-local query home now require at least one `.tex` or `.md` source; conventional project docs such as `README.md` and `CHANGELOG.md` do not count. Sources appearing or disappearing during a TUI session update the scope accordingly.
+- The query-home footer indicator is now hidden when no manuscript-local query home exists, and uses `⌂` rather than the query/search glyph `⌕` to make its meaning clearer.
+
 ## 0.17.1 — 2026-08-09
 
 Maintenance: three things the app should have been saying, and a large amount of moving furniture with nothing on the screen changing.

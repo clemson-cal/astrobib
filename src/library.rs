@@ -357,10 +357,10 @@ pub struct MergedLibrary {
 }
 
 impl MergedLibrary {
-    pub fn load(ms_root: Option<&Path>) -> std::io::Result<MergedLibrary> {
+    pub fn load(local_root: Option<&Path>) -> std::io::Result<MergedLibrary> {
         Ok(MergedLibrary {
             personal: Library::load(&default_library_root())?,
-            manuscript: match ms_root {
+            manuscript: match local_root {
                 Some(r) => Some(Library::load(r)?),
                 None => None,
             },

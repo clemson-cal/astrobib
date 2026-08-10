@@ -56,12 +56,12 @@ pub fn expand_tex_sources(roots: Vec<PathBuf>, base: &Path) -> Vec<PathBuf> {
 
 /// TeX sources for a manuscript: main.tex is the sole root when present,
 /// else every top-level .tex file; expanded through \input/\include.
-pub fn manuscript_tex_files(ms_root: &Path) -> Vec<PathBuf> {
-    let main = ms_root.join("main.tex");
+pub fn manuscript_tex_files(manuscript_root: &Path) -> Vec<PathBuf> {
+    let main = manuscript_root.join("main.tex");
     let roots = if main.is_file() {
         vec![main]
     } else {
-        let mut v: Vec<PathBuf> = std::fs::read_dir(ms_root)
+        let mut v: Vec<PathBuf> = std::fs::read_dir(manuscript_root)
             .map(|rd| {
                 rd.flatten()
                     .map(|e| e.path())
@@ -72,7 +72,14 @@ pub fn manuscript_tex_files(ms_root: &Path) -> Vec<PathBuf> {
         v.sort();
         v
     };
-    expand_tex_sources(roots, ms_root)
+    expand_tex_sources(roots, manuscript_root)
+}
+
+/// Whether a directory contains sources that make it a manuscript rather
+/// than merely a local bib library.
+pub fn has_manuscript_sources(manuscript_root: &Path) -> bool {
+    !manuscript_tex_files(manuscript_root).is_empty()
+        || !manuscript_md_files(manuscript_root).is_empty()
 }
 
 /// Every cited key across the given files, in first-seen order.
@@ -201,16 +208,32 @@ fn md_strip(text: &str) -> String {
 /// present, else every top-level .md file; expanded through Obsidian
 /// `![[embed]]` transclusions (resolved against the root, .md appended
 /// when suffixless) — the \input/\include analogue.
-pub fn manuscript_md_files(ms_root: &Path) -> Vec<PathBuf> {
-    let main = ms_root.join("main.md");
+pub fn manuscript_md_files(manuscript_root: &Path) -> Vec<PathBuf> {
+    let main = manuscript_root.join("main.md");
     let roots = if main.is_file() {
         vec![main]
     } else {
-        let mut v: Vec<PathBuf> = std::fs::read_dir(ms_root)
+        // Repository documentation is commonly beside bib/ but is not a
+        // manuscript. Named notes remain supported; main.md is always the
+        // unambiguous root when a project has one.
+        const PROJECT_DOCS: &[&str] = &[
+            "README.md",
+            "CHANGELOG.md",
+            "CLAUDE.md",
+            "AGENTS.md",
+            "CONTRIBUTING.md",
+        ];
+        let mut v: Vec<PathBuf> = std::fs::read_dir(manuscript_root)
             .map(|rd| {
                 rd.flatten()
                     .map(|e| e.path())
-                    .filter(|p| p.extension().is_some_and(|x| x == "md"))
+                    .filter(|p| {
+                        p.extension().is_some_and(|x| x == "md")
+                            && !p
+                                .file_name()
+                                .and_then(|n| n.to_str())
+                                .is_some_and(|n| PROJECT_DOCS.contains(&n))
+                    })
                     .collect()
             })
             .unwrap_or_default();
@@ -233,7 +256,7 @@ pub fn manuscript_md_files(ms_root: &Path) -> Vec<PathBuf> {
         };
         for m in wikilink_re().captures_iter(&md_strip(&text)) {
             if &m[1] == "!" {
-                let mut child = ms_root.join(m[2].trim());
+                let mut child = manuscript_root.join(m[2].trim());
                 if child.extension().is_none() {
                     child.set_extension("md");
                 }
