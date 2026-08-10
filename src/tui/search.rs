@@ -671,7 +671,6 @@ impl App {
     /// A list can: ↑/↓ choose the field and ←/→ turn every row around at
     /// once, since "most or least" is one question, not ten.
     pub(super) fn draw_sort_menu(&mut self, f: &mut Frame, area: Rect) {
-        self.sort_menu_rects.clear();
         if area.height == 0 || !matches!(self.mode, Mode::AdsPrompt { .. }) {
             return;
         }
@@ -700,7 +699,7 @@ impl App {
                 width: area.width.saturating_sub(2),
                 height: 1,
             };
-            self.sort_menu_rects.push((rect, ads_sort_value(field, primary)));
+            self.hits.add(rect, Target::SortMenu(ads_sort_value(field, primary)));
             let hov = hit(rect, self.hover.0, self.hover.1);
             let style = match (i == sel, hov) {
                 (true, _) => Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
@@ -722,7 +721,6 @@ impl App {
     /// prompt — and because a TUI has no copy-paste to carry an example
     /// across. Clicking sidesteps both.
     pub(super) fn draw_samples(&mut self, f: &mut Frame, area: Rect) {
-        self.sample_rects.clear();
         // stood down for want of room: without this the rows would still
         // be registered, over the footer, and clicking the footer would
         // load a sample
@@ -756,7 +754,7 @@ impl App {
             // registered whether or not it can act: an unregistered row
             // would let the click through to the click-away dismissal,
             // which closes the prompt — worse than doing nothing
-            self.sample_rects.push((r, query));
+            self.hits.add(r, Target::Sample(query));
             let hov = empty && hit(r, self.hover.0, self.hover.1);
             let style = if hov {
                 Style::default().fg(Color::Cyan).add_modifier(Modifier::UNDERLINED)

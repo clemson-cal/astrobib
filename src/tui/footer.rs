@@ -118,7 +118,7 @@ impl App {
     fn draw_query_home(&mut self, f: &mut Frame, area: Rect) {
         let Some(now) = self.active_query_home() else { return };
         let Some(r) = self.home_rect(area) else { return };
-        self.footer_badges.push((r, Action::QueryHome));
+        self.hits.add(r, Target::Footer(Action::QueryHome));
         let style = if hit(r, self.hover.0, self.hover.1) {
             Style::default().fg(Color::Cyan).add_modifier(Modifier::UNDERLINED)
         } else {
@@ -162,11 +162,10 @@ impl App {
         // where the cluster starts, which is not the right edge once the
         // card ⇄ bib toggler has claimed it
         let Some(x0) = layout.first().map(|(r, ..)| r.x) else { return };
-        self.footer_badges.clear();
         let mut spans: Vec<Span> = vec![];
         let mut total = 0u16;
         for (r, action, label, on) in layout {
-            self.footer_badges.push((r, action));
+            self.hits.add(r, Target::Footer(action));
             total += r.width + 1;
             let hov = hit(r, self.hover.0, self.hover.1);
             let style = match (on, hov) {
@@ -298,7 +297,7 @@ impl App {
                 width: action.chars().count() as u16,
                 height: 1,
             };
-            self.prompt_sort_rect = r;
+            self.hits.add(r, Target::PromptSort);
             let hov = hit(r, self.hover.0, self.hover.1);
             tail.push(Span::styled(head, Style::default().fg(Color::Gray)));
             tail.push(Span::styled(
@@ -364,9 +363,6 @@ impl App {
         // the prompt's control rect, published after the match: the arm
         // borrows self.mode, so it cannot write to self while building
         let mut sort_rect = Rect::default();
-        // cleared every frame; the Normal arm re-publishes it when the
-        // line has room for the affordance
-        self.edit_query_rect = Rect::default();
         let line = match self.mode {
             Mode::Filter => {
                 let avail = area.width.saturating_sub(2) as usize;
@@ -603,7 +599,7 @@ impl App {
                         width: label.chars().count() as u16,
                         height: 1,
                     };
-                    self.edit_query_rect = r;
+                    self.hits.add(r, Target::EditQuery);
                     let hov = hit(r, self.hover.0, self.hover.1);
                     spans.push(Span::styled(
                         label,
@@ -620,7 +616,9 @@ impl App {
                 Line::from(spans)
             }
         };
-        self.prompt_sort_rect = sort_rect;
+        if sort_rect != Rect::default() {
+            self.hits.add(sort_rect, Target::PromptSort);
+        }
         f.render_widget(line, area);
         self.draw_badges(f, area);
         self.draw_query_home(f, area);

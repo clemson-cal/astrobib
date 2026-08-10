@@ -65,6 +65,10 @@ The home is the context key holding the tab, never a field on the tab: two place
 
 A tab carries the query, a name, a result limit, how its results are ordered on screen, and what ADS *returns* — the API `sort` that decides which records come back. The last of those was once left out, on the argument that it is chosen while composing and matters only while the query is being worked. That argument was wrong, and in a way worth recording: it applies just as well to the query text, which nobody proposed discarding. The query, the result count and the selection sort are one configuration — a tab restored with a different one is not the query that was saved, and a query handed to a colleague that arrives configured differently is not the query that was sent.
 
+## Frame-scoped TUI hit targets
+
+Clickable and wheel geometry is transient UI state, not persistent library or app data. The TUI rebuilds a typed hit registry during every draw frame; surfaces that do not draw in the current frame therefore cannot answer later input. The table's solved rectangle is the sole exception: it remains as `last_table_area` because row selection and column navigation use the last drawn layout outside the draw pass. The implementation record is [docs/plans/hit-registry.md](plans/hit-registry.md).
+
 Two orderings are involved and they are never interchangeable. The ADS `sort` parameter decides *which* records arrive; the display sort reorders the ones already in hand. Ranking a feed by citations therefore gives the most cited among the newest n, not the most cited overall. Neither can be written as query syntax — `sort:"entry_date desc"` inside `q` is a Solr error, not a sort — which is why both ride alongside `q` as parameters and are surfaced where the query is composed rather than typed into it.
 
 ## Tags are collections of papers

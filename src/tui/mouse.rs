@@ -6,7 +6,7 @@ impl App {
     /// The table position under the mouse, if any (header and rule
     /// rows excluded).
     pub(super) fn hovered_table_pos(&self) -> Option<usize> {
-        let a = self.table_area;
+        let a = self.last_table_area;
         if !hit(a, self.hover.0, self.hover.1) || self.hover.1 <= a.y + 1 {
             return None;
         }
@@ -18,7 +18,9 @@ impl App {
         match m.kind {
             MouseEventKind::ScrollDown => {
                 if self.scroll_swatch(m.column, m.row, 0.8) {
-                } else if self.show_detail && hit(self.card_area, m.column, m.row) {
+                } else if self.show_detail
+                    && matches!(self.hits.at(m.column, m.row), Some(Target::Card))
+                {
                     self.card_scroll = self.card_scroll.saturating_add(3);
                 } else {
                     self.move_sel(3);
@@ -26,7 +28,9 @@ impl App {
             }
             MouseEventKind::ScrollUp => {
                 if self.scroll_swatch(m.column, m.row, 1.25) {
-                } else if self.show_detail && hit(self.card_area, m.column, m.row) {
+                } else if self.show_detail
+                    && matches!(self.hits.at(m.column, m.row), Some(Target::Card))
+                {
                     self.card_scroll = self.card_scroll.saturating_sub(3);
                 } else {
                     self.move_sel(-3);
@@ -43,14 +47,24 @@ impl App {
     /// The wheel over a priority swatch scales THAT row's priority —
     /// the mouse-native form of < / >. Returns whether it acted.
     fn scroll_swatch(&mut self, x: u16, y: u16, factor: f64) -> bool {
-        if self.metric_col != MetricCol::Priority || !hit(self.metric_area, x, y) {
+        let Some(metric_area) = self
+            .hits
+            .0
+            .iter()
+            .rev()
+            .find(|(_, t)| matches!(t, Target::Metric))
+            .map(|(r, _)| *r)
+        else {
+            return false;
+        };
+        if self.metric_col != MetricCol::Priority || !hit(metric_area, x, y) {
             return false;
         }
         // the strip's rows start two lines below its top (header + rule)
-        if y < self.metric_area.y + 2 {
+        if y < metric_area.y + 2 {
             return false;
         }
-        let pos = self.table.offset() + (y - self.metric_area.y - 2) as usize;
+        let pos = self.table.offset() + (y - metric_area.y - 2) as usize;
         let Some(key) = self.row_key_at(pos) else { return false };
         let level = self.metrics.scale_priority(&key, factor);
         self.note(MsgCat::Ok, format!("priority {level:.2} — {key}"));
@@ -71,10 +85,10 @@ impl App {
     }
 
     fn on_click(&mut self, x: u16, y: u16, mods: KeyModifiers) {
+        let target = self.hits.at(x, y).cloned();
         // modal picker swallows all clicks: row click imports, outside closes
         if let Mode::Pick { key, files, .. } = &self.mode {
-            if hit(self.pick_area, x, y) && y > self.pick_area.y {
-                let i = (y - self.pick_area.y - 1) as usize;
+            if let Some(Target::PickRow(i)) = target.clone() {
                 if i < files.len() {
                     let (key, file) = (key.clone(), files[i].clone());
                     self.mode = Mode::Normal;
@@ -86,10 +100,10 @@ impl App {
             return;
         }
         if self.show_about {
-            if let Some((_, url)) = self.about_links.iter().find(|(r, _)| hit(*r, x, y)) {
-                pdf::browser_open(url);
+            if let Some(Target::AboutLink(url)) = target.clone() {
+                pdf::browser_open(&url);
                 self.note(MsgCat::Info, "opened in browser".to_string());
-            } else if hit(self.about_btn, x, y) {
+            } else if matches!(target.as_ref(), Some(Target::AboutUpdate)) {
                 self.check_updates();
             } else {
                 self.show_about = false;
@@ -98,7 +112,9 @@ impl App {
         }
         // the prompt's ADS-returns glyph, which must be tested before the
         // click-away dismissal below or it would close the prompt instead
-        if matches!(self.mode, Mode::AdsPrompt { .. }) && hit(self.prompt_sort_rect, x, y) {
+        if matches!(self.mode, Mode::AdsPrompt { .. })
+            && matches!(target.as_ref(), Some(Target::PromptSort))
+        {
             if self.sort_menu {
                 self.sort_menu = false;
             } else {
@@ -109,16 +125,14 @@ impl App {
         // a menu entry, before the click-away dismissal for the same
         // reason the samples are: reaching that would close the prompt
         if self.sort_menu && matches!(self.mode, Mode::AdsPrompt { .. }) {
-            if let Some(i) = self.sort_menu_rects.iter().position(|(r, _)| hit(*r, x, y)) {
+            if let Some(Target::SortMenu(value)) = target.clone() {
                 // a click is one gesture, so it chooses and leaves —
                 // unlike the arrows, which are a walk through the list
-                if let Some((_, value)) = self.sort_menu_rects.get(i).cloned() {
-                    self.sort_menu_sel = ADS_SORTS
-                        .iter()
-                        .position(|(f, ..)| value.starts_with(f))
-                        .unwrap_or(self.sort_menu_sel);
-                    self.apply_sort_menu();
-                }
+                self.sort_menu_sel = ADS_SORTS
+                    .iter()
+                    .position(|(f, ..)| value.starts_with(f))
+                    .unwrap_or(self.sort_menu_sel);
+                self.apply_sort_menu();
                 self.sort_menu = false;
                 return;
             }
@@ -127,7 +141,7 @@ impl App {
         // dismissal below — reaching that would close the very prompt
         // the sample is meant to fill. Consumed either way: a row that
         // cannot act must not fall through and close the prompt instead.
-        if let Some(&(_, sample)) = self.sample_rects.iter().find(|(r, _)| hit(*r, x, y)) {
+        if let Some(Target::Sample(sample)) = target.clone() {
             if self.prompt_is_empty() {
                 self.use_sample(sample);
             }
@@ -150,7 +164,7 @@ impl App {
         }
         // confirm modal: only its two buttons act; other clicks are inert
         if let Mode::Confirm { plan } = &self.mode {
-            if let Some(&(_, is_confirm)) = self.confirm_btns.iter().find(|(r, _)| hit(*r, x, y)) {
+            if let Some(Target::Confirm(is_confirm)) = target.clone() {
                 let plan = plan.clone();
                 self.mode = Mode::Normal;
                 if is_confirm {
@@ -163,7 +177,7 @@ impl App {
         }
         // copy-regions: the card text copies its own entry's datum; in
         // ADS scopes values come from the shown article itself
-        if let Some(&(_, item)) = self.card_yanks.iter().find(|(r, _)| hit(*r, x, y)) {
+        if let Some(Target::CardYank(item)) = target.clone() {
             // several rows selected: the row copies across the selection
             if self.select_mode && self.selected.len() > 1 {
                 self.do_copy(item);
@@ -182,18 +196,15 @@ impl App {
             return;
         }
         // pub card links open the browser
-        if let Some((_, url)) = self.card_links.iter().find(|(r, _)| hit(*r, x, y)) {
-            let url = url.clone();
+        if let Some(Target::CardLink(url)) = target.clone() {
             pdf::browser_open(&url);
             self.note(MsgCat::Info, "opened in browser".to_string());
             return;
         }
         // keys-panel rows act as their key
-        if self.show_help {
-            if let Some(&(_, code)) = self.help_rects.iter().find(|(r, _)| hit(*r, x, y)) {
-                self.on_key(code, KeyModifiers::NONE);
-                return;
-            }
+        if let Some(Target::Help(code)) = target.clone() {
+            self.on_key(code, KeyModifiers::NONE);
+            return;
         }
         // a click leaves an active y-chord and then acts normally —
         // the card's ⧉ rows are the visible copy menu
@@ -201,13 +212,12 @@ impl App {
             self.exit_copy_mode();
         }
         // a tag on the card filters the scope to itself
-        if let Some((_, name)) = self.card_tags.iter().find(|(r, _)| hit(*r, x, y)) {
-            let name = name.clone();
+        if let Some(Target::CardTag(name)) = target.clone() {
             self.filter_by_tag(&name);
             return;
         }
         // pub card buttons (act on the card's entry)
-        if let Some(&(_, btn)) = self.card_buttons.iter().find(|(r, _)| hit(*r, x, y)) {
+        if let Some(Target::CardButton(btn)) = target.clone() {
             if btn == CardBtn::RemoveFromLib {
                 self.remove_papers();
                 return;
@@ -290,7 +300,7 @@ impl App {
             return;
         }
         // scope strip (usize::MAX = the new-query affordance)
-        if let Some(&(_, idx)) = self.scope_rects.iter().find(|(r, _)| hit(*r, x, y)) {
+        if let Some(Target::Scope(idx)) = target.clone() {
             if idx == FILTER_CHIP {
                 self.run_action(Action::Filter);
             } else if idx == usize::MAX {
@@ -300,7 +310,7 @@ impl App {
             }
             return;
         }
-        if hit(self.edit_query_rect, x, y) {
+        if matches!(target.as_ref(), Some(Target::EditQuery)) {
             if matches!(self.scopes.get(self.active_scope), Some(Scope::Ads { .. })) {
                 self.open_edit_query_prompt();
             } else {
@@ -309,7 +319,7 @@ impl App {
             return;
         }
         // footer view badges
-        if let Some(&(_, action)) = self.footer_badges.iter().find(|(r, _)| hit(*r, x, y)) {
+        if let Some(Target::Footer(action)) = target.clone() {
             self.run_action(action);
             return;
         }
@@ -317,38 +327,31 @@ impl App {
         // selects the row; a control inside the row also acts. The
         // specific hits are searched first because each shares its row's
         // rect, and Row alone would swallow every one of them.
-        if self.show_columns && self.col_rects.iter().any(|(r, _)| hit(*r, x, y)) {
+        if matches!(target.as_ref(), Some(Target::Column(_))) {
             self.focus = Focus::Columns;
-            if let Some(&(_, PanelHit::Row(i))) = self
-                .col_rects
-                .iter()
-                .find(|(r, h)| hit(*r, x, y) && matches!(h, PanelHit::Row(_)))
-            {
-                self.col_sel = i;
-            }
-            let action = self
-                .col_rects
-                .iter()
-                .find(|(r, h)| hit(*r, x, y) && !matches!(h, PanelHit::Row(_)))
-                .map(|&(_, h)| h);
-            match action {
-                Some(PanelHit::Toggle(id)) => self.toggle_column(id),
-                Some(PanelHit::Sort(id)) => self.sort_by(id),
-                Some(PanelHit::Narrower(_)) => self.nudge_width(-1),
-                Some(PanelHit::Wider(_)) => self.nudge_width(1),
-                _ => {}
+            if let Some(Target::Column(action)) = target.clone() {
+                if let PanelHit::Row(i) = action {
+                    self.col_sel = i;
+                }
+                match action {
+                    PanelHit::Toggle(id) => self.toggle_column(id),
+                    PanelHit::Sort(id) => self.sort_by(id),
+                    PanelHit::Narrower(_) => self.nudge_width(-1),
+                    PanelHit::Wider(_) => self.nudge_width(1),
+                    PanelHit::Row(_) => {}
+                }
             }
             return;
         }
         // a click anywhere else is the table's, and takes focus with it
         self.focus = Focus::Table;
         // column headers sort
-        if let Some(&(_, col)) = self.sort_headers.iter().find(|(r, _)| hit(*r, x, y)) {
+        if let Some(Target::SortHeader(col)) = target.clone() {
             self.sort_by(col);
             return;
         }
         // table: header at a.y, rule below it, data rows after
-        let a = self.table_area;
+        let a = self.last_table_area;
         if !hit(a, x, y) || y <= a.y + 1 {
             return;
         }

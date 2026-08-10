@@ -8,7 +8,6 @@ impl App {
     /// which is also what executes), offers clickable remove/cancel
     /// (⏎/y confirms, Esc/n cancels).
     pub(super) fn draw_confirm(&mut self, f: &mut Frame) {
-        self.confirm_btns.clear();
         let Mode::Confirm { plan } = &self.mode else { return };
         let frame = f.area();
         let w = 52.min(frame.width.saturating_sub(4));
@@ -58,20 +57,12 @@ impl App {
         let by = area.y + h.saturating_sub(2);
         let bx = area.x + 1;
         let (rw, cw) = (pill_width("remove"), pill_width("cancel"));
-        self.confirm_btns
-            .push((Rect { x: bx, y: by, width: rw, height: 1 }, true));
-        self.confirm_btns.push((
-            Rect { x: bx + rw + 2, y: by, width: cw, height: 1 },
-            false,
-        ));
-        let hov_remove = self
-            .confirm_btns
-            .first()
-            .is_some_and(|(r, _)| hit(*r, self.hover.0, self.hover.1));
-        let hov_cancel = self
-            .confirm_btns
-            .get(1)
-            .is_some_and(|(r, _)| hit(*r, self.hover.0, self.hover.1));
+        let remove_rect = Rect { x: bx, y: by, width: rw, height: 1 };
+        let cancel_rect = Rect { x: bx + rw + 2, y: by, width: cw, height: 1 };
+        self.hits.add(remove_rect, Target::Confirm(true));
+        self.hits.add(cancel_rect, Target::Confirm(false));
+        let hov_remove = hit(remove_rect, self.hover.0, self.hover.1);
+        let hov_cancel = hit(cancel_rect, self.hover.0, self.hover.1);
         let mut bspans: Vec<Span> = vec![];
         push_pill(
             &mut bspans,
@@ -146,7 +137,6 @@ impl App {
 
     /// The @ about modal.
     pub(super) fn draw_about(&mut self, f: &mut Frame) {
-        self.about_links.clear();
         let dim = Style::default().fg(Color::DarkGray);
         let cyan = Style::default().fg(Color::Cyan);
         // labels are the full URLs so terminals that linkify text (e.g.
@@ -249,7 +239,7 @@ impl App {
             ]));
         }
         lines.push(Line::default());
-        let link_row = |url: &str, lines: &mut Vec<Line>, about_links: &mut Vec<(Rect, String)>| {
+        let link_row = |url: &str, lines: &mut Vec<Line>, hits: &mut Hits| {
             let y = area.y + 1 + lines.len() as u16;
             let r = Rect {
                 x: area.x + 5, // border + the " →  " prefix
@@ -257,7 +247,7 @@ impl App {
                 width: url.chars().count() as u16 + 1,
                 height: 1,
             };
-            about_links.push((r, url.to_string()));
+            hits.add(r, Target::AboutLink(url.to_string()));
             let hov = hit(r, self.hover.0, self.hover.1);
             let style = if hov { cyan.add_modifier(Modifier::UNDERLINED) } else { cyan };
             lines.push(Line::from(vec![
@@ -265,18 +255,16 @@ impl App {
                 Span::styled(url.to_string(), style),
             ]));
         };
-        let mut about_links = std::mem::take(&mut self.about_links);
         for url in links {
-            link_row(url, &mut lines, &mut about_links);
+            link_row(url, &mut lines, &mut self.hits);
         }
         lines.push(Line::default());
         lines.push(Line::from(Span::styled(" report a bug / request a feature:", dim)));
         link_row(
             "https://github.com/clemson-cal/astrobib/issues",
             &mut lines,
-            &mut about_links,
+            &mut self.hits,
         );
-        self.about_links = about_links;
         lines.push(Line::default());
         lines.push(Line::from(Span::styled(
             " development assisted by Claude Fable 5",
@@ -292,7 +280,7 @@ impl App {
                 width: label.chars().count() as u16 + 1,
                 height: 1,
             };
-            self.about_btn = r;
+            self.hits.add(r, Target::AboutUpdate);
             let hov = hit(r, self.hover.0, self.hover.1);
             let style = if hov {
                 Style::default().fg(Color::Green).add_modifier(Modifier::UNDERLINED)

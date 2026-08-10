@@ -39,19 +39,20 @@ pub(super) fn format_authors(author: &str) -> String {
 
 impl App {
     pub(super) fn draw_table(&mut self, f: &mut Frame, area: Rect) {
-        self.table_area = area;
-        self.sort_headers.clear();
+        self.last_table_area = area;
         self.clamp_cursor();
         let model = self.table_model(area.width);
         // where the metric column landed, for the priority wheel: the
         // solver is the only thing that knows, and the wheel handler
         // wants the column's full height, header rows included
-        self.metric_area = Rect::default();
         let widths = table::solve(&model.columns, area.width);
         let mut mx = area.x;
         for (spec, w) in model.columns.iter().zip(widths.iter()) {
             if spec.id == Col::Metric {
-                self.metric_area = Rect { x: mx, y: area.y, width: *w, height: area.height };
+                self.hits.add(
+                    Rect { x: mx, y: area.y, width: *w, height: area.height },
+                    Target::Metric,
+                );
             }
             mx += w + 1;
         }
@@ -63,7 +64,9 @@ impl App {
                 self.hover_hint = Some(format!("{what}  ·  click to sort"));
             }
         }
-        self.sort_headers.extend(rects);
+        for (r, col) in rects {
+            self.hits.add(r, Target::SortHeader(col));
+        }
         if let Some(hint) = self.empty_hint() {
             draw_empty_hint(f, data_area, &hint);
         }

@@ -1,6 +1,11 @@
 # Plan: collapse the TUI's twenty rect caches into one frame-scoped registry
 
-*Written 2026-08-09, after the 0.17.1 module split. Deferred for budget, not for doubt. Nothing here is started.*
+**Status: complete (2026-08-10).** The TUI now builds a fresh `Hits` registry
+per frame, dispatches clicks and wheel targets through it, and keeps only the
+persistent `last_table_area` geometry needed by non-draw handlers. The
+headless TUI suite, Rust tests, and clippy are green.
+
+*Written 2026-08-09, after the 0.17.1 module split. Implemented 2026-08-10.*
 
 The 0.17.1 refactor broke `impl App` into nineteen modules but left `App`'s 91 fields untouched, and one finding came out of looking at them afterwards: **twenty of those fields are the same thing wearing twenty masks.** This is the plan for fixing that. It is a behaviour-bearing change, unlike the pure movement in 0.17.1, so the verification comes first.
 

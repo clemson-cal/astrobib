@@ -7,6 +7,10 @@ astrobib connects to the [NASA/Harvard ADS](https://ui.adsabs.harvard.edu) to se
 
 Your library is just a directory of `.bib` files, indistinguishable from hand-written BibTeX, and cite keys derive from each paper's stable identity (arXiv ID or bibcode) — so any two copies of a paper, fetched by anyone at any time, agree on the key forever. Libraries from all earlier astrobib versions work unchanged.
 
+### Development status
+
+The current development tree includes the completed TUI hit-test registry refactor: clickable and wheel geometry is rebuilt per frame, eliminating stale surface hit targets while preserving modal and hover behavior. Rust tests, clippy, and the headless TUI suite pass; see [docs/plans/hit-registry.md](docs/plans/hit-registry.md) for the implementation record.
+
 ---
 ## Installation
 ```bash

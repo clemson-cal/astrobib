@@ -175,7 +175,7 @@ impl App {
     /// Whether one column is drawn, honouring the user's override where
     /// there is one and the scope's default where there is not.
     fn column_shown(&self, kind: ScopeKind, id: Col) -> bool {
-        let all = self.all_columns(kind, self.table_area.width);
+        let all = self.all_columns(kind, self.last_table_area.width);
         let Some(spec) = all.iter().find(|c| c.id == id) else {
             return false;
         };
@@ -311,7 +311,7 @@ impl App {
         let kind = self.active_kind();
         let now_shown = self.column_shown(kind, id);
         let default = self
-            .all_columns(kind, self.table_area.width)
+            .all_columns(kind, self.last_table_area.width)
             .iter()
             .find(|c| c.id == id)
             .is_some_and(|c| c.default_visible);
@@ -355,13 +355,13 @@ impl App {
         let Some(&PanelRow::Column(id)) = rows.get(self.col_sel) else {
             return;
         };
-        let shown = self.columns_for(kind, self.table_area.width);
+        let shown = self.columns_for(kind, self.last_table_area.width);
         // hidden, or drawn outside the table (the metric swatch), or
         // locked to a derived or one-cell width
         if !shown.iter().any(|c| c.id == id && c.resizable) {
             return;
         }
-        let cur = col_width(&shown, self.table_area.width, id) as i16;
+        let cur = col_width(&shown, self.last_table_area.width, id) as i16;
         let next = (cur + d).clamp(table::MIN_COL_W as i16, table::MAX_COL_W as i16) as u16;
         self.columns.entry(kind).or_default().widths.insert(id, next);
         self.save_column_config();
@@ -408,7 +408,7 @@ impl App {
     /// configuring.
     pub(super) fn panel_rows(&self) -> Vec<PanelRow> {
         let kind = self.active_kind();
-        self.all_columns(kind, self.table_area.width)
+        self.all_columns(kind, self.last_table_area.width)
             .into_iter()
             .filter(|c| !c.header.is_empty() || c.sortable)
             .map(|c| PanelRow::Column(c.id))
@@ -430,8 +430,8 @@ impl App {
         focused: bool,
         preview: Option<Col>,
     ) -> Vec<PanelLine> {
-        let shown = self.columns_for(kind, self.table_area.width);
-        let all = self.all_columns(kind, self.table_area.width);
+        let shown = self.columns_for(kind, self.last_table_area.width);
+        let all = self.all_columns(kind, self.last_table_area.width);
         let cfg = self.columns.get(&kind).cloned().unwrap_or_default();
         let sort = self.sort();
         let dim = Style::default().fg(Color::DarkGray);
@@ -467,7 +467,7 @@ impl App {
                     // it just is not yours
                     let flex = drawn.is_some_and(|c| matches!(c.width, table::Width::Flex));
                     let sortable = spec.is_some_and(|c| c.sortable);
-                    let w = col_width(&shown, self.table_area.width, id);
+                    let w = col_width(&shown, self.last_table_area.width, id);
                     // The row's cells, as offsets from the panel's left
                     // edge — spelled out because the click rects have to
                     // agree with the spans built below, and drifted once:
@@ -582,7 +582,6 @@ impl App {
     /// leftover space; hide it and the "—" moves to whichever column
     /// takes over.
     pub(super) fn draw_columns_panel(&mut self, f: &mut Frame, area: Rect) {
-        self.col_rects.clear();
         let kind = self.active_kind();
         let focused = self.focus == Focus::Columns;
         // no edge rule, mirroring the pub card on the other side of the
@@ -642,25 +641,29 @@ impl App {
         let mut rendered: Vec<Line> = vec![];
         for (n, line) in lines.iter().skip(start).take(h).enumerate() {
             let y = inner.y + n as u16;
-            for &(dx, w, hitkind) in &line.hits {
-                self.col_rects.push((
-                    Rect { x: inner.x + dx, y, width: w, height: 1 },
-                    hitkind,
-                ));
-            }
             if let Some(i) = line.row {
-                self.col_rects.push((
+                self.hits.add(
                     Rect { x: inner.x, y, width: inner.width, height: 1 },
-                    PanelHit::Row(i),
-                ));
+                    Target::Column(PanelHit::Row(i)),
+                );
+            }
+            for &(dx, w, hitkind) in &line.hits {
+                self.hits.add(
+                    Rect { x: inner.x + dx, y, width: w, height: 1 },
+                    Target::Column(hitkind),
+                );
             }
             rendered.push(line.to_line());
         }
         // rolling over a control says what it does and which key does it
-        if let Some(&(_, h)) = self
-            .col_rects
+        if let Some(h) = lines
             .iter()
-            .find(|(r, h)| !matches!(h, PanelHit::Row(_)) && hit(*r, self.hover.0, self.hover.1))
+            .skip(start)
+            .take(h)
+            .enumerate()
+            .flat_map(|(n, line)| line.hits.iter().map(move |&(dx, w, hitkind)| (n, dx, w, hitkind)))
+            .find(|(n, dx, w, _)| hit(Rect { x: inner.x + *dx, y: inner.y + *n as u16, width: *w, height: 1 }, self.hover.0, self.hover.1))
+            .map(|(_, _, _, hitkind)| hitkind)
         {
             self.hover_hint = Some(match h {
                 PanelHit::Toggle(id) => format!("show / hide {}  ·  space", id.tag()),

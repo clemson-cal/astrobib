@@ -313,12 +313,15 @@ impl App {
             width: w,
             height: h.min(frame.height),
         };
-        self.pick_area = area;
         f.render_widget(ratatui::widgets::Clear, area);
         let mut lines: Vec<Line> = vec![];
         for (i, p) in files.iter().take(15).enumerate() {
             let name = p.file_name().unwrap_or_default().to_string_lossy().to_string();
             let row_y = area.y + 1 + i as u16;
+            self.hits.add(
+                Rect { x: area.x, y: row_y, width: area.width, height: 1 },
+                Target::PickRow(i),
+            );
             let hov = self.hover.1 == row_y && hit(area, self.hover.0, self.hover.1);
             let style = if i == *sel {
                 Style::default().bg(Color::DarkGray).add_modifier(Modifier::BOLD)

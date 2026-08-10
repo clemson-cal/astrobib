@@ -336,24 +336,8 @@ impl App {
         let hv = self.hover;
         // copy-regions: the text itself is the click target; hovering any
         // line of a region tints the whole region and hints in the footer
-        let hov_region: Option<CopyItem> = self
-            .card_yanks
-            .iter()
-            .find(|(r, _)| hit(*r, hv.0, hv.1))
-            .map(|&(_, item)| item);
-        if let Some(item) = hov_region {
-            let what = match item {
-                CopyItem::Title => "title",
-                CopyItem::Abstract => "abstract",
-                _ => "cite key",
-            };
-            self.hover_hint = Some(format!("⧉ click to copy {what}"));
-        }
         let mut yanks: Vec<(Rect, CopyItem)> = vec![];
         let tint = Style::default().bg(copy_region_bg());
-        let region_style = |base: Style, item: CopyItem| {
-            if hov_region == Some(item) { base.patch(tint) } else { base }
-        };
 
         let x0 = area.x + 3; // 3 cells of inset; the tint is the edge
         let w = area.width.saturating_sub(5) as usize;
@@ -374,16 +358,18 @@ impl App {
         // ── body ─────────────────────────────────────────────────────
         for l in wrap_text(&m.title, w) {
             let lw = l.chars().count() as u16;
-            yanks.push((Rect { x: x0, y, width: lw.max(1), height: 1 }, CopyItem::Title));
+            let r = Rect { x: x0, y, width: lw.max(1), height: 1 };
+            yanks.push((r, CopyItem::Title));
+            self.hits.add(r, Target::CardYank(CopyItem::Title));
+            let hov = matches!(self.hits.at(hv.0, hv.1), Some(Target::CardYank(CopyItem::Title)));
+            if hov { self.hover_hint = Some("⧉ click to copy title".to_string()); }
             line_at(
                 f,
                 y,
                 Line::from(Span::styled(
                     l,
-                    region_style(
-                        Style::default().add_modifier(Modifier::BOLD | Modifier::ITALIC),
-                        CopyItem::Title,
-                    ),
+                    if hov { tint.patch(Style::default().add_modifier(Modifier::BOLD | Modifier::ITALIC)) }
+                    else { Style::default().add_modifier(Modifier::BOLD | Modifier::ITALIC) },
                 )),
             );
             y += 1;
@@ -419,7 +405,7 @@ impl App {
             if y < bottom {
                 draw_cited_line(
                     f, x0, y, w as u16, n, self.hover,
-                    &mut self.card_buttons, &mut self.hover_hint,
+                    &mut self.hits, &mut self.hover_hint,
                 );
             }
             y += 1;
@@ -454,16 +440,18 @@ impl App {
             let (first, last) = (y, y + shown.len().saturating_sub(1) as u16);
             for l in shown {
                 let lw = l.chars().count() as u16;
-                yanks.push((
-                    Rect { x: x0, y, width: lw.max(1), height: 1 },
-                    CopyItem::Abstract,
-                ));
+                let r = Rect { x: x0, y, width: lw.max(1), height: 1 };
+                yanks.push((r, CopyItem::Abstract));
+                self.hits.add(r, Target::CardYank(CopyItem::Abstract));
+                let hov = matches!(self.hits.at(hv.0, hv.1), Some(Target::CardYank(CopyItem::Abstract)));
+                if hov { self.hover_hint = Some("⧉ click to copy abstract".to_string()); }
                 line_at(
                     f,
                     y,
                     Line::from(Span::styled(
                         l,
-                        region_style(Style::default().fg(abstract_text()), CopyItem::Abstract),
+                        if hov { tint.patch(Style::default().fg(abstract_text())) }
+                        else { Style::default().fg(abstract_text()) },
                     )),
                 );
                 y += 1;
@@ -489,7 +477,10 @@ impl App {
         let dimsep = divider();
         line_at(f, y, Line::from(Span::styled(sep.clone(), dimsep)));
         y += 1;
-        y = draw_link_stack(f, x0, y, w as u16, bottom, self.hover, m.links, m.copies, &mut self.card_links, &mut self.card_buttons, &mut self.hover_hint, &mut yanks);
+        y = draw_link_stack(f, x0, y, w as u16, bottom, self.hover, m.links, m.copies, &mut self.hits, &mut self.hover_hint, &mut yanks);
+        for (r, item) in yanks.drain(..) {
+            self.hits.add(r, Target::CardYank(item));
+        }
         line_at(f, y, Line::from(Span::styled(sep, dimsep)));
         y += 2; // a little air below the link stack
 
@@ -502,7 +493,7 @@ impl App {
                 let wl = pill_width(label);
                 let r = Rect { x: bx, y, width: wl, height: 1 };
                 if y < bottom {
-                    self.card_buttons.push((r, btn));
+                    self.hits.add(r, Target::CardButton(btn));
                 }
                 let hovb = hit(r, hv.0, hv.1);
                 if hovb {
@@ -518,10 +509,10 @@ impl App {
             if self.poll_cancel.is_some() {
                 let label = "◌ waiting for download…  cancel ✕";
                 if y < bottom {
-                    self.card_buttons.push((
+                    self.hits.add(
                         Rect { x: x0, y, width: label.chars().count() as u16, height: 1 },
-                        CardBtn::Cancel,
-                    ));
+                        Target::CardButton(CardBtn::Cancel),
+                    );
                 }
                 line_at(f, y, Line::from(Span::styled(label, Style::default().fg(Color::Yellow))));
             } else if !self.pdf_status.is_empty() {
@@ -577,7 +568,7 @@ impl App {
                 let r = Rect { x: tx, y, width: nw, height: 1 };
                 let hovt = hit(r, hv.0, hv.1);
                 if y < bottom {
-                    self.card_tags.push((r, name.clone()));
+                    self.hits.add(r, Target::CardTag(name.clone()));
                 }
                 if hovt {
                     self.hover_hint = Some(tag_hint(name));
@@ -605,8 +596,12 @@ impl App {
             .map(|(text, style)| Span::styled(text, style))
             .collect();
         let used: u16 = spans.iter().map(|s| s.content.chars().count() as u16).sum();
-        yanks.push((Rect { x: x0, y, width: used.max(1), height: 1 }, CopyItem::Key));
-        if hov_region == Some(CopyItem::Key) {
+        let key_rect = Rect { x: x0, y, width: used.max(1), height: 1 };
+        yanks.push((key_rect, CopyItem::Key));
+        self.hits.add(key_rect, Target::CardYank(CopyItem::Key));
+        let hov = matches!(self.hits.at(hv.0, hv.1), Some(Target::CardYank(CopyItem::Key)));
+        if hov {
+            self.hover_hint = Some("⧉ click to copy cite key".to_string());
             for s in &mut spans {
                 s.style = s.style.patch(tint);
             }
@@ -619,7 +614,7 @@ impl App {
                 let inline = used + 2 + cw <= w as u16;
                 let (cx, cy) = if inline { (x0 + used + 2, y) } else { (x0, y + 1) };
                 let r = Rect { x: cx, y: cy, width: cw, height: 1 };
-                self.card_buttons.push((r, btn));
+                self.hits.add(r, Target::CardButton(btn));
                 let hovb = hit(r, hv.0, hv.1);
                 if hovb {
                     self.hover_hint = Some(card_hint(btn).to_string());
@@ -643,7 +638,7 @@ impl App {
                     width: label.chars().count() as u16,
                     height: 1,
                 };
-                self.card_buttons.push((r, btn));
+                self.hits.add(r, Target::CardButton(btn));
                 let hovb = hit(r, hv.0, hv.1);
                 if hovb {
                     self.hover_hint = Some(card_hint(btn).to_string());
@@ -659,7 +654,6 @@ impl App {
             }
             None => line_at(f, y, Line::from(spans)),
         }
-        self.card_yanks = yanks;
         // the footer draws the card ⇄ bib toggler for us, on the formatted side
         self.card_toggle = Some(false);
     }
@@ -669,15 +663,10 @@ impl App {
     /// un-imported article previews the exact canonical BibTeX an import
     /// would write (fetched once, cached by bibcode).
     fn draw_article_card(&mut self, f: &mut Frame, area: Rect) {
-        self.card_buttons.clear();
-        self.card_links.clear();
-        self.card_tags.clear();
         let Some(Scope::Ads { articles, .. }) = self.scopes.get(self.active_scope) else {
-            self.card_yanks.clear();
             return;
         };
         let Some(a) = self.card_article_pos().and_then(|p| articles.get(p)) else {
-            self.card_yanks.clear();
             return;
         };
         if self.show_bib_source {
@@ -717,14 +706,13 @@ impl App {
     /// The pub card for the highlighted library entry (or, in an ADS
     /// scope, the highlighted query result).
     pub(super) fn draw_detail(&mut self, f: &mut Frame, area: Rect) {
-        self.card_area = area;
+        self.hits.add(area, Target::Card);
         // a different paper (or view) resets the scroll
         let shown = self.card_key().map(str::to_string);
         if shown != self.card_shown {
             self.card_shown = shown;
             self.card_scroll = 0;
         }
-        self.card_links.clear();
         // no edge rule: the tint is what separates the card from the
         // table, and a line beside a tint says the same thing twice
         f.render_widget(Block::default().style(Style::default().bg(card_bg())), area);

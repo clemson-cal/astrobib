@@ -70,8 +70,7 @@ pub(super) fn draw_link_stack(
     hover: (u16, u16),
     left: Vec<(String, LinkTarget, bool)>,
     right: Vec<(String, LinkTarget, bool)>,
-    card_links: &mut Vec<(Rect, String)>,
-    card_buttons: &mut Vec<(Rect, CardBtn)>,
+    hits: &mut Hits,
     hint: &mut Option<String>,
     yanks: &mut Vec<(Rect, CopyItem)>,
 ) -> u16 {
@@ -115,8 +114,8 @@ pub(super) fn draw_link_stack(
             }
             if enabled {
                 match target {
-                    LinkTarget::Url(url) => card_links.push((r, url)),
-                    LinkTarget::Query(btn) => card_buttons.push((r, btn)),
+                    LinkTarget::Url(url) => hits.add(r, Target::CardLink(url)),
+                    LinkTarget::Query(btn) => hits.add(r, Target::CardButton(btn)),
                     LinkTarget::Copy(item) => yanks.push((r, item)),
                 }
             }
@@ -171,7 +170,7 @@ pub(super) fn draw_cited_line(
     w: u16,
     n: Option<i64>,
     hover: (u16, u16),
-    card_buttons: &mut Vec<(Rect, CardBtn)>,
+    hits: &mut Hits,
     hint: &mut Option<String>,
 ) {
     let label = match n {
@@ -179,7 +178,7 @@ pub(super) fn draw_cited_line(
         None => "cited by ?".to_string(),
     };
     let r = Rect { x: x0, y, width: label.chars().count() as u16 + 2, height: 1 };
-    card_buttons.push((r, CardBtn::RefreshCites));
+    hits.add(r, Target::CardButton(CardBtn::RefreshCites));
     let hov = hit(r, hover.0, hover.1);
     if hov {
         *hint = Some(card_hint(CardBtn::RefreshCites).to_string());
@@ -217,7 +216,7 @@ impl App {
     /// manuscript scope; otherwise the cursor row.
     pub(super) fn card_key(&self) -> Option<&str> {
         if self.active_scope == 0 {
-            let a = self.table_area;
+            let a = self.last_table_area;
             let (_, show_key) = column_layout(a.width);
             let show_key = show_key || self.show_detail;
             let in_key_col = show_key && self.hover.0 >= a.x + a.width.saturating_sub(20);
@@ -234,7 +233,7 @@ impl App {
         if let Some(Scope::Manuscript { rows }) = self.scopes.get(self.active_scope) {
             // Cited column: after the 2-wide gutter and state columns
             // (spacing 1), x spans [6, 6+26)
-            let a = self.table_area;
+            let a = self.last_table_area;
             if self.hover.0 >= a.x + 6 && self.hover.0 < a.x + 6 + 26 {
                 if let Some(k) = self
                     .hovered_table_pos()
@@ -251,7 +250,7 @@ impl App {
     /// The ADS article position the card shows: hovering the Title
     /// column previews that row; otherwise the cursor row.
     pub(super) fn card_article_pos(&self) -> Option<usize> {
-        let a = self.table_area;
+        let a = self.last_table_area;
         // Key column (rightmost 20) — the same trigger as the library scope
         if self.hover.0 >= a.x + a.width.saturating_sub(20) {
             if let Some(pos) = self.hovered_table_pos() {
@@ -388,7 +387,7 @@ impl App {
             let style = if is_bib == source {
                 Style::default().fg(Color::Cyan)
             } else {
-                self.card_buttons.push((r, CardBtn::BibView));
+                self.hits.add(r, Target::CardButton(CardBtn::BibView));
                 if hit(r, self.hover.0, self.hover.1) {
                     Style::default().fg(Color::Cyan).add_modifier(Modifier::UNDERLINED)
                 } else {
@@ -493,12 +492,13 @@ impl App {
             self.hover,
             copies,
             vec![],
-            &mut self.card_links,
-            &mut self.card_buttons,
+            &mut self.hits,
             &mut self.hover_hint,
             &mut yanks,
         );
-        self.card_yanks = yanks;
+        for (r, item) in yanks {
+            self.hits.add(r, Target::CardYank(item));
+        }
         // the footer draws the card ⇄ bib toggler for us, on the bib side
         self.card_toggle = Some(true);
     }

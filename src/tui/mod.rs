@@ -200,7 +200,9 @@ struct App {
     // Esc exits and clears; bulk actions apply to the selection
     select_mode: bool,
     selected: HashSet<String>,
-    table_area: Rect, // last drawn table region, for mouse hit-testing
+    /// Click and wheel targets registered by the current frame only.
+    hits: Hits,
+    last_table_area: Rect, // persistent geometry used by table event handlers
     dl_rx: Option<std::sync::mpsc::Receiver<DlMsg>>,
     // ? keyboard cheat-sheet overlay; any key or click dismisses
     show_help: bool,
@@ -209,24 +211,14 @@ struct App {
     /// which side the arrow keys drive while the columns panel is open
     focus: Focus,
     col_sel: usize,
-    col_rects: Vec<(Rect, PanelHit)>,
-    /// the ADS-returns control in the query prompt — a click target only
-    /// while the prompt is up
-    prompt_sort_rect: Rect,
-    /// "edit query (E)" in the footer — a click target only on a query
-    edit_query_rect: Rect,
-    /// the sample-query rows, live only while a prompt is up
-    sample_rects: Vec<(Rect, &'static str)>,
     /// the kind of the last coalescing note and where it landed in the
     /// log, so a repeat of the same control can replace it
     last_note: Option<(&'static str, usize)>,
     /// per scope kind: which columns are hidden and how wide the user
     /// pinned them. Absent means auto — see table::ColumnConfig.
     columns: std::collections::HashMap<ScopeKind, table::ColumnConfig>,
-    // the @ about modal: clickable links, the update-check button
+    // the @ about modal
     show_about: bool,
-    about_links: Vec<(Rect, String)>,
-    about_btn: Rect,
     upd_rx: Option<std::sync::mpsc::Receiver<String>>,
     // canonical-BibTeX previews for un-imported ADS articles, by bibcode
     bib_preview: std::collections::HashMap<String, String>,
@@ -237,13 +229,11 @@ struct App {
     // scroll offset for the card's abstract / bib text (wheel over the
     // card); reset when the shown paper changes
     card_scroll: usize,
-    card_area: Rect,
     card_shown: Option<String>,
-    metric_area: Rect,
     metrics: crate::metrics::Metrics,
     metric_col: MetricCol,
     cit_rx: Option<std::sync::mpsc::Receiver<Vec<(String, i64)>>>,
-    // copy-chord modal region and its clickable rows
+    // copy-chord modal state
     // last known mouse position, for roll-over styling of clickables
     hover: (u16, u16),
     // transient footer hint while hovering a copy-region (never logged)
@@ -265,10 +255,8 @@ struct App {
     /// would come to rest at the end of its group rather than where it
     /// started, and H twice would not be the no-op it reads as.
     scope_seq: usize,
-    scope_rects: Vec<(Rect, usize)>,
-    help_rects: Vec<(Rect, KeyCode)>, // keys-panel rows → synthesized key
     ads_rx: Option<std::sync::mpsc::Receiver<AdsMsg>>,
-    // table sort (clickable column headers) and their header hit rects
+    // table sort (clickable column headers)
     // Sort is per scope, not per app: each query tab keeps its own
     // (stored on the Tab, in tabs.json), and the library and manuscript
     // keep theirs in state.json. Switching scopes therefore leaves every
@@ -279,22 +267,12 @@ struct App {
     /// None while the manuscript is in scan order — the order the cites
     /// appear in the source, which is meaningful and is the default.
     ms_sort: Option<(Col, bool)>,
-    sort_headers: Vec<(Rect, Col)>,
-    // footer view badges: clickable show/hide toggles per app-wide view
-    footer_badges: Vec<(Rect, Action)>,
+    // footer view badges: show/hide toggles per app-wide view
     /// Set by the card while it draws, read by the footer just after:
     /// `Some(showing the .bib source)` when a pub card is on screen and
     /// the card ⇄ bib toggler therefore belongs in the footer, None when
     /// there is no card to toggle. Cleared at the top of every frame.
     card_toggle: Option<bool>,
-    // pub card button and link rects, rebuilt each draw
-    card_buttons: Vec<(Rect, CardBtn)>,
-    card_links: Vec<(Rect, String)>,
-    /// The card's tag names and where they were drawn: each one filters
-    /// the scope to `tag:<name>` when clicked, so the whole name is kept
-    /// here even when the card had room to draw only part of it.
-    card_tags: Vec<(Rect, String)>,
-    card_yanks: Vec<(Rect, CopyItem)>,
     // transient PDF status line shown on the card (waiting/result)
     pdf_status: String,
     // browser-download watcher cancel flag (X / clear cancels the poll)
@@ -303,8 +281,6 @@ struct App {
     // remove each row when its result arrives
     tasks: Vec<Task>,
     next_task_id: u64,
-    pick_area: Rect,
-    confirm_btns: Vec<(Rect, bool)>, // (rect, is_confirm)
     // plain clicks on the same row within 400ms form a double-click
     last_click: Option<(std::time::Instant, usize, usize)>, // (t, scope, pos)
     // silent auto-reload: mtime snapshot of the manuscript sources, of
@@ -324,7 +300,6 @@ struct App {
     // part of the mode: it is a view of the mode's `sort`, and closing
     // it must never close the prompt underneath.
     sort_menu: bool,
-    sort_menu_rects: Vec<(Rect, String)>,
     // the highlighted field, and whether the whole list is showing its
     // primary direction (newest / most / A→Z) or its reverse. Direction
     // is one axis for the list rather than a property of each row: it is
@@ -335,6 +310,46 @@ struct App {
 
 fn hit(r: Rect, x: u16, y: u16) -> bool {
     x >= r.x && x < r.x + r.width && y >= r.y && y < r.y + r.height
+}
+
+#[derive(Clone, PartialEq, Eq)]
+enum Target {
+    AboutLink(String),
+    AboutUpdate,
+    CardButton(CardBtn),
+    CardLink(String),
+    CardTag(String),
+    CardYank(CopyItem),
+    Column(PanelHit),
+    Confirm(bool),
+    EditQuery,
+    Footer(Action),
+    Help(KeyCode),
+    Metric,
+    PickRow(usize),
+    PromptSort,
+    Sample(&'static str),
+    Scope(usize),
+    SortHeader(Col),
+    SortMenu(String),
+    Card,
+}
+
+#[derive(Default)]
+struct Hits(Vec<(Rect, Target)>);
+
+impl Hits {
+    fn add(&mut self, rect: Rect, target: Target) {
+        self.0.push((rect, target));
+    }
+
+    fn at(&self, x: u16, y: u16) -> Option<&Target> {
+        self.0
+            .iter()
+            .rev()
+            .find(|(rect, _)| hit(*rect, x, y))
+            .map(|(_, target)| target)
+    }
 }
 
 /// The text rect of a tinted panel. Panels carry no borders — their tint
@@ -478,30 +493,23 @@ impl App {
             quit: false,
             select_mode: false,
             selected: HashSet::new(),
-            table_area: Rect::default(),
+            hits: Hits::default(),
+            last_table_area: Rect::default(),
             dl_rx: None,
             show_help: false,
             show_columns: false,
             focus: Focus::Table,
             col_sel: 0,
-            col_rects: vec![],
-            prompt_sort_rect: Rect::default(),
-            edit_query_rect: Rect::default(),
-            sample_rects: vec![],
             last_note: None,
             columns: App::load_column_config(),
             show_about: false,
-            about_links: vec![],
-            about_btn: Rect::default(),
             upd_rx: None,
             bib_preview: std::collections::HashMap::new(),
             bib_rx: None,
             update_status: None,
             show_bib_source: false,
             card_scroll: 0,
-            card_area: Rect::default(),
             card_shown: None,
-            metric_area: Rect::default(),
             metrics: crate::metrics::Metrics::load(),
             metric_col: MetricCol::from_tag(
                 &crate::ads::get_state_field("metric").unwrap_or_default(),
@@ -516,24 +524,14 @@ impl App {
             scopes: vec![Scope::Library],
             active_scope: 0,
             scope_seq: 0,
-            scope_rects: vec![],
-            help_rects: vec![],
             ads_rx: None,
             library_sort: load_sort("library_sort").unwrap_or((Col::Year, false)),
             ms_sort: load_sort("manuscript_sort"),
-            sort_headers: vec![],
-            footer_badges: vec![],
             card_toggle: None,
-            card_buttons: vec![],
-            card_links: vec![],
-            card_tags: vec![],
-            card_yanks: vec![],
             pdf_status: String::new(),
             poll_cancel: None,
             tasks: vec![],
             next_task_id: 0,
-            pick_area: Rect::default(),
-            confirm_btns: vec![],
             last_click: None,
             watch: Watch::default(),
             watch_at: std::time::Instant::now(),
@@ -541,7 +539,6 @@ impl App {
             write_failed: HashSet::new(),
             kill_ring: String::new(),
             sort_menu: false,
-            sort_menu_rects: vec![],
             sort_menu_sel: 0,
             sort_menu_primary: true,
         }
@@ -628,7 +625,7 @@ impl App {
                 "{:>6}ms draw frame={:?} table={:?}",
                 t0.elapsed().as_millis(),
                 terminal.get_frame().area(),
-                self.table_area,
+                self.last_table_area,
             ));
             let had_events = event::poll(Duration::from_millis(tick))?;
             if !had_events {
@@ -664,8 +661,7 @@ impl App {
     }
 
     fn draw(&mut self, f: &mut Frame) {
-        self.card_buttons.clear();
-        self.card_tags.clear();
+        self.hits = Hits::default();
         self.hover_hint = None;
         // the card claims the footer's toggler while it draws, below
         self.card_toggle = None;
@@ -748,13 +744,9 @@ impl App {
         if let Some(area) = columns_area {
             // after the table: the panel reads the solved column widths
             self.draw_columns_panel(f, area);
-        } else {
-            self.col_rects.clear();
         }
         if let Some(area) = detail_area {
             self.draw_detail(f, area);
-        } else {
-            self.card_yanks.clear();
         }
         if self.show_help {
             self.draw_help(f, help_area);
@@ -763,10 +755,8 @@ impl App {
             self.draw_log(f, log_area);
         }
         if self.sort_menu {
-            self.sample_rects.clear();
             self.draw_sort_menu(f, samples_area);
         } else {
-            self.sort_menu_rects.clear();
             self.draw_samples(f, samples_area);
         }
         self.draw_status(f, status);
@@ -778,13 +768,9 @@ impl App {
         }
         if let Mode::Pick { .. } = self.mode {
             self.draw_picker(f);
-        } else {
-            self.pick_area = Rect::default();
         }
         if let Mode::Confirm { .. } = self.mode {
             self.draw_confirm(f);
-        } else {
-            self.confirm_btns.clear();
         }
     }
 

@@ -401,7 +401,6 @@ impl App {
         // font-height capsules, separated from the table by a blank row
         // above and below (glyph-built "taller" capsules read as
         // corruption across fonts)
-        self.scope_rects.clear();
         let mut y = area.y + 1;
         let mut spans: Vec<Span> = vec![];
         let mut x = area.x;
@@ -424,7 +423,7 @@ impl App {
                 continue;
             }
             let r = Rect { x, y, width: wl, height: 1 };
-            self.scope_rects.push((r, idx));
+            self.hits.add(r, Target::Scope(idx));
             let hov = hit(r, self.hover.0, self.hover.1);
             if hov && idx == FILTER_CHIP {
                 self.hover_hint =

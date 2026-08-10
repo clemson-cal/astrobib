@@ -238,7 +238,6 @@ impl App {
     }
 
     pub(super) fn draw_help(&mut self, f: &mut Frame, area: Rect) {
-        self.help_rects.clear();
         let cols = (area.width.saturating_sub(2) / HELP_COLW).max(1) as usize;
         let rows = HELP_ENTRIES.len().div_ceil(cols);
         // the heading takes the row the top border used to, so the
@@ -261,7 +260,7 @@ impl App {
                     // unavailable rows stay clickable: the key they
                     // synthesize explains itself in the footer, which
                     // beats a dimmed row that swallows the click
-                    self.help_rects.push((rect, *click));
+                    self.hits.add(rect, Target::Help(*click));
                     // an unavailable key is the inactive form of an
                     // available one, so it dims cyan rather than piling
                     // DIM onto gray — the row is still clickable, and
