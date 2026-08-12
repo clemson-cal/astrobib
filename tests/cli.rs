@@ -504,6 +504,86 @@ fn import_cited_only_refuses_when_there_is_nothing_to_match_against() {
     assert_eq!(std::fs::read_dir(ms.join("bib")).unwrap().count(), 0, "{}", r.report());
 }
 
+#[test]
+fn import_rename_citekeys_rewrites_tex_and_markdown_alike() {
+    // an empty global tier so the imported paper is the only Delacroix
+    // in the library: its shortest unambiguous key is then the bare
+    // author-year, which is the rename this asserts on
+    let sb = Sandbox::empty("import-rename");
+    let ms = sb.ms("paper");
+    let (full, data) = variant(
+        "Delacroix2018jdgxd.bib",
+        &[
+            ("eprint", "1806.17171"),
+            ("title", "{A foreign reference}"),
+            ("adsurl", "https://ui.adsabs.harvard.edu/abs/2018ApJ...860...17D"),
+        ],
+    );
+    let short = &full[..full.len() - 5];
+    write(ms.join("from-coauthor.bib"), &bib::format_entry(&data));
+    write(
+        ms.join("main.tex"),
+        &format!("Prose about {full} stays.\n\\citep{{{full}}} and \\citet{{{full}}}\n"),
+    );
+    // no main.md, so every top-level .md is a source; the three cite
+    // shapes a markdown manuscript can carry, plus one that is not a
+    // cite at all
+    write(
+        ms.join("notes.md"),
+        &format!("See @{full} and [@{full}], also [[{full}|the paper]].\nProse {full} stays, `@{full}` stays.\n"),
+    );
+
+    let r = sb.run_in(&ms, &["import", "from-coauthor.bib", "--local-only", "--rename-citekeys"]);
+    assert!(r.ok(), "{}", r.report());
+    assert!(r.stdout.contains(&format!("{full} → {short}")), "{}", r.report());
+    assert!(r.stdout.contains("Rewriting cite keys in"), "{}", r.report());
+    assert!(r.stdout.contains("rewrote 2 cite(s)"), "{}", r.report());
+    assert!(r.stdout.contains("rewrote 3 cite(s)"), "{}", r.report());
+
+    let tex = read(ms.join("main.tex"));
+    assert!(tex.contains(&format!("\\citep{{{short}}}")), "{tex}");
+    assert!(tex.contains(&format!("\\citet{{{short}}}")), "{tex}");
+    assert!(tex.contains(&format!("Prose about {full} stays")), "{tex}");
+
+    let md = read(ms.join("notes.md"));
+    assert!(md.contains(&format!("See @{short} and [@{short}]")), "{md}");
+    assert!(md.contains(&format!("[[{short}|the paper]]")), "{md}");
+    assert!(md.contains(&format!("Prose {full} stays")), "{md}");
+    assert!(md.contains(&format!("`@{full}` stays")), "{md}");
+}
+
+#[test]
+fn import_rename_citekeys_refuses_before_importing_anything() {
+    let sb = Sandbox::empty("import-rename-errors");
+    let (_key, data) = variant(
+        "Delacroix2018jdgxd.bib",
+        &[
+            ("eprint", "1806.18181"),
+            ("title", "{A foreign reference}"),
+            ("adsurl", "https://ui.adsabs.harvard.edu/abs/2018ApJ...860...18D"),
+        ],
+    );
+
+    // no bib/ to walk up to: nothing here is a manuscript, so there are
+    // no sources whose cites could be rewritten
+    let plain = sb.dir("loose");
+    write(plain.join("refs.bib"), &bib::format_entry(&data));
+    let r = sb.run_in(&plain, &["import", "refs.bib", "--rename-citekeys"]);
+    assert_eq!(r.code(), 1, "{}", r.report());
+    assert!(r.has("needs a manuscript directory"), "{}", r.report());
+    // and it refused before writing: a rewrite that cannot run must not
+    // leave the library changed and the map on the terminal, which is
+    // the state the flag exists to end
+    assert_eq!(std::fs::read_dir(sb.bib_dir()).unwrap().count(), 0, "{}", r.report());
+
+    let ms = sb.ms("paper");
+    write(ms.join("refs.bib"), &bib::format_entry(&data));
+    let r = sb.run_in(&ms, &["import", "refs.bib", "--rename-citekeys"]);
+    assert_eq!(r.code(), 1, "{}", r.report());
+    assert!(r.has("nothing to rewrite cite keys in"), "{}", r.report());
+    assert_eq!(std::fs::read_dir(ms.join("bib")).unwrap().count(), 0, "{}", r.report());
+}
+
 // ── refs ────────────────────────────────────────────────────────────
 
 #[test]

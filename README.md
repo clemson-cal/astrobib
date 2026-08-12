@@ -9,7 +9,7 @@ Your library is just a directory of `.bib` files, indistinguishable from hand-wr
 
 ### Development status
 
-The current development tree includes the completed TUI hit-test registry refactor: clickable and wheel geometry is rebuilt per frame, eliminating stale surface hit targets while preserving modal and hover behavior. Rust tests, clippy, and the headless TUI suite pass; see [docs/plans/hit-registry.md](docs/plans/hit-registry.md) for the implementation record.
+Since 0.18.0 the development tree has gained `import --rename-citekeys` (the re-key map applied to your sources, TeX and markdown alike) and a `✕` on every query capsule, with `⌃w` now named on the keys panel. Rust tests, clippy, and the headless TUI suite pass; the completed TUI hit-test registry refactor is recorded in [docs/plans/hit-registry.md](docs/plans/hit-registry.md).
 
 ---
 ## Installation
@@ -145,8 +145,9 @@ Migrating a manuscript that predates astrobib works the same way: in a directory
 
 ---
 ## CLI
-`list`, `search [--ads]`, `add <bibcode|ADS URL>`, `show <key>`, `rm <key> [--local-only]` (sole copies rescued), `import <file.bib> [--global-only|--local-only] [--cited-only]`, `refs [FILE] [--prune|--no-sync|--check] [--dry-run]`, `tidy [--dry-run]`, `convert bibcode|full|short` (uniform cite keys, rewritten in your sources), `update [--all]` (arXiv → published refresh, same key forever), `config [ads_token|email <value>]` (show or set the environment, including how much of the day's ADS allowance the token has spent), `gc` (report what the machine-local caches cost), plus `--library PATH` (relocate the global tier) and `--no-global`.
-`import` resolves each entry against ADS (arXiv ID → DOI → exact title+author+year) unless its cite key is already reproducible from its own data — canonical astrobib entries import byte-identically — and prints copy-pasteable key replacements for your `.tex` files.
+`list`, `search [--ads]`, `add <bibcode|ADS URL>`, `show <key>`, `rm <key> [--local-only]` (sole copies rescued), `import <file.bib> [--global-only|--local-only] [--cited-only] [--rename-citekeys]`, `refs [FILE] [--prune|--no-sync|--check] [--dry-run]`, `tidy [--dry-run]`, `convert bibcode|full|short` (uniform cite keys, rewritten in your sources), `update [--all]` (arXiv → published refresh, same key forever), `config [ads_token|email <value>]` (show or set the environment, including how much of the day's ADS allowance the token has spent), `gc` (report what the machine-local caches cost), plus `--library PATH` (relocate the global tier) and `--no-global`.
+`import` resolves each entry against ADS (arXiv ID → DOI → exact title+author+year) unless its cite key is already reproducible from its own data — canonical astrobib entries import byte-identically — and prints the old→new key map it produced.
+`import --rename-citekeys` applies that map to your sources, so a Zotero or Overleaf export that re-keys nearly every entry does not leave the manuscript citing strings that no longer exist. `.tex` and `.md` alike — pandoc `@Key`, bracketed `[@A; @B]` and Obsidian `[[Key]]` are rewritten in their own syntaxes, prose and code are never touched — and it prints what it changed per file. It refuses, before importing anything, unless you are in a manuscript with sources. Your bibliography is stale afterwards: run `astrobib refs`.
 `import --cited-only` takes just the entries your manuscript cites and leaves the rest of the file alone — the sane way to accept a coauthor's `refs.bib` when it is really their whole collection. Cites are read from your `.tex`/`.md` sources and matched against the file's own keys (full key, unambiguous prefix, or bibcode), before anything is sent to ADS.
 
 ---

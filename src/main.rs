@@ -103,6 +103,11 @@ enum Command {
         /// rest untouched (needs a manuscript with .tex/.md sources)
         #[arg(long)]
         cited_only: bool,
+        /// Rewrite the imported entries' old cite keys in the
+        /// manuscript's .tex/.md sources (needs a manuscript with
+        /// sources)
+        #[arg(long)]
+        rename_citekeys: bool,
     },
     /// Canonicalize hand-dropped .bib files in the manuscript's bib/
     /// (re-key, rename, dedupe), then regenerate refs.bib
@@ -240,8 +245,16 @@ fn main() -> anyhow::Result<()> {
             println!("Added {display}  ({key})");
             Ok(())
         }
-        Some(Command::Import { file, global_only, local_only, cited_only }) => {
-                import_bib(&mut lib, &file, local_root.as_deref(), global_only, local_only, cited_only)
+        Some(Command::Import { file, global_only, local_only, cited_only, rename_citekeys }) => {
+            import_bib(
+                &mut lib,
+                &file,
+                local_root.as_deref(),
+                global_only,
+                local_only,
+                cited_only,
+                rename_citekeys,
+            )
         }
         Some(Command::Tidy { dry_run }) => {
             match local_root.clone() {
@@ -618,15 +631,27 @@ fn run_config(lib: &MergedLibrary, local_root: Option<&std::path::Path>, via_fla
     );
 }
 
-/// Rewrite old→new cite keys inside every manuscript source's \cite
-/// braces, reporting per file.
-fn rewrite_citations(root: &std::path::Path, renames: &[(String, String)]) {
+/// Rewrite old→new cite keys in every manuscript source, reporting per
+/// file. TeX cites live in `\cite…{}` braces and markdown ones are
+/// pandoc `@Key` or Obsidian `[[Key]]`; a cite means the same thing in
+/// both, so a rewrite that covered only one would leave half a
+/// manuscript pointing at keys that no longer exist.
+///
+/// Returns the number of cites changed.
+fn rewrite_citations(root: &std::path::Path, renames: &[(String, String)]) -> usize {
     use std::collections::HashMap;
     let map: HashMap<&str, &str> =
         renames.iter().map(|(a, b)| (a.as_str(), b.as_str())).collect();
+    let lookup = |k: &str| map.get(k).map(|s| s.to_string());
     let mut total = 0usize;
-    for f in astrobib::export::manuscript_tex_files(root) {
-        match astrobib::export::convert_citations(&f, |k| map.get(k).map(|s| s.to_string())) {
+    for f in astrobib::export::manuscript_source_files(root) {
+        let is_md = f.extension().is_some_and(|x| x == "md");
+        let res = if is_md {
+            astrobib::export::convert_md_citations(&f, lookup)
+        } else {
+            astrobib::export::convert_citations(&f, lookup)
+        };
+        match res {
             Ok(0) => {}
             Ok(n) => {
                 total += n;
@@ -635,7 +660,7 @@ fn rewrite_citations(root: &std::path::Path, renames: &[(String, String)]) {
             Err(e) => eprintln!("  could not rewrite {}: {e}", f.display()),
         }
     }
-    let _ = total;
+    total
 }
 
 /// astrobib convert — every cited key to one uniform format (bibcode,
@@ -1279,7 +1304,28 @@ fn import_bib(
     global_only: bool,
     local_only: bool,
     cited_only: bool,
+    rename_citekeys: bool,
 ) -> anyhow::Result<()> {
+    // Checked before a single entry is written: the rewrite is the point
+    // of the flag, and discovering there was nowhere to apply it after
+    // the import would leave the map on the terminal and nothing to do
+    // with it — which is the state the flag exists to end.
+    let rename_root = if rename_citekeys {
+        let Some(root) = local_root else {
+            anyhow::bail!(
+                "--rename-citekeys needs a manuscript directory — none found here."
+            );
+        };
+        if !astrobib::export::has_manuscript_sources(root) {
+            anyhow::bail!(
+                "no .tex or .md sources in {} — nothing to rewrite cite keys in.",
+                root.display()
+            );
+        }
+        Some(root.to_path_buf())
+    } else {
+        None
+    };
     let text = std::fs::read_to_string(file)?;
     let entries = astrobib::bib::parse_entries(&text);
     if entries.is_empty() {
@@ -1418,9 +1464,36 @@ fn import_bib(
         );
     }
     if !renames.is_empty() {
-        println!("\nRe-keyed (old cites resolve by prefix or bibcode; others show as missing):");
-        for (old, new) in renames {
+        match &rename_root {
+            Some(_) => println!("\nRe-keyed:"),
+            None => println!(
+                "\nRe-keyed (old cites resolve by prefix or bibcode; others show as missing):"
+            ),
+        }
+        for (old, new) in &renames {
             println!("  {old} → {new}");
+        }
+    }
+    // The map is a product of the import rather than something knowable
+    // before it — an entry's canonical key comes from the record ADS
+    // resolved it to — so there is nothing to preview, and the rewrite
+    // runs here or not at all. It prints per file, because this is the
+    // one thing astrobib writes to files it does not own.
+    if let Some(root) = rename_root {
+        if renames.is_empty() {
+            println!("\nNothing to rename — every key imported under the one it already had.");
+        } else {
+            println!("\nRewriting cite keys in {}:", root.display());
+            let n = rewrite_citations(&root, &renames);
+            if n == 0 {
+                println!("  no cites matched — the sources never used these keys.");
+            } else {
+                // not regenerated here: an import may have been told to
+                // write only one tier, and refs syncs the manuscript db
+                // as it goes — that is a decision for the next command
+                // rather than a side effect of this one
+                println!("  refs.bib now names the old keys — run astrobib refs.");
+            }
         }
     }
     Ok(())

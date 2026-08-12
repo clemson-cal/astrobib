@@ -305,6 +305,121 @@ pub fn scan_md_files(paths: &[PathBuf]) -> Vec<MdCite> {
     ordered
 }
 
+/// The byte ranges of a markdown source that never scan as citations:
+/// fenced blocks, inline code, and HTML comments.
+///
+/// `md_strip` answers the same question by building a copy with those
+/// regions removed, which is all a scanner needs. A rewriter cannot use
+/// it: every offset in the stripped copy is wrong for the file it has to
+/// write back, so the regions are reported here as ranges instead.
+fn md_masked_ranges(text: &str) -> Vec<std::ops::Range<usize>> {
+    static INLINE: OnceLock<Regex> = OnceLock::new();
+    static COMMENT: OnceLock<Regex> = OnceLock::new();
+    let inline = INLINE.get_or_init(|| Regex::new(r"`[^`\n]*`").unwrap());
+    let comment = COMMENT.get_or_init(|| Regex::new(r"(?s)<!--.*?-->").unwrap());
+    let mut masked: Vec<std::ops::Range<usize>> = vec![];
+    // fenced blocks line by line, fence and all (the regex crate has no
+    // backreferences, which is why md_strip walks them too)
+    let mut fence: Option<&str> = None;
+    let mut at = 0usize;
+    for line in text.split_inclusive('\n') {
+        let t = line.trim_start();
+        match fence {
+            Some(f) => {
+                masked.push(at..at + line.len());
+                if t.starts_with(f) {
+                    fence = None;
+                }
+            }
+            None => {
+                if t.starts_with("```") || t.starts_with("~~~") {
+                    fence = Some(if t.starts_with("```") { "```" } else { "~~~" });
+                    masked.push(at..at + line.len());
+                }
+            }
+        }
+        at += line.len();
+    }
+    for m in inline.find_iter(text).chain(comment.find_iter(text)) {
+        masked.push(m.range());
+    }
+    masked
+}
+
+/// Rewrite old→new cite keys in a markdown source: pandoc cites (`@Key`,
+/// `[@A; @B]`) and Obsidian wikilinks (`[[Key]]`, alias and heading
+/// suffixes kept). Prose is never touched — only the key itself is
+/// replaced, and only where `mapper` names it.
+///
+/// A wikilink is rewritten only when the mapper knows its target, which
+/// is the same rule that makes one a citation in the first place: an
+/// ordinary note link resolves to nothing and is left exactly as it is.
+pub fn convert_md_citations<F: Fn(&str) -> Option<String>>(
+    path: &Path,
+    mapper: F,
+) -> std::io::Result<usize> {
+    let text = std::fs::read_to_string(path)?;
+    let masked = md_masked_ranges(&text);
+    let hidden = |at: usize| masked.iter().any(|r| r.contains(&at));
+    // (range of the key text, replacement), in document order
+    let mut edits: Vec<(std::ops::Range<usize>, String)> = vec![];
+    let mut push = |g: regex::Match, key: &str, mapper: &F| {
+        if key.is_empty() || hidden(g.start()) {
+            return;
+        }
+        if let Some(new) = mapper(key) {
+            if new != key {
+                let start = g.start() + (g.as_str().len() - g.as_str().trim_start().len());
+                edits.push((start..start + key.len(), new));
+            }
+        }
+    };
+    for m in md_cite_re().captures_iter(&text) {
+        let g = m.get(1).unwrap();
+        // the scanner reads @Key2020. as a cite of Key2020, so the
+        // rewriter must replace the same span and leave the stop alone
+        let key = g.as_str().trim_end_matches(['.', ',', ';', ':']);
+        push(g, key, &mapper);
+    }
+    for m in wikilink_re().captures_iter(&text) {
+        if &m[1] == "!" {
+            continue; // an embed is a source file, not a cite
+        }
+        let g = m.get(2).unwrap();
+        let key = g.as_str().trim().to_string();
+        push(g, &key, &mapper);
+    }
+    if edits.is_empty() {
+        return Ok(0);
+    }
+    edits.sort_by_key(|(r, _)| r.start);
+    let mut out = String::with_capacity(text.len());
+    let mut at = 0usize;
+    for (r, new) in &edits {
+        // the two syntaxes cannot overlap, but a malformed source could
+        // still hand us the same span twice; keeping the first is the
+        // only reading that leaves the file valid
+        if r.start < at {
+            continue;
+        }
+        out.push_str(&text[at..r.start]);
+        out.push_str(new);
+        at = r.end;
+    }
+    out.push_str(&text[at..]);
+    std::fs::write(path, out)?;
+    Ok(edits.len())
+}
+
+/// Every source file of a manuscript, TeX and markdown alike — what a
+/// rewrite of cite keys has to cover, since a manuscript may be written
+/// in either and a cite means the same thing in both.
+pub fn manuscript_source_files(manuscript_root: &Path) -> Vec<PathBuf> {
+    let mut v = manuscript_tex_files(manuscript_root);
+    v.extend(manuscript_md_files(manuscript_root));
+    v
+}
+
 // ── refs.bib generation ─────────────────────────────────────────────
 
 /// The refs.bib content for a set of cited strings: one block per cite
@@ -566,6 +681,45 @@ mod tests {
         assert!(out.contains("\\citet{Smith2019abcde}"));
         // prose outside cite braces is never touched
         assert!(out.contains("prose smith_frb"));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn converts_md_citations_in_place() {
+        let dir = std::env::temp_dir().join(format!("astrobib-mdconv-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("main.md");
+        std::fs::write(
+            &p,
+            "As @smith_frb showed [@smith_frb; @Andersson2019], see [[smith_frb]] \
+             and [[smith_frb|the FRB paper]] and [[smith_frb#results]].\n\
+             Ending a sentence with @smith_frb.\n\
+             Not a cite: `@smith_frb`, jane@smith_frb, ![[smith_frb]], prose smith_frb.\n\
+             <!-- @smith_frb -->\n\
+             ```\n@smith_frb\n```\n",
+        )
+        .unwrap();
+        let n = super::convert_md_citations(&p, |k| {
+            (k == "smith_frb").then(|| "Smith2019abcde".to_string())
+        })
+        .unwrap();
+        let out = std::fs::read_to_string(&p).unwrap();
+        // three pandoc cites (the last one sentence-final) and three
+        // wikilinks — the alias and the heading survive the rename
+        assert_eq!(n, 6, "{out}");
+        assert!(out.contains("As @Smith2019abcde showed [@Smith2019abcde; @Andersson2019]"));
+        assert!(out.contains("[[Smith2019abcde]]"));
+        assert!(out.contains("[[Smith2019abcde|the FRB paper]]"));
+        assert!(out.contains("[[Smith2019abcde#results]]"));
+        assert!(out.contains("with @Smith2019abcde."));
+        // everything that was never a citation is untouched, including
+        // an embed, which names a file rather than a paper
+        assert!(out.contains("`@smith_frb`"));
+        assert!(out.contains("jane@smith_frb"));
+        assert!(out.contains("![[smith_frb]]"));
+        assert!(out.contains("prose smith_frb"));
+        assert!(out.contains("<!-- @smith_frb -->"));
+        assert!(out.contains("```\n@smith_frb\n```"));
         std::fs::remove_dir_all(&dir).ok();
     }
 
