@@ -9,7 +9,7 @@ Your library is just a directory of `.bib` files, indistinguishable from hand-wr
 
 ### Development status
 
-Since 0.18.0 the development tree has gained `import --rename-citekeys` (the re-key map applied to your sources, TeX and markdown alike) and a `✕` on every query capsule, with `⌃w` now named on the keys panel. Rust tests, clippy, and the headless TUI suite pass; the completed TUI hit-test registry refactor is recorded in [docs/plans/hit-registry.md](docs/plans/hit-registry.md).
+Since 0.18.0 the development tree has gained `import --rename-citekeys` (the re-key map applied to your sources, TeX and markdown alike) and a `✕` on every query capsule, with `⌃w` now named on the keys panel. Next up: a `--dry-run` for `import`, and `convert` scanning markdown as well as it scans TeX. Rust tests, clippy, and the headless TUI suite pass; the completed TUI hit-test registry refactor is recorded in [docs/plans/hit-registry.md](docs/plans/hit-registry.md).
 
 ---
 ## Installation
