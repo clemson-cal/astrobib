@@ -16,6 +16,8 @@ astrobib releases to PyPI as maturin `bindings = "bin"` wheels: the compiled Rus
 
 2. **Write the CHANGELOG entry.** Add a `## X.Y.Z — YYYY-MM-DD` section at the top of `docs/CHANGELOG.md`, with `### Added` / `### Changed` / `### Fixed` subsections as applicable and one bullet per user-visible change, in the same prose style as the existing entries.
 
+   Check that what is at the top is genuinely unreleased before you date it: `git log --oneline $(git describe --tags --abbrev=0)..HEAD` is the release's real contents, and `git show vX.Y.Z:docs/CHANGELOG.md | head` says what the last one already claimed. 0.19.0 was cut with a `## Unreleased` heading that a later commit had written over the shipped `## 0.18.0` section, so two already-released bullets were sitting in the pending pile waiting to be announced twice. A heading named for a version is a fact about a tag; only the section above the newest tag's is yours to edit.
+
 3. **Verify locally.**
 
    ```bash
