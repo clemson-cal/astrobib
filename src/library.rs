@@ -202,33 +202,17 @@ impl Library {
     }
 
     /// Shortest unambiguous prefix per key: the AuthorYYYY base when
-    /// unique, else base + minimal hash prefix.
+    /// unique, else base + minimal hash prefix. The rule itself is
+    /// `keys::shortest_unambiguous`, which takes the key set as an
+    /// argument because a caller previewing an import needs to shorten
+    /// against a set the library does not hold yet.
     fn compute_short_keys(&mut self) {
         let mut sorted_keys: Vec<String> = self.entries.iter().map(|e| e.key().to_string()).collect();
         sorted_keys.sort();
-        let prefix_count = |prefix: &str| {
-            let lo = sorted_keys.partition_point(|k| k.as_str() < prefix);
-            let hi = sorted_keys.partition_point(|k| k.as_str() < prefix || k.starts_with(prefix));
-            hi - lo
-        };
         let shorts: Vec<String> = self
             .entries
             .iter()
-            .map(|e| {
-                let key = e.key();
-                let base_len = key.chars().count().saturating_sub(5);
-                let base: String = key.chars().take(base_len).collect();
-                if prefix_count(&base) == 1 {
-                    return base;
-                }
-                for n in 1..=5usize {
-                    let prefix: String = key.chars().take(base_len + n).collect();
-                    if prefix_count(&prefix) == 1 {
-                        return prefix;
-                    }
-                }
-                key.to_string()
-            })
+            .map(|e| crate::keys::shortest_unambiguous(e.key(), &sorted_keys))
             .collect();
         for (e, s) in self.entries.iter_mut().zip(shorts) {
             e.short_key = s;
@@ -370,7 +354,7 @@ impl MergedLibrary {
 
     /// True when the global tier participates in reads/writes: either
     /// it is enabled, or there is no local tier to fall back to.
-    fn global_active(&self) -> bool {
+    pub fn global_active(&self) -> bool {
         self.global_on || self.manuscript.is_none()
     }
 

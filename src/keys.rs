@@ -104,3 +104,34 @@ pub fn generate_key(data: &Data) -> String {
 
     format!("{ascii_name}{year}{suffix}")
 }
+
+/// The shortest unambiguous prefix of `key` within `sorted` — every key
+/// in the set, sorted. The bare AuthorYYYY base when that names one
+/// paper, else the base plus as much of the hash suffix as it takes; the
+/// whole key if even that collides.
+///
+/// It lives here rather than on `Library` because it is not a property
+/// of a library: a short key is a function of a *set* of keys, and the
+/// set that matters is sometimes one that does not exist yet — `import
+/// --dry-run` shortens against the library plus the entries it is about
+/// to add, since two papers by one author and year shorten differently
+/// once both are in.
+pub fn shortest_unambiguous(key: &str, sorted: &[String]) -> String {
+    let prefix_count = |prefix: &str| {
+        let lo = sorted.partition_point(|k| k.as_str() < prefix);
+        let hi = sorted.partition_point(|k| k.as_str() < prefix || k.starts_with(prefix));
+        hi - lo
+    };
+    let base_len = key.chars().count().saturating_sub(5);
+    let base: String = key.chars().take(base_len).collect();
+    if prefix_count(&base) == 1 {
+        return base;
+    }
+    for n in 1..=5usize {
+        let prefix: String = key.chars().take(base_len + n).collect();
+        if prefix_count(&prefix) == 1 {
+            return prefix;
+        }
+    }
+    key.to_string()
+}

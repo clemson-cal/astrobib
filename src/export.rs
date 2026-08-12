@@ -105,10 +105,13 @@ pub fn scan_tex_files(paths: &[PathBuf]) -> Vec<String> {
 
 /// Rewrite cite keys inside \cite… braces (only there — prose is never
 /// touched), via mapper(old) → Some(new). Preserves spacing between
-/// keys. Returns the number of keys changed; writes only on change.
+/// keys. Returns the number of keys changed; writes only on change, and
+/// never under `dry_run` — the count is the same either way, which is
+/// what makes a preview a preview rather than a second implementation.
 pub fn convert_citations<F: Fn(&str) -> Option<String>>(
     path: &Path,
     mapper: F,
+    dry_run: bool,
 ) -> std::io::Result<usize> {
     let text = std::fs::read_to_string(path)?;
     let mut changed = 0usize;
@@ -132,7 +135,7 @@ pub fn convert_citations<F: Fn(&str) -> Option<String>>(
             .collect();
         format!("{head}{}}}", rewritten.join(","))
     });
-    if changed > 0 {
+    if changed > 0 && !dry_run {
         std::fs::write(path, new_text.as_ref())?;
     }
     Ok(changed)
@@ -354,9 +357,12 @@ fn md_masked_ranges(text: &str) -> Vec<std::ops::Range<usize>> {
 /// A wikilink is rewritten only when the mapper knows its target, which
 /// is the same rule that makes one a citation in the first place: an
 /// ordinary note link resolves to nothing and is left exactly as it is.
+///
+/// Under `dry_run` the edits are found and counted but never applied.
 pub fn convert_md_citations<F: Fn(&str) -> Option<String>>(
     path: &Path,
     mapper: F,
+    dry_run: bool,
 ) -> std::io::Result<usize> {
     let text = std::fs::read_to_string(path)?;
     let masked = md_masked_ranges(&text);
@@ -389,8 +395,8 @@ pub fn convert_md_citations<F: Fn(&str) -> Option<String>>(
         let key = g.as_str().trim().to_string();
         push(g, &key, &mapper);
     }
-    if edits.is_empty() {
-        return Ok(0);
+    if edits.is_empty() || dry_run {
+        return Ok(edits.len());
     }
     edits.sort_by_key(|(r, _)| r.start);
     let mut out = String::with_capacity(text.len());
@@ -671,10 +677,12 @@ mod tests {
             "\\citep[e.g.][]{smith_frb, Andersson2019}, \\citet{smith_frb} and prose smith_frb.\n",
         )
         .unwrap();
-        let n = super::convert_citations(&p, |k| {
-            (k == "smith_frb").then(|| "Smith2019abcde".to_string())
-        })
-        .unwrap();
+        let mapper = |k: &str| (k == "smith_frb").then(|| "Smith2019abcde".to_string());
+        // a dry run counts the same cites and leaves the file alone
+        let before = std::fs::read_to_string(&p).unwrap();
+        assert_eq!(super::convert_citations(&p, mapper, true).unwrap(), 2);
+        assert_eq!(std::fs::read_to_string(&p).unwrap(), before);
+        let n = super::convert_citations(&p, mapper, false).unwrap();
         assert_eq!(n, 2);
         let out = std::fs::read_to_string(&p).unwrap();
         assert!(out.contains("{Smith2019abcde, Andersson2019}"));
@@ -699,10 +707,11 @@ mod tests {
              ```\n@smith_frb\n```\n",
         )
         .unwrap();
-        let n = super::convert_md_citations(&p, |k| {
-            (k == "smith_frb").then(|| "Smith2019abcde".to_string())
-        })
-        .unwrap();
+        let mapper = |k: &str| (k == "smith_frb").then(|| "Smith2019abcde".to_string());
+        let before = std::fs::read_to_string(&p).unwrap();
+        assert_eq!(super::convert_md_citations(&p, mapper, true).unwrap(), 6);
+        assert_eq!(std::fs::read_to_string(&p).unwrap(), before);
+        let n = super::convert_md_citations(&p, mapper, false).unwrap();
         let out = std::fs::read_to_string(&p).unwrap();
         // three pandoc cites (the last one sentence-final) and three
         // wikilinks — the alias and the heading survive the rename

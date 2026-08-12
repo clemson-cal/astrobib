@@ -115,7 +115,7 @@ Who it's for: astrophysics researchers and grad students who frequently use LaTe
 *After this chapter you can run a multi-author paper to submission and keep your library current after it.*
 
 - **Co-authors don't need astrobib** — they paste ADS BibTeX into `bib/any-name.bib`; `astrobib tidy` later canonicalizes (re-key via ADS, rename to `{Key}.bib`, dedupe), prints copy-pasteable cite-key replacements, and regenerates `refs.bib`.
-- **Adopting a legacy bibliography** — `astrobib import refs.bib` resolves foreign entries against ADS (arXiv ID → DOI → title+author+year), with `--global-only` / `--local-only` targeting.
+- **Adopting a legacy bibliography** — `astrobib import refs.bib` resolves foreign entries against ADS (arXiv ID → DOI → title+author+year), with `--global-only` / `--local-only` targeting. `--dry-run` first: it resolves everything and shows the whole map — files, tiers, and the cites `--rename-citekeys` would rewrite — before anything is written.
 - **Preprints grow up** — `astrobib update [--all]` refreshes published metadata in place, same key and filename forever, manuscript copies included.
 - **The CLI tour** — `list`, `search [--ads]`, `add`, `show`, `refs`, `tidy`, `update`, plus `--library` and `--no-global`; scripting and cron-able upkeep.
 - **Running example, closing loop** — co-author drops two raw entries, you `tidy`, `update` before resubmission, and the final repo compiles for anyone with just `git clone` and `latex`.

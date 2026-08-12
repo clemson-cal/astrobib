@@ -108,6 +108,11 @@ enum Command {
         /// sources)
         #[arg(long)]
         rename_citekeys: bool,
+        /// Resolve everything and report what would be written — which
+        /// .bib files, to which tier, and which cites would be
+        /// rewritten — without touching anything
+        #[arg(long)]
+        dry_run: bool,
     },
     /// Canonicalize hand-dropped .bib files in the manuscript's bib/
     /// (re-key, rename, dedupe), then regenerate refs.bib
@@ -245,17 +250,19 @@ fn main() -> anyhow::Result<()> {
             println!("Added {display}  ({key})");
             Ok(())
         }
-        Some(Command::Import { file, global_only, local_only, cited_only, rename_citekeys }) => {
-            import_bib(
-                &mut lib,
-                &file,
-                local_root.as_deref(),
-                global_only,
-                local_only,
-                cited_only,
-                rename_citekeys,
-            )
-        }
+        Some(Command::Import {
+            file,
+            global_only,
+            local_only,
+            cited_only,
+            rename_citekeys,
+            dry_run,
+        }) => import_bib(
+            &mut lib,
+            &file,
+            local_root.as_deref(),
+            ImportOpts { global_only, local_only, cited_only, rename_citekeys, dry_run },
+        ),
         Some(Command::Tidy { dry_run }) => {
             match local_root.clone() {
                 Some(root) => tidy_bib_dir(&mut lib, &root, dry_run),
@@ -637,8 +644,13 @@ fn run_config(lib: &MergedLibrary, local_root: Option<&std::path::Path>, via_fla
 /// both, so a rewrite that covered only one would leave half a
 /// manuscript pointing at keys that no longer exist.
 ///
-/// Returns the number of cites changed.
-fn rewrite_citations(root: &std::path::Path, renames: &[(String, String)]) -> usize {
+/// Returns the number of cites changed — or, under `dry_run`, the number
+/// that would be, found by the same code that would apply them.
+fn rewrite_citations(
+    root: &std::path::Path,
+    renames: &[(String, String)],
+    dry_run: bool,
+) -> usize {
     use std::collections::HashMap;
     let map: HashMap<&str, &str> =
         renames.iter().map(|(a, b)| (a.as_str(), b.as_str())).collect();
@@ -647,15 +659,16 @@ fn rewrite_citations(root: &std::path::Path, renames: &[(String, String)]) -> us
     for f in astrobib::export::manuscript_source_files(root) {
         let is_md = f.extension().is_some_and(|x| x == "md");
         let res = if is_md {
-            astrobib::export::convert_md_citations(&f, lookup)
+            astrobib::export::convert_md_citations(&f, lookup, dry_run)
         } else {
-            astrobib::export::convert_citations(&f, lookup)
+            astrobib::export::convert_citations(&f, lookup, dry_run)
         };
         match res {
             Ok(0) => {}
             Ok(n) => {
                 total += n;
-                println!("  rewrote {n} cite(s) in {}", f.display());
+                let verb = if dry_run { "would rewrite" } else { "rewrote" };
+                println!("  {verb} {n} cite(s) in {}", f.display());
             }
             Err(e) => eprintln!("  could not rewrite {}: {e}", f.display()),
         }
@@ -711,7 +724,7 @@ fn run_convert(
     } else if renames.is_empty() {
         println!("all {} cited key(s) already in {format} form", cited.len());
     } else {
-        rewrite_citations(root, &renames);
+        rewrite_citations(root, &renames, false);
         println!("{} cite key(s) converted to {format} form", renames.len());
         run_refs(lib, root, None, None, false, false, RefsMode::Sync)?;
     }
@@ -813,7 +826,7 @@ fn adopt_manuscript(lib: &mut MergedLibrary, dry_run: bool) -> anyhow::Result<()
     *lib = MergedLibrary::load(Some(&root))?;
     lib.global_on = global_on;
     if !renames.is_empty() {
-        rewrite_citations(&root, &renames);
+        rewrite_citations(&root, &renames, false);
     }
     println!(
         "\n{adopted} entr{} adopted, {skipped} left alone.",
@@ -970,7 +983,7 @@ fn tidy_bib_dir(
         for (old, new) in &renames {
             println!("  {old} → {new}");
         }
-        rewrite_citations(root, &renames);
+        rewrite_citations(root, &renames, false);
     }
     println!();
     run_refs(lib, root, None, None, false, false, RefsMode::Sync)
@@ -1291,21 +1304,64 @@ fn run_refs(
     Ok(())
 }
 
+/// The flags one import run was given. They are read in four different
+/// places — the preflight, the destination label, the write pass and the
+/// report — which is more than a signature should carry positionally.
+struct ImportOpts {
+    global_only: bool,
+    local_only: bool,
+    cited_only: bool,
+    rename_citekeys: bool,
+    dry_run: bool,
+}
+
+/// What the import would do with one entry of the file. The resolution
+/// pass decides it, the write pass acts on it, and the report describes
+/// it — a split that exists because resolution is a *read*: `--dry-run`
+/// runs the first pass and the last, and skips the one in between.
+enum Fate {
+    /// A record the library does not hold. This is the import.
+    New { orig: String, key: String, data: astrobib::bib::Data },
+    /// Already held, under `key` — which need not be the key the file
+    /// gave it, and when it is not, that is a rename the sources need.
+    /// `aliased` marks the match that was made by bibcode against a
+    /// *different* canonical key, usually a preprint meeting its
+    /// published record: worth saying, because the entry the library
+    /// keeps is then not the one the file described.
+    Present { orig: String, key: String, aliased: bool },
+    /// ADS could not settle what the entry is.
+    Failed { orig: String, reason: String },
+}
+
+impl Fate {
+    /// The library key this entry ends up denoting, if any.
+    fn key(&self) -> Option<&str> {
+        match self {
+            Fate::New { key, .. } | Fate::Present { key, .. } => Some(key),
+            Fate::Failed { .. } => None,
+        }
+    }
+}
+
 /// astrobib import — bring a foreign .bib file in. Entries whose
 /// cite key is reproducible from their own data are canonical astrobib
 /// bibdata and import directly; everything else resolves against ADS
 /// (arXiv ID → DOI → exact title+author+year, which must be unique).
-/// Already-present entries are kept; renames print as perl one-liners.
+/// Already-present entries are kept; renames print as an old→new map.
 /// With `cited_only`, the manuscript's own cites decide what comes in.
 fn import_bib(
     lib: &mut MergedLibrary,
     file: &std::path::Path,
     local_root: Option<&std::path::Path>,
-    global_only: bool,
-    local_only: bool,
-    cited_only: bool,
-    rename_citekeys: bool,
+    opts: ImportOpts,
 ) -> anyhow::Result<()> {
+    let ImportOpts { global_only, local_only, cited_only, rename_citekeys, dry_run } = opts;
+    // A tier flag naming a tier that is not there is a typo, and it is
+    // one before any entry is read: the write pass would otherwise print
+    // a destination it cannot honour and then fail on the first entry.
+    if local_only && lib.manuscript.is_none() {
+        anyhow::bail!("--local-only requires a local (tier-2) library — none found here.");
+    }
     // Checked before a single entry is written: the rewrite is the point
     // of the flag, and discovering there was nowhere to apply it after
     // the import would leave the map on the terminal and nothing to do
@@ -1370,33 +1426,82 @@ fn import_bib(
     } else {
         None
     };
-    let dest = match (global_only, local_only, lib.manuscript.is_some()) {
-        (true, _, _) | (_, _, false) => "global library".to_string(),
-        (_, true, _) => "local library".to_string(),
-        _ => "global + local libraries".to_string(),
+    // Which tiers the write pass would touch — and so, exactly, which
+    // key sets the short keys have to be computed against. Derived once
+    // rather than re-read from the flags at each use: `--no-global` in a
+    // manuscript writes locally with no flag saying so.
+    let (to_global, to_local) = if global_only {
+        (true, false)
+    } else if local_only || !lib.global_active() {
+        (false, true)
+    } else {
+        (true, lib.manuscript.is_some())
     };
-    match &cited {
-        Some(c) => println!(
-            "Importing into {dest} — only what the manuscript cites ({} cite{} scanned)\n",
+    let dest = match (to_global, to_local) {
+        (true, true) => "global + local libraries",
+        (true, false) => "global library",
+        _ => "local library",
+    };
+    let mut head = if dry_run {
+        format!("Dry run — nothing will be written.\nWould import into {dest}")
+    } else {
+        format!("Importing into {dest}")
+    };
+    if let Some(c) = &cited {
+        head += &format!(
+            " — only what the manuscript cites ({} cite{} scanned)",
             c.len(),
             if c.len() == 1 { "" } else { "s" }
-        ),
-        None => println!("Importing into {dest}\n"),
+        );
     }
-    let (mut added, mut skipped, mut uncited) = (0usize, 0usize, 0usize);
-    let mut renames: Vec<(String, String)> = vec![];
-    for mut data in entries {
-        let orig_key = data.get("ID").cloned().unwrap_or_else(|| "?".to_string());
-        if cited.as_deref().is_some_and(|c| !entry_is_cited(&orig_key, &data, c)) {
-            uncited += 1;
-            continue;
+    if dry_run {
+        // which tier is which directory, said once, so the per-entry
+        // lines below need only name the file
+        if to_global {
+            head += &format!("\n  global  {}", lib.personal.root.join("bib").display());
         }
-        if orig_key != astrobib::keys::generate_key(&data) {
+        if to_local {
+            if let Some(ms) = &lib.manuscript {
+                head += &format!("\n  local   {}", ms.root.join("bib").display());
+            }
+        }
+    }
+    println!("{head}\n");
+    let (kept, left_out): (Vec<astrobib::bib::Data>, Vec<_>) =
+        entries.into_iter().partition(|d| match &cited {
+            Some(c) => entry_is_cited(d.get("ID").map(String::as_str).unwrap_or("?"), d, c),
+            None => true,
+        });
+    let uncited = left_out.len();
+    // A canonical entry needs no lookup; the rest each cost a round trip,
+    // and the count is the only warning that this will take a while.
+    let to_resolve = kept
+        .iter()
+        .filter(|d| d.get("ID").map(String::as_str) != Some(&astrobib::keys::generate_key(d)))
+        .count();
+    if to_resolve > 0 {
+        println!(
+            "Resolving {to_resolve} entr{} against ADS…\n",
+            if to_resolve == 1 { "y" } else { "ies" }
+        );
+    }
+
+    // ── resolution: reads only, so a dry run gets this far too ──
+    let mut fates: Vec<Fate> = vec![];
+    // keys and bibcodes this run has already claimed. A file may name one
+    // paper twice, and the second copy is already present whether or not
+    // the write pass has run yet — which is the only way the two passes
+    // can agree about what the library holds.
+    let mut pending: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut pending_bibcodes: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
+    for mut data in kept {
+        let orig = data.get("ID").cloned().unwrap_or_else(|| "?".to_string());
+        if orig != astrobib::keys::generate_key(&data) {
             match astrobib::ads::lookup_entry(&data) {
                 Ok(resolved) => data = resolved,
                 Err(reason) => {
-                    println!("  ⚠ {orig_key} skipped — {reason}");
-                    skipped += 1;
+                    fates.push(Fate::Failed { orig, reason });
                     continue;
                 }
             }
@@ -1407,56 +1512,108 @@ fn import_bib(
             .get("adsurl")
             .and_then(|u| astrobib::pdf::bibcode_from_adsurl(u))
             .map(str::to_string);
-        if let Some(existing) = bc.as_deref().and_then(|b| lib.get_by_bibcode(b)) {
-            if existing.key() != key {
-                let short = if existing.short_key.is_empty() {
-                    existing.key().to_string()
-                } else {
-                    existing.short_key.clone()
-                };
-                println!("  {orig_key} → {short}  (already present under a different key — kept existing)");
-                if orig_key != short {
-                    renames.push((orig_key, short));
-                }
-                skipped += 1;
+        let by_bibcode = bc.as_deref().and_then(|b| {
+            lib.get_by_bibcode(b)
+                .map(|e| e.key().to_string())
+                .or_else(|| pending_bibcodes.get(b).cloned())
+        });
+        if let Some(existing) = by_bibcode {
+            if existing != key {
+                fates.push(Fate::Present { orig, key: existing, aliased: true });
                 continue;
             }
         }
-        if lib.get(&key).is_some() {
-            let short = lib
-                .get(&key)
-                .map(|e| if e.short_key.is_empty() { key.clone() } else { e.short_key.clone() })
-                .unwrap_or_else(|| key.clone());
-            println!("  {orig_key} → {short}  (already present — kept existing)");
-            if orig_key != short {
-                renames.push((orig_key, short));
-            }
-            skipped += 1;
+        if lib.get(&key).is_some() || pending.contains(&key) {
+            fates.push(Fate::Present { orig, key, aliased: false });
             continue;
         }
-        let new_key = if global_only {
-            lib.personal.save_entry(&data)?
-        } else if local_only {
-            match &mut lib.manuscript {
-                Some(ms) => ms.save_entry(&data)?,
-                None => anyhow::bail!("--local-only requires a local (tier-2) library"),
-            }
-        } else {
-            lib.save_entry(&data)?
-        };
-        let short = lib
-            .get(&new_key)
-            .map(|e| if e.short_key.is_empty() { new_key.clone() } else { e.short_key.clone() })
-            .unwrap_or_else(|| new_key.clone());
-        if orig_key != short {
-            renames.push((orig_key.clone(), short.clone()));
-            println!("  {orig_key} → {short}");
-        } else {
-            println!("  {short}");
+        pending.insert(key.clone());
+        if let Some(b) = bc {
+            pending_bibcodes.insert(b, key.clone());
         }
-        added += 1;
+        fates.push(Fate::New { orig, key, data });
     }
-    println!("\n{added} imported → {dest}, {skipped} skipped.");
+
+    // ── the write pass, and the only one of the three that writes ──
+    if !dry_run {
+        for f in &fates {
+            let Fate::New { data, .. } = f else { continue };
+            if global_only {
+                lib.personal.save_entry(data)?;
+            } else if local_only {
+                // the preflight established there is a local tier
+                lib.manuscript.as_mut().unwrap().save_entry(data)?;
+            } else {
+                lib.save_entry(data)?;
+            }
+        }
+    }
+
+    // ── the report, over the library as it now stands (or would) ──
+    //
+    // Short keys are read *after* the whole batch rather than as each
+    // entry lands: the shortest unambiguous prefix is a function of the
+    // set, so an entry reported early can be shortened by a later one in
+    // the same file. That is why the map printed here is also the map
+    // applied to the sources below — both name the library that exists
+    // when the import is over.
+    let reported: Vec<String> = fates.iter().filter_map(|f| f.key().map(str::to_string)).collect();
+    let shorts = if dry_run {
+        previewed_short_keys(lib, &pending, &reported, to_global, to_local)
+    } else {
+        reported
+            .iter()
+            .map(|k| {
+                let short = lib
+                    .get(k)
+                    .map(|e| if e.short_key.is_empty() { k.clone() } else { e.short_key.clone() })
+                    .unwrap_or_else(|| k.clone());
+                (k.clone(), short)
+            })
+            .collect()
+    };
+    let short_of = |k: &str| shorts.get(k).cloned().unwrap_or_else(|| k.to_string());
+    let (mut added, mut skipped) = (0usize, 0usize);
+    let mut renames: Vec<(String, String)> = vec![];
+    for f in &fates {
+        match f {
+            Fate::Failed { orig, reason } => {
+                println!("  ⚠ {orig} skipped — {reason}");
+                skipped += 1;
+            }
+            Fate::Present { orig, key, aliased } => {
+                let short = short_of(key);
+                let note = if *aliased {
+                    "already present under a different key — kept existing"
+                } else {
+                    "already present — kept existing"
+                };
+                if *orig != short {
+                    println!("  {orig} → {short}  ({note})");
+                    renames.push((orig.clone(), short));
+                } else {
+                    println!("  {short}  ({note})");
+                }
+                skipped += 1;
+            }
+            Fate::New { orig, key, .. } => {
+                let short = short_of(key);
+                let note = if dry_run { format!("  (would write {key}.bib)") } else { String::new() };
+                if *orig != short {
+                    println!("  {orig} → {short}{note}");
+                    renames.push((orig.clone(), short));
+                } else {
+                    println!("  {short}{note}");
+                }
+                added += 1;
+            }
+        }
+    }
+    if dry_run {
+        println!("\n{added} would be imported → {dest}, {skipped} skipped.");
+    } else {
+        println!("\n{added} imported → {dest}, {skipped} skipped.");
+    }
     if cited.is_some() {
         println!(
             "{uncited} entr{} left out — not cited by the manuscript.",
@@ -1474,29 +1631,90 @@ fn import_bib(
             println!("  {old} → {new}");
         }
     }
-    // The map is a product of the import rather than something knowable
-    // before it — an entry's canonical key comes from the record ADS
-    // resolved it to — so there is nothing to preview, and the rewrite
-    // runs here or not at all. It prints per file, because this is the
-    // one thing astrobib writes to files it does not own.
+    // The rewrite runs here or not at all: `convert` derives its map from
+    // `resolve_citation`, which knows nothing of a foreign key, so the
+    // mapping is unrecoverable once this process exits. It prints per
+    // file, because this is the one thing astrobib writes to files it
+    // does not own — and under --dry-run it counts without writing, which
+    // is the same code deciding the same edits.
     if let Some(root) = rename_root {
         if renames.is_empty() {
-            println!("\nNothing to rename — every key imported under the one it already had.");
+            let what = if dry_run { "would be imported" } else { "imported" };
+            println!("\nNothing to rename — every key {what} under the one it already had.");
         } else {
-            println!("\nRewriting cite keys in {}:", root.display());
-            let n = rewrite_citations(&root, &renames);
+            let verb = if dry_run { "Would rewrite" } else { "Rewriting" };
+            println!("\n{verb} cite keys in {}:", root.display());
+            let n = rewrite_citations(&root, &renames, dry_run);
             if n == 0 {
                 println!("  no cites matched — the sources never used these keys.");
-            } else {
-                // not regenerated here: an import may have been told to
-                // write only one tier, and refs syncs the manuscript db
-                // as it goes — that is a decision for the next command
-                // rather than a side effect of this one
+            } else if !dry_run {
+                // refs.bib is not regenerated here: an import may have
+                // been told to write only one tier, and refs syncs the
+                // manuscript db as it goes — that is a decision for the
+                // next command rather than a side effect of this one
                 println!("  refs.bib now names the old keys — run astrobib refs.");
             }
         }
     }
+    if dry_run {
+        println!("\nNothing was written. Re-run without --dry-run to import.");
+    }
     Ok(())
+}
+
+/// The short keys the library *would* report once this import is done,
+/// computed without writing anything.
+///
+/// A rename's right-hand side is the shortest unambiguous prefix, and
+/// that is a function of the library as it stands after the import: two
+/// papers by one author and year shorten differently once both are in.
+/// So a preview cannot ask the library what a key would shorten to — it
+/// shortens against each tier's keys plus the entries the run would add
+/// to that tier, which is also why the whole batch is resolved before
+/// any of it is reported.
+///
+/// Which tier answers for a key is `MergedLibrary::get`'s rule, and has
+/// to be: the short key the real run prints is the one the entry it
+/// finds carries. An entry already held globally keeps its global short
+/// key through a `--local-only` run, pending entries and all.
+fn previewed_short_keys(
+    lib: &MergedLibrary,
+    pending: &std::collections::HashSet<String>,
+    reported: &[String],
+    to_global: bool,
+    to_local: bool,
+) -> std::collections::HashMap<String, String> {
+    let tier = |keys: Vec<String>, gains: bool| -> Vec<String> {
+        let mut v = keys;
+        if gains {
+            v.extend(pending.iter().cloned());
+        }
+        v.sort();
+        v.dedup();
+        v
+    };
+    let global = tier(
+        lib.personal.entries().iter().map(|e| e.key().to_string()).collect(),
+        to_global,
+    );
+    let local = tier(
+        lib.manuscript
+            .as_ref()
+            .map(|m| m.entries().iter().map(|e| e.key().to_string()).collect())
+            .unwrap_or_default(),
+        to_local,
+    );
+    reported
+        .iter()
+        .map(|k| {
+            let set = if lib.global_active() && global.binary_search(k).is_ok() {
+                &global
+            } else {
+                &local
+            };
+            (k.clone(), astrobib::keys::shortest_unambiguous(k, set))
+        })
+        .collect()
 }
 
 /// Does a foreign entry answer any cite in the manuscript? Exact key

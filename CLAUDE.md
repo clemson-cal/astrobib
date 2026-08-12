@@ -23,9 +23,8 @@ When the user says **"new task"**, they are about to clear the context and start
 
 Known and deliberately deferred, with the reasoning already done. None is a defect in shipped behaviour; each is a judgement call left for a session with a real case to argue over.
 
-The first two are asked-for work rather than judgement calls, and are the next things to do:
+The first is asked-for work rather than a judgement call, and is the next thing to do:
 
-- **`astrobib import --dry-run`.** Say what the import would do and touch nothing: which `.bib` files would be written to which tier, and — with `--rename-citekeys` — which cites would be rewritten in which `.tex`/`.md` sources. Resolution against ADS is a read, so the whole map is computable without writing; the catch is that a rename's right-hand side is the *short* key, which depends on the library as it stands after the import, so the batch has to be resolved first and shortened against the library plus the pending entries. Reasoned out in [docs/DESIGN.md](docs/DESIGN.md) under "A foreign entry is resolved against ADS, not trusted".
 - **`convert` must work on markdown as well as it does on TeX.** It shares `rewrite_citations`, so it already *writes* `.md` sources correctly, but it still scans through `manuscript_tex_files`: a markdown-only manuscript gets "No .tex sources found", and a mixed one is converted only for the keys its `.tex` files cite. The scan becomes `manuscript_source_files` with `scan_md_files` beside `scan_tex_files`; the one real decision is dropping unresolved wikilinks before the map is built, since a `[[Key]]` is a citation only where it resolves and an ordinary note link must not be reported as unresolved. Same DESIGN.md section.
 
 - **State-file versioning is unresolved.** `docs/DESIGN.md` "Config and app state versioning" contradicts "Future-proof by dumbness", and the code follows neither. Noted in DESIGN.md itself; settle it the next time a state file changes shape.

@@ -584,6 +584,131 @@ fn import_rename_citekeys_refuses_before_importing_anything() {
     assert_eq!(std::fs::read_dir(ms.join("bib")).unwrap().count(), 0, "{}", r.report());
 }
 
+#[test]
+fn import_dry_run_reports_both_halves_and_writes_nothing() {
+    // an empty global tier so the imported paper is the only Delacroix:
+    // its shortest unambiguous key is then the bare author-year
+    let sb = Sandbox::empty("import-dry");
+    let ms = sb.ms("paper");
+    let (full, data) = variant(
+        "Delacroix2018jdgxd.bib",
+        &[
+            ("eprint", "1806.19191"),
+            ("title", "{A foreign reference}"),
+            ("adsurl", "https://ui.adsabs.harvard.edu/abs/2018ApJ...860...19D"),
+        ],
+    );
+    let short = &full[..full.len() - 5];
+    write(ms.join("from-coauthor.bib"), &bib::format_entry(&data));
+    write(ms.join("main.tex"), &format!("\\citep{{{full}}} and \\citet{{{full}}}\n"));
+    write(ms.join("notes.md"), &format!("See @{full} and [[{full}]].\n"));
+    let tex_before = read(ms.join("main.tex"));
+    let md_before = read(ms.join("notes.md"));
+
+    let r = sb.run_in(&ms, &["import", "from-coauthor.bib", "--rename-citekeys", "--dry-run"]);
+    assert!(r.ok(), "{}", r.report());
+    // both halves: which .bib file, to which tier, and which cites
+    assert!(r.stdout.contains("Would import into global + local libraries"), "{}", r.report());
+    assert!(r.stdout.contains(&sb.bib_dir().display().to_string()), "{}", r.report());
+    assert!(r.stdout.contains(&ms.join("bib").display().to_string()), "{}", r.report());
+    assert!(r.stdout.contains(&format!("would write {full}.bib")), "{}", r.report());
+    assert!(r.stdout.contains("1 would be imported"), "{}", r.report());
+    assert!(r.stdout.contains(&format!("{full} → {short}")), "{}", r.report());
+    assert!(r.stdout.contains("Would rewrite cite keys in"), "{}", r.report());
+    // both sources, each with its own count — TeX and markdown alike
+    for src in ["main.tex", "notes.md"] {
+        let line = format!("would rewrite 2 cite(s) in {}", ms.join(src).display());
+        assert!(r.stdout.contains(&line), "{}", r.report());
+    }
+
+    // and touched nothing: neither tier, neither source
+    assert_eq!(std::fs::read_dir(sb.bib_dir()).unwrap().count(), 0, "{}", r.report());
+    assert_eq!(std::fs::read_dir(ms.join("bib")).unwrap().count(), 0, "{}", r.report());
+    assert_eq!(read(ms.join("main.tex")), tex_before, "{}", r.report());
+    assert_eq!(read(ms.join("notes.md")), md_before, "{}", r.report());
+
+    // the real run does what the preview said it would
+    let r = sb.run_in(&ms, &["import", "from-coauthor.bib", "--rename-citekeys"]);
+    assert!(r.ok(), "{}", r.report());
+    assert!(r.stdout.contains("1 imported"), "{}", r.report());
+    assert!(r.stdout.contains(&format!("{full} → {short}")), "{}", r.report());
+    assert!(sb.bib_dir().join(format!("{full}.bib")).exists(), "{}", r.report());
+    assert!(ms.join(format!("bib/{full}.bib")).exists(), "{}", r.report());
+    assert!(read(ms.join("main.tex")).contains(&format!("\\citep{{{short}}}")), "{}", r.report());
+    assert!(read(ms.join("notes.md")).contains(&format!("@{short}")), "{}", r.report());
+}
+
+#[test]
+fn import_dry_run_shortens_against_the_entries_the_import_would_add() {
+    // Two papers by one author in one year, imported together. A preview
+    // that asked the library what each key shortens to would answer with
+    // the bare author-year for both — the key the real run does not
+    // produce, because by the time either is written the other is in.
+    let sb = Sandbox::empty("import-dry-shorten");
+    let ms = sb.ms("paper");
+    let (one, one_data) = variant(
+        "Delacroix2018jdgxd.bib",
+        &[
+            ("eprint", "1806.11011"),
+            ("title", "{The first of two}"),
+            ("adsurl", "https://ui.adsabs.harvard.edu/abs/2018ApJ...860...20D"),
+        ],
+    );
+    let (two, two_data) = variant(
+        "Delacroix2018jdgxd.bib",
+        &[
+            ("eprint", "1806.11012"),
+            ("title", "{The second of two}"),
+            ("adsurl", "https://ui.adsabs.harvard.edu/abs/2018ApJ...860...21D"),
+        ],
+    );
+    let base = &one[..one.len() - 5];
+    assert_eq!(base, &two[..two.len() - 5], "the two keys must share a base");
+    write(
+        ms.join("from-coauthor.bib"),
+        &format!("{}\n{}", bib::format_entry(&one_data), bib::format_entry(&two_data)),
+    );
+    write(ms.join("main.tex"), &format!("\\citep{{{one}, {two}}}\n"));
+
+    let previewed = sb.run_in(&ms, &["import", "from-coauthor.bib", "--rename-citekeys", "--dry-run"]);
+    assert!(previewed.ok(), "{}", previewed.report());
+    // neither shortens to the bare base: each is disambiguated against
+    // the other, which is only in the set because the import puts it there
+    assert!(!previewed.stdout.contains(&format!("→ {base}\n")), "{}", previewed.report());
+    assert!(previewed.stdout.contains("would rewrite 2 cite(s)"), "{}", previewed.report());
+
+    let real = sb.run_in(&ms, &["import", "from-coauthor.bib", "--rename-citekeys"]);
+    assert!(real.ok(), "{}", real.report());
+    assert_eq!(rekeyed(&previewed.stdout), rekeyed(&real.stdout), "{}", real.report());
+    // and the map that was applied is the map that was previewed
+    let tex = read(ms.join("main.tex"));
+    for (_, new) in rekeyed(&previewed.stdout) {
+        assert!(tex.contains(&new), "{tex}");
+    }
+    // The real run shortens against the finished library for the same
+    // reason the preview does. Shortening as each entry landed made the
+    // first of these two the bare author-year — unambiguous at the moment
+    // it was written and ambiguous by the end of the same import, which
+    // is a cite refs then refuses to resolve.
+    let r = sb.run_in(&ms, &["refs"]);
+    assert!(r.ok(), "{}", r.report());
+    assert!(!r.has("ambiguous"), "{}", r.report());
+    assert!(r.stdout.contains("2 entries"), "{}", r.report());
+}
+
+/// The old→new pairs of a run's "Re-keyed:" block, which is the map the
+/// import both prints and applies.
+fn rekeyed(stdout: &str) -> Vec<(String, String)> {
+    stdout
+        .lines()
+        .skip_while(|l| !l.starts_with("Re-keyed"))
+        .skip(1)
+        .take_while(|l| l.starts_with("  "))
+        .filter_map(|l| l.trim().split_once(" → "))
+        .map(|(a, b)| (a.to_string(), b.to_string()))
+        .collect()
+}
+
 // ── refs ────────────────────────────────────────────────────────────
 
 #[test]
