@@ -9,7 +9,7 @@ Your library is just a directory of `.bib` files, indistinguishable from hand-wr
 
 ### Development status
 
-Since 0.18.0 the development tree has gained `import --rename-citekeys` (the re-key map applied to your sources, TeX and markdown alike), `import --dry-run` (the whole map previewed against the library the import would leave behind, writing nothing), and a `✕` on every query capsule, with `⌃w` now named on the keys panel. That work is unreleased and is what the next release cuts, as 0.19.0. Next up after it: `convert` scanning markdown as well as it scans TeX. Rust tests, clippy, and the headless TUI suite pass; the completed TUI hit-test registry refactor is recorded in [docs/plans/hit-registry.md](docs/plans/hit-registry.md).
+0.19.0 ships `import --rename-citekeys` (the re-key map applied to your sources, TeX and markdown alike) and `import --dry-run` (the whole map previewed against the library the import would leave behind, writing nothing), together with a `✕` on every query capsule and `⌃w` named on the keys panel. Next up: `convert` scanning markdown as well as it scans TeX. Rust tests, clippy, and the headless TUI suite pass; the completed TUI hit-test registry refactor is recorded in [docs/plans/hit-registry.md](docs/plans/hit-registry.md).
 
 ---
 ## Installation

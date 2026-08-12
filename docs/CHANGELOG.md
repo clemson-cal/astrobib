@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## 0.19.0 — 2026-08-12
+
+Two commands that tell you what they are about to do to files you did not write, and the correctness that a re-key map has to have before it is worth applying.
 
 ### Added
 - `astrobib import <file.bib> --rename-citekeys` applies the re-key map to the manuscript's sources. A Zotero or Overleaf export re-keys nearly every entry — `bartos_rapid_2017 → Bartos2016` — and import printed that map and exited, so the cites that did not happen to resolve by prefix or bibcode were silently broken and the only record of how to fix them was terminal scrollback. It could not be a later command: `convert` derives its map from `resolve_citation`, which knows nothing of a foreign key, so the mapping is unrecoverable once the import that computed it has gone. It refuses, before writing anything, unless you are in a manuscript with sources: discovering there was nowhere to apply the rewrite afterwards would leave the library changed and the map on the terminal, which is the state the flag exists to end. `refs.bib` is not regenerated — an import may have been told to write one tier only, and `refs` syncs the manuscript db as it goes — so the import says the bibliography is stale and names the command that fixes it.
@@ -12,6 +14,11 @@
 - Cite keys are rewritten in markdown sources, not only in TeX. `rewrite_citations` walked `manuscript_tex_files`, so `tidy`, the adopt path and `convert` re-keyed a markdown manuscript's bibliography and left every cite in its prose pointing at a key that no longer existed. Markdown cites are now rewritten in their own syntaxes — pandoc `@Key` and `[@A; @B]`, Obsidian `[[Key]]` with alias and heading suffixes preserved — while code fences, inline code and HTML comments are skipped as they are for scanning, an `![[embed]]` names a file rather than a paper and is left alone, and a wikilink is rewritten only where the map names its target, which is the same rule that makes one a citation at all.
 - Every query capsule carries a `✕` that closes it, and hovering one says so in the footer. Closing a scope was `ctrl+w` and nothing else — written down in the README and the tutorial, nowhere the app itself would tell you, so a row of spent citation trails was a row you had no way of learning could be pruned. The mark rides every query capsule rather than the active one alone: it costs two cells each, but a mark that appears only under the cursor changes the strip's width as you move along it, and a row that reflows while you are aiming at one capsule is worse than the width it saves. It also closes the capsule it is drawn on, which the key cannot do — pruning four trails is four clicks rather than four visits. The permanent scopes carry no mark, which is how the strip says which capsules go away.
 - `⌃w` is a row on the keys panel, and the panel can now carry a chord: a click on the row sends the modifier with the key rather than the bare key. Off a query scope it dims and says why, like every other unavailable action — the key used to do nothing at all there, silently.
+
+### Changed
+- The TUI rebuilds its clickable and wheel geometry every frame, in one typed registry, so a surface that does not draw cannot answer a later click. Only the table's solved rectangle persists, because row selection and column navigation read the last drawn layout from outside the draw pass. Nothing on screen changed; the implementation and verification record is in [docs/plans/hit-registry.md](plans/hit-registry.md).
+
+## 0.18.0 — 2026-08-10
 
 ### Changed
 - A local `bib/` directory still activates the project library and its two-tier behavior, but no longer creates a Manuscript scope by itself. The Manuscript scope and manuscript-local query home now require at least one `.tex` or `.md` source; conventional project docs such as `README.md` and `CHANGELOG.md` do not count. Sources appearing or disappearing during a TUI session update the scope accordingly.
