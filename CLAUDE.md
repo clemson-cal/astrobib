@@ -26,7 +26,7 @@ Known and deliberately deferred, with the reasoning already done. None is a defe
 - **State-file versioning is unresolved.** `docs/DESIGN.md` "Config and app state versioning" contradicts "Future-proof by dumbness", and the code follows neither. Noted in DESIGN.md itself; settle it the next time a state file changes shape.
 - **`load_cached_articles` re-reads and re-parses all of `query_cache.json` per tab** (`src/tabs.rs`, called per tab from `restore_tabs` in `src/tui/scopes.rs`). Invisible at a handful of tabs; now that a session shows both homes' queries at once, larger sets are likelier. Measure before fixing.
 - **The per-frame hit-test registry refactor is complete.** `App` now has one fresh `Hits` registry for clickable and wheel geometry; only `last_table_area` persists because table event handlers need the last solved layout. The implementation and verification record are in [docs/plans/hit-registry.md](docs/plans/hit-registry.md).
-- **`s32_edit_query` sets the TUI suite's floor at ~10s.** It twice waits out the ageing of a startup note so the footer affordance it tests can take the line. Everything else overlaps around it, so the whole roster costs about what that one scenario does; shortening it is the only thing that would make the suite meaningfully faster.
+- **Two scenarios set the TUI suite's floor at ~10s.** `s32_edit_query` and `s45_capsule_close` both wait out the ageing of a startup note so the footer hint they test can take the line. Everything else overlaps around them, so the whole roster costs about what one of them does; shortening both is the only thing that would make the suite meaningfully faster.
 
 ---
 

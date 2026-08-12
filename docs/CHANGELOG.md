@@ -1,6 +1,10 @@
 # Changelog
 
-## 0.18.0 — 2026-08-10
+## Unreleased
+
+### Added
+- Every query capsule carries a `✕` that closes it, and hovering one says so in the footer. Closing a scope was `ctrl+w` and nothing else — written down in the README and the tutorial, nowhere the app itself would tell you, so a row of spent citation trails was a row you had no way of learning could be pruned. The mark rides every query capsule rather than the active one alone: it costs two cells each, but a mark that appears only under the cursor changes the strip's width as you move along it, and a row that reflows while you are aiming at one capsule is worse than the width it saves. It also closes the capsule it is drawn on, which the key cannot do — pruning four trails is four clicks rather than four visits. The permanent scopes carry no mark, which is how the strip says which capsules go away.
+- `⌃w` is a row on the keys panel, and the panel can now carry a chord: a click on the row sends the modifier with the key rather than the bare key. Off a query scope it dims and says why, like every other unavailable action — the key used to do nothing at all there, silently.
 
 ### Changed
 - A local `bib/` directory still activates the project library and its two-tier behavior, but no longer creates a Manuscript scope by itself. The Manuscript scope and manuscript-local query home now require at least one `.tex` or `.md` source; conventional project docs such as `README.md` and `CHANGELOG.md` do not count. Sources appearing or disappearing during a TUI session update the scope accordingly.

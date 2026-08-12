@@ -124,18 +124,33 @@ def _rule(t):
     return None, 0
 
 
+def _painted(t):
+    """The rightmost column the app has painted anything on.
+
+    Every width in WIDTHS gives this a different value: the footer's
+    badge cluster is right-aligned, so the app's own content reaches
+    within a cell or two of the edge whatever the width is.
+    """
+    return max((len(ln.rstrip()) for ln in t.lines()), default=0)
+
+
 def _relayout(t, w):
     """Resize, and wait for the app's repaint to actually land.
 
     wait_quiet on its own is unsafe straight after a resize: the stream
     is already quiet at that moment, so it returns before SIGWINCH has
     been handled and hands the scenario the previous geometry — which
-    then makes every click land on stale coordinates. The header rule
-    spans the table, so its width changing is proof the app re-laid-out.
+    then makes every click land on stale coordinates.
+
+    The signal is how far right the app paints, not the header rule's
+    width: the table floors at a minimum width, so 84 and 64 columns
+    give the same rule and the wait passed only by catching a transient
+    mid-repaint frame — a race that held until a change to the strip
+    above the table stopped producing it.
     """
-    _, before = _rule(t)
+    before = _painted(t)
     t.resize(w)
-    t.wait_for(lambda: _rule(t)[1] != before, what=f"re-layout at {w} columns")
+    t.wait_for(lambda: _painted(t) != before, what=f"re-layout at {w} columns")
     t.wait_quiet()
 
 

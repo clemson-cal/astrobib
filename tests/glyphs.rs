@@ -181,7 +181,8 @@ const INVENTORY: &[(char, Zone, Risk, &str)] = &[
     ('⧉', Zone::Hit, Risk::Narrow, "copy-row badge in the card link stack"),
     ('⌕', Zone::Hit, Risk::Narrow, "query-row badge, filter chip, task labels"),
     ('⌂', Zone::Hit, Risk::Narrow, "query-home indicator in the footer"),
-    ('✕', Zone::Hit, Risk::Narrow, "\"Clear ✕\" button, \"cancel ✕\" click target"),
+    ('✕', Zone::Hit, Risk::Narrow, "\"Clear ✕\" button, \"cancel ✕\" click target, \
+         the close mark on a query capsule"),
     ('◌', Zone::Hit, Risk::Narrow, "\"◌ waiting for download…\" prefix (was ⏳)"),
     ('◆', Zone::Hit, Risk::Ambiguous, "manuscript toggle badge"),
     ('◇', Zone::Hit, Risk::Ambiguous, "manuscript toggle badge, off state"),
@@ -192,7 +193,7 @@ const INVENTORY: &[(char, Zone, Risk, &str)] = &[
     ('⧗', Zone::Hit, Risk::Narrow, "pending-task count at the head of the footer"),
     // -- key legend -------------------------------------------------------
     ('⌫', Zone::Hit, Risk::Narrow, "help-sheet key legend: remove"),
-    ('⌃', Zone::Hit, Risk::Narrow, "the ⌃r chord named in the query prompt"),
+    ('⌃', Zone::Hit, Risk::Narrow, "the ⌃r chord in the query prompt, ⌃w on the keys panel"),
     ('␣', Zone::Hit, Risk::Narrow, "help-sheet key legend: select"),
     ('⏎', Zone::Flow, Risk::Narrow, "modal titles and hint prose"),
     ('±', Zone::Flow, Risk::Ambiguous, "help-sheet legend: \"manuscript ± (selection)\""),

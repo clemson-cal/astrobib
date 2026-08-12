@@ -100,13 +100,28 @@ def _local_ids(t):
     return {k: _ids(c, k) for k in _ms_keys(t) if k in c}
 
 
+def _strip(t):
+    """The capsule strip as one string, however many rows it takes.
+
+    It wraps when the capsules outgrow the width, and each query capsule
+    now spends two more cells on its ✕ — so an assertion about the order
+    of the capsules has to read the whole strip rather than its first
+    row. "+ new" is the last capsule, which is what ends it.
+    """
+    rows = []
+    for line in t.lines()[t.row_of("kilonovae") :]:
+        rows.append(line.rstrip())
+        if "+ new" in line:
+            break
+    return "  ".join(rows)
+
+
 def run(t):
     t.wait_for("kilonovae", what="the global query's capsule")
     require("magnetars" in t.text(), f"the manuscript's own query should show too:\n{t.text()}", t)
 
-    # both groups on one strip row, global first, with the mark between
-    row = t.row_of("kilonovae")
-    strip = t.lines()[row]
+    # both groups on the strip, global first, with the mark between
+    strip = _strip(t)
     require(
         strip.index("kilonovae") < strip.index("magnetars"),
         f"global queries should come before the manuscript's own:\n{strip}",
@@ -132,7 +147,7 @@ def run(t):
     # and the gesture must never leave you on a different tab — which is
     # what the move reporting the same query's name twice proves, since
     # it always acts on the one you are on.
-    before = t.lines()[t.row_of("kilonovae")]
+    before = _strip(t)
     t.send("H")
     t.wait_for(lambda: "'kilonovae' moved to this manuscript" in t.text(), what="out")
     # the indicator's words change, so the move is visible without
@@ -150,8 +165,8 @@ def run(t):
         t,
     )
     require(
-        t.lines()[t.row_of("kilonovae")] == before,
-        f"H twice should put the strip back as it was:\n{before}\n{t.lines()[t.row_of('kilonovae')]}",
+        _strip(t) == before,
+        f"H twice should put the strip back as it was:\n{before}\n{_strip(t)}",
         t,
     )
 
@@ -181,7 +196,7 @@ def run(t):
     )
     # with both now global there is nothing to mark apart
     require(
-        "│" not in t.lines()[t.row_of("kilonovae")],
+        "│" not in _strip(t),
         "one group needs no separator",
         t,
     )
@@ -207,7 +222,7 @@ def run(t):
     t.wait_for(lambda: "Relativistic jet braking" in t.text(), what="a query result to ask about")
     t.send("C")
     t.wait_for(lambda: "cites→" in t.text(), what="the citations tab")
-    strip = t.lines()[t.row_of("kilonovae")]
+    strip = _strip(t)
     require(
         strip.index("│") < strip.index("cites→"),
         f"a citations query belongs with the manuscript:\n{strip}",

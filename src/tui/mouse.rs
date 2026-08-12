@@ -201,9 +201,9 @@ impl App {
             self.note(MsgCat::Info, "opened in browser".to_string());
             return;
         }
-        // keys-panel rows act as their key
-        if let Some(Target::Help(code)) = target.clone() {
-            self.on_key(code, KeyModifiers::NONE);
+        // keys-panel rows act as their key, chord and all
+        if let Some(Target::Help((code, mods))) = target.clone() {
+            self.on_key(code, mods);
             return;
         }
         // a click leaves an active y-chord and then acts normally —
@@ -297,6 +297,11 @@ impl App {
                     }
                 }
             }
+            return;
+        }
+        // a capsule's own ✕ closes it, whether or not you are standing in it
+        if let Some(Target::ScopeClose(idx)) = target.clone() {
+            self.close_scope_at(idx);
             return;
         }
         // scope strip (usize::MAX = the new-query affordance)

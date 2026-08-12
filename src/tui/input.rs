@@ -490,7 +490,12 @@ impl App {
                 KeyCode::Char('+') | KeyCode::Char('=') => self.step_limit(1),
                 KeyCode::Char('-') => self.step_limit(-1),
                 KeyCode::Char('w') if mods.contains(KeyModifiers::CONTROL) => {
-                    self.close_scope()
+                    // through the action rather than straight to
+                    // close_scope: on the library or the manuscript it
+                    // has nothing to close, and a key that does nothing
+                    // silently is the thing the keys panel exists to
+                    // stop being a mystery
+                    self.run_action(Action::CloseScope)
                 }
                 KeyCode::Char('i') => self.import_highlighted(),
                 KeyCode::Char('L') => self.run_action(Action::Log),

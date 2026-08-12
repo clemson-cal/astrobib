@@ -89,6 +89,30 @@ pub(super) const FILTER_CHIP: usize = usize::MAX - 1;
 /// Not a scope and not clickable — it names a boundary, not a thing.
 const GROUP_SEP: usize = usize::MAX - 2;
 
+/// One slot on the strip as it will be drawn: a scope capsule, or one of
+/// the chrome slots ("+ new", the group mark, the filter chip) that ride
+/// the same row.
+struct StripItem {
+    label: String,
+    idx: usize,
+    rounded: bool,
+    /// Carries a ✕ that closes it. Costs two cells, which is why the
+    /// width lives here beside the flag rather than being worked out
+    /// again by each of the two passes over the strip.
+    closable: bool,
+}
+
+impl StripItem {
+    /// A slot that is neither a scope nor closable.
+    fn chrome(label: &str, idx: usize) -> Self {
+        StripItem { label: label.to_string(), idx, rounded: false, closable: false }
+    }
+
+    fn width(&self) -> u16 {
+        pill_width(&self.label) + if self.closable { 2 } else { 0 }
+    }
+}
+
 impl App {
     pub(super) fn active_ads(&self) -> Option<&Scope> {
         match self.scopes.get(self.active_scope) {
@@ -126,19 +150,28 @@ impl App {
     }
 
     pub(super) fn close_scope(&mut self) {
-        if matches!(
-            self.scopes.get(self.active_scope),
-            None | Some(Scope::Library) | Some(Scope::Manuscript { .. })
-        ) {
+        self.close_scope_at(self.active_scope);
+    }
+
+    /// Close one query capsule, which need not be the active one: every
+    /// capsule carries its own ✕, so the strip can close a query you are
+    /// not standing in.
+    pub(super) fn close_scope_at(&mut self, idx: usize) {
+        let Some(Scope::Ads { tab, .. }) = self.scopes.get(idx) else {
             return; // library and manuscript scopes are permanent
+        };
+        crate::tabs::drop_cached_articles(&tab.id);
+        self.scopes.remove(idx);
+        if idx == self.active_scope {
+            // stay in place: the capsule that was to the right now holds
+            // this index (set_scope clamps when we closed the last one)
+            self.set_scope(self.active_scope);
+        } else if idx < self.active_scope {
+            // the scope under you is the one it was — it has only moved
+            // down a slot, so re-entering it (and resetting its cursor
+            // and selection) would be wrong
+            self.active_scope -= 1;
         }
-        if let Some(Scope::Ads { tab, .. }) = self.scopes.get(self.active_scope) {
-            crate::tabs::drop_cached_articles(&tab.id);
-        }
-        self.scopes.remove(self.active_scope);
-        // stay in place: the capsule that was to the right now holds
-        // this index (set_scope clamps when we closed the last one)
-        self.set_scope(self.active_scope);
         self.save_tabs();
     }
 
@@ -345,12 +378,20 @@ impl App {
     }
 
     /// The scope capsules plus the trailing "+ new" chip, in draw order.
-    fn scope_strip_items(&self) -> Vec<(String, usize, bool)> {
-        let mut v: Vec<(String, usize, bool)> = self
+    fn scope_strip_items(&self) -> Vec<StripItem> {
+        let mut v: Vec<StripItem> = self
             .scopes
             .iter()
             .enumerate()
-            .map(|(i, s)| (s.label().to_string(), i, true))
+            .map(|(i, s)| StripItem {
+                label: s.label().to_string(),
+                idx: i,
+                rounded: true,
+                // only a query closes; the library and the manuscript
+                // are permanent, and a capsule with no ✕ says which is
+                // which without a word about it
+                closable: matches!(s, Scope::Ads { .. }),
+            })
             .collect();
         // The two homes are told apart by where a capsule sits, so the
         // boundary is marked once instead of every capsule spending
@@ -366,14 +407,19 @@ impl App {
             .any(|s| matches!(s, Scope::Ads { home: crate::tabs::Home::Global, .. }));
         if let Some(at) = first_local {
             if any_global {
-                v.insert(at, ("│".to_string(), GROUP_SEP, false));
+                v.insert(at, StripItem::chrome("│", GROUP_SEP));
             }
         }
-        v.push(("+ new".to_string(), usize::MAX, false));
+        v.push(StripItem::chrome("+ new", usize::MAX));
         // an active filter is visible state: it rides the strip as its
         // own chip (click to edit; Esc still clears)
         if !self.filter.value().is_empty() {
-            v.push((format!("/ {}", self.filter.value()), FILTER_CHIP, true));
+            v.push(StripItem {
+                label: format!("/ {}", self.filter.value()),
+                idx: FILTER_CHIP,
+                rounded: true,
+                closable: false,
+            });
         }
         v
     }
@@ -383,8 +429,8 @@ impl App {
     pub(super) fn scope_strip_height(&self, width: u16) -> u16 {
         let mut rows = 1u16;
         let mut x = 0u16;
-        for (label, _, _) in self.scope_strip_items() {
-            let wl = pill_width(&label);
+        for item in self.scope_strip_items() {
+            let wl = item.width();
             if x > 0 && x + wl > width {
                 rows += 1;
                 x = 0;
@@ -404,8 +450,8 @@ impl App {
         let mut y = area.y + 1;
         let mut spans: Vec<Span> = vec![];
         let mut x = area.x;
-        for (label, idx, rounded) in self.scope_strip_items() {
-            let wl = pill_width(&label);
+        for item in self.scope_strip_items() {
+            let wl = item.width();
             if x > area.x && x + wl > area.x + area.width {
                 f.render_widget(
                     Paragraph::new(Line::from(std::mem::take(&mut spans))),
@@ -414,6 +460,7 @@ impl App {
                 x = area.x;
                 y += 1;
             }
+            let StripItem { label, idx, rounded, closable } = item;
             // the group mark is chrome: no capsule, no hit rect, nothing
             // to hover — clicking it would have to mean something
             if idx == GROUP_SEP {
@@ -425,9 +472,30 @@ impl App {
             let r = Rect { x, y, width: wl, height: 1 };
             self.hits.add(r, Target::Scope(idx));
             let hov = hit(r, self.hover.0, self.hover.1);
+            // the ✕ and its cap: registered after the capsule, so the
+            // later rect wins the two cells it covers
+            let close_r = Rect { x: x + wl - 2, y, width: 2, height: 1 };
+            let hov_close = closable && hit(close_r, self.hover.0, self.hover.1);
+            if closable {
+                self.hits.add(close_r, Target::ScopeClose(idx));
+            }
             if hov && idx == FILTER_CHIP {
                 self.hover_hint =
                     Some("⌕ active filter — click to edit  ·  /  (Esc clears)".to_string());
+            }
+            // a scope you can open by clicking says how it is closed
+            // without your leaving the screen
+            if hov_close {
+                self.hover_hint = Some("✕ close this query  ·  ⌃w".to_string());
+            } else if hov && closable {
+                // the capsule you are already standing in has nothing to
+                // offer but the ✕, so it says that rather than inviting
+                // a click that would do nothing
+                self.hover_hint = Some(if idx == self.active_scope {
+                    "✕ closes this query  ·  ⌃w".to_string()
+                } else {
+                    "click to open this query  ·  ✕ closes it".to_string()
+                });
             }
             // composing a *new* query puts you on the "+ new" slot, so the
             // highlight moves there and off the scope you came from —
@@ -458,7 +526,18 @@ impl App {
             } else {
                 (chip_bg(), chip_fg())
             };
-            if rounded {
+            if closable {
+                // the ✕ takes the capsule's own foreground rather than
+                // cyan: on the active capsule cyan *is* the background,
+                // and a mark that vanishes on the one scope ⌃w acts on
+                // would be the wrong one to lose
+                let mark = if hov_close {
+                    Style::default().fg(fg).add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
+                } else {
+                    Style::default().fg(fg).add_modifier(Modifier::DIM)
+                };
+                push_closable_pill(&mut spans, &label, bg, fg, mark);
+            } else if rounded {
                 push_pill(&mut spans, &label, bg, fg);
             } else {
                 spans.push(Span::styled(

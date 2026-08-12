@@ -21,45 +21,59 @@ pub(super) enum Action {
     Columns,
     GlobalTier,
     QueryHome,
+    CloseScope,
     Quit,
 }
 
+/// The key press a panel row stands for: a code and the modifiers it
+/// carries, since not every row is a bare key.
+pub(super) type Press = (KeyCode, KeyModifiers);
+
+const fn k(c: char) -> Press {
+    (KeyCode::Char(c), KeyModifiers::NONE)
+}
+
+const fn ctrl(c: char) -> Press {
+    (KeyCode::Char(c), KeyModifiers::CONTROL)
+}
+
 // (shown key, label, availability probe, key a click synthesizes)
-pub(super) const HELP_ENTRIES: &[(&str, &str, Option<Action>, KeyCode)] = &[
-    ("␣", "select / toggle row", Some(Action::Select), KeyCode::Char(' ')),
-    ("a", "select visible", Some(Action::Select), KeyCode::Char('a')),
-    ("A", "select all", Some(Action::Select), KeyCode::Char('A')),
-    ("j k", "move cursor", None, KeyCode::Char('j')),
-    ("g G", "first / last row", None, KeyCode::Char('g')),
-    ("m", "manuscript ± (selection)", Some(Action::Manuscript), KeyCode::Char('m')),
-    ("T", "tag ± (selection)", Some(Action::Tag), KeyCode::Char('T')),
-    ("p", "download PDF", Some(Action::Download), KeyCode::Char('p')),
-    ("B", "browser download", Some(Action::BrowserDl), KeyCode::Char('B')),
-    ("o", "open PDF", Some(Action::OpenPdf), KeyCode::Char('o')),
-    ("X", "clear PDF / cancel DL", Some(Action::ClearPdf), KeyCode::Char('X')),
-    ("y", "copy…", Some(Action::Copy), KeyCode::Char('y')),
-    ("⌫", "remove…", Some(Action::Remove), KeyCode::Delete),
-    ("/", "filter", Some(Action::Filter), KeyCode::Char('/')),
-    ("D", "pub card", Some(Action::Card), KeyCode::Char('D')),
-    ("|", "table columns…", Some(Action::Columns), KeyCode::Char('|')),
-    ("N", "name this query…", None, KeyCode::Char('N')),
-    ("E", "edit this query…", None, KeyCode::Char('E')),
-    ("H", "query home ±", Some(Action::QueryHome), KeyCode::Char('H')),
-    ("y q", "copy this query", None, KeyCode::Char('y')),
-    ("P", "open query on clipboard", None, KeyCode::Char('P')),
-    ("L", "event log", Some(Action::Log), KeyCode::Char('L')),
-    ("t", "global tier", Some(Action::GlobalTier), KeyCode::Char('t')),
-    ("v", "pub view", None, KeyCode::Char('v')),
-    ("e", "export selection…", None, KeyCode::Char('e')),
-    ("M", "metric column", None, KeyCode::Char('M')),
-    (".", "priority → 1.0", None, KeyCode::Char('.')),
-    ("0", "priority → 0", None, KeyCode::Char('0')),
-    ("< >", "priority down / up", None, KeyCode::Char('>')),
-    ("@", "about", None, KeyCode::Char('@')),
-    ("C", "citations", None, KeyCode::Char('C')),
-    ("R", "references", None, KeyCode::Char('R')),
-    ("?", "this cheat-sheet", Some(Action::Help), KeyCode::Char('?')),
-    ("q", "quit", Some(Action::Quit), KeyCode::Char('q')),
+pub(super) const HELP_ENTRIES: &[(&str, &str, Option<Action>, Press)] = &[
+    ("␣", "select / toggle row", Some(Action::Select), k(' ')),
+    ("a", "select visible", Some(Action::Select), k('a')),
+    ("A", "select all", Some(Action::Select), k('A')),
+    ("j k", "move cursor", None, k('j')),
+    ("g G", "first / last row", None, k('g')),
+    ("m", "manuscript ± (selection)", Some(Action::Manuscript), k('m')),
+    ("T", "tag ± (selection)", Some(Action::Tag), k('T')),
+    ("p", "download PDF", Some(Action::Download), k('p')),
+    ("B", "browser download", Some(Action::BrowserDl), k('B')),
+    ("o", "open PDF", Some(Action::OpenPdf), k('o')),
+    ("X", "clear PDF / cancel DL", Some(Action::ClearPdf), k('X')),
+    ("y", "copy…", Some(Action::Copy), k('y')),
+    ("⌫", "remove…", Some(Action::Remove), (KeyCode::Delete, KeyModifiers::NONE)),
+    ("/", "filter", Some(Action::Filter), k('/')),
+    ("D", "pub card", Some(Action::Card), k('D')),
+    ("|", "table columns…", Some(Action::Columns), k('|')),
+    ("N", "name this query…", None, k('N')),
+    ("E", "edit this query…", None, k('E')),
+    ("⌃w", "close this query", Some(Action::CloseScope), ctrl('w')),
+    ("H", "query home ±", Some(Action::QueryHome), k('H')),
+    ("y q", "copy this query", None, k('y')),
+    ("P", "open query on clipboard", None, k('P')),
+    ("L", "event log", Some(Action::Log), k('L')),
+    ("t", "global tier", Some(Action::GlobalTier), k('t')),
+    ("v", "pub view", None, k('v')),
+    ("e", "export selection…", None, k('e')),
+    ("M", "metric column", None, k('M')),
+    (".", "priority → 1.0", None, k('.')),
+    ("0", "priority → 0", None, k('0')),
+    ("< >", "priority down / up", None, k('>')),
+    ("@", "about", None, k('@')),
+    ("C", "citations", None, k('C')),
+    ("R", "references", None, k('R')),
+    ("?", "this cheat-sheet", Some(Action::Help), k('?')),
+    ("q", "quit", Some(Action::Quit), k('q')),
 ];
 
 /// The keys panel's entries and fixed column width.
@@ -80,6 +94,9 @@ impl App {
             // query to, so the gesture is not offered rather than being
             // offered and refusing
             Action::QueryHome => self.on_query() && self.manuscript_root().is_some(),
+            // the library and manuscript scopes are permanent, so the
+            // gesture is offered only where there is something to close
+            Action::CloseScope => self.on_query(),
             Action::Manuscript => {
                 self.lib.manuscript.is_some() && self.lib.global_on && !keys.is_empty()
             }
@@ -163,6 +180,9 @@ impl App {
                 "no manuscript here — every saved query is already global".to_string()
             }
             Action::QueryHome => "no query on screen to move".to_string(),
+            Action::CloseScope => {
+                "only a query capsule closes — the library and manuscript stay".to_string()
+            }
             // always available; unreachable, but the match stays total
             Action::Select | Action::Filter | Action::Card | Action::Log | Action::Help
             | Action::Columns | Action::Quit => "not available here".to_string(),
@@ -220,6 +240,7 @@ impl App {
             }
             Action::GlobalTier => self.toggle_global(),
             Action::QueryHome => self.move_query_home(),
+            Action::CloseScope => self.close_scope(),
             Action::Quit => self.quit = true,
         }
     }

@@ -44,7 +44,7 @@ Scope capsules at the top switch between your library, saved ADS query tabs, and
 
 ### Keys
 - `/` — live filter (query language below); `S` — new ADS query (`↑`/`↓` sets the result count, `⌃r` opens the menu of what ADS returns — both also clickable; pasting a DOI or ADS URL imports directly)
-- `j k g G` — move; `[` `]` — switch scope (`]` past the last one composes a new query); `ctrl+w` — close query scope; `r` — refresh; `+` `-` — result count
+- `j k g G` — move; `[` `]` — switch scope (`]` past the last one composes a new query); `ctrl+w` — close the query you are on, or click the `✕` on any query capsule to close that one; `r` — refresh; `+` `-` — result count
 - `Space` — select row (iOS-style selection mode); `a` — select visible; `A` — select all; Esc — done
 - `i` — import ADS result(s); `m` — toggle manuscript/local membership; `⌫` — remove (with confirmation)
 - `T` — tag ± the selection: type a name, `⏎` applies. It adds, unless every selected paper already carries that tag, in which case it untags — the prompt says which before you commit. With an empty name it lists the tags you have, so one is harder to mistype into existence

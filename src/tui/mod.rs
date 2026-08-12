@@ -70,7 +70,7 @@ mod tasks;
 mod theme;
 mod watch;
 
-use actions::{Action, HELP_ENTRIES};
+use actions::{Action, HELP_ENTRIES, Press};
 use card_view::{CardBtn, LinkTarget, TOGGLE_RESERVE, card_hint, draw_cited_line, draw_link_stack};
 use columns::{COLUMNS_PANEL_W, Focus, PanelHit, col_width};
 use copy::{COPY_CHORD, CopyItem, copy_hint, read_clipboard};
@@ -324,12 +324,13 @@ enum Target {
     Confirm(bool),
     EditQuery,
     Footer(Action),
-    Help(KeyCode),
+    Help(Press),
     Metric,
     PickRow(usize),
     PromptSort,
     Sample(&'static str),
     Scope(usize),
+    ScopeClose(usize),
     SortHeader(Col),
     SortMenu(String),
     Card,
@@ -411,6 +412,32 @@ fn push_pill<'a>(spans: &mut Vec<Span<'a>>, label: &str, bg: Color, fg: Color) {
     } else {
         spans.push(Span::styled("\u{e0b6}".to_string(), Style::default().fg(bg)));
         spans.push(Span::styled(label.to_string(), Style::default().bg(bg).fg(fg)));
+        spans.push(Span::styled("\u{e0b4}".to_string(), Style::default().fg(bg)));
+    }
+}
+
+/// A chip with a ✕ before its closing cap, styled apart from the label
+/// so it can light under the pointer: the same shape as `push_pill`, two
+/// cells wider (the space and the mark). Both modes agree on width, so
+/// the ✕ is at the same offset either way and its click rect holds.
+fn push_closable_pill<'a>(
+    spans: &mut Vec<Span<'a>>,
+    label: &str,
+    bg: Color,
+    fg: Color,
+    mark: Style,
+) {
+    let body = Style::default().bg(bg).fg(fg);
+    if ascii_chips() {
+        spans.push(Span::styled(" ".to_string(), body));
+    } else {
+        spans.push(Span::styled("\u{e0b6}".to_string(), Style::default().fg(bg)));
+    }
+    spans.push(Span::styled(format!("{label} "), body));
+    spans.push(Span::styled("✕".to_string(), mark.bg(bg)));
+    if ascii_chips() {
+        spans.push(Span::styled(" ".to_string(), body));
+    } else {
         spans.push(Span::styled("\u{e0b4}".to_string(), Style::default().fg(bg)));
     }
 }
