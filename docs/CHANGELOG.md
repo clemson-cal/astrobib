@@ -1,9 +1,12 @@
 # Changelog
 
-## Unreleased
+## 0.20.0 — 2026-08-13
+
+The manuscript page stops being the one table with its own idea of what a column is.
 
 ### Changed
 - The manuscript page offers the same columns as the library and a query page. Its rows are cites, but every cite that resolves names a paper, so the paper columns — the metric swatch, `↓`, `Year`, `Author`, `Title`, `Key` — are now drawn, sorted and configured there exactly as they are elsewhere, with `Cited` and `State` interleaved in the order the shared columns already sit in. Only `●` is left out, because in this scope it would say what the cite glyph beside it already says in more detail, and `Entered` stays query-only as a fact about an ADS record rather than a paper. The defaults still differ, since `Cited` and `State` spend the width the library gives `Author` and `Key`: `Year` defaults on once a comfortable title fits beside it, `Author` once one fits beside both, and `Key` defaults off here alone because `Cited` already names the paper. All of them are one keystroke away in the `|` panel whatever the width.
+- The release workflow runs on Node 24. GitHub was already forcing `actions/checkout@v4` and `actions/upload-artifact@v4` onto Node 24 with a deprecation warning, and v5 would not have settled it — `upload-artifact@v5` and `download-artifact@v5` both still declare `runs.using: node20`, so two of the three would have stayed deprecated. `checkout` and `upload-artifact` are on v7 and `download-artifact` on v8, the first majors that are all Node 24; every input the workflow passes still exists there, so the diff is six version numbers and nothing else. `download-artifact@v8` additionally defaults a digest mismatch to an error rather than a warning, which is the right failure mode on the job that uploads to PyPI. This release is the first run of any of it — nothing publishes if it goes wrong, since the upload is the last step.
 
 ## 0.19.0 — 2026-08-12
 

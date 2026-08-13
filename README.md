@@ -9,7 +9,7 @@ Your library is just a directory of `.bib` files, indistinguishable from hand-wr
 
 ### Development status
 
-0.19.0 ships `import --rename-citekeys` (the re-key map applied to your sources, TeX and markdown alike) and `import --dry-run` (the whole map previewed against the library the import would leave behind, writing nothing), together with a `✕` on every query capsule and `⌃w` named on the keys panel. Since then the manuscript page has grown the library's columns — the metric swatch, `↓`, `Year`, `Author` and `Key` are drawn, sorted and configured there like anywhere else, alongside `Cited` and `State`. Next up: `convert` scanning markdown as well as it scans TeX. Rust tests, clippy, and the headless TUI suite pass; the completed TUI hit-test registry refactor is recorded in [docs/plans/hit-registry.md](docs/plans/hit-registry.md).
+0.20.0 gives the manuscript page the library's columns — the metric swatch, `↓`, `Year`, `Author` and `Key` are drawn, sorted and configured there like anywhere else, alongside `Cited` and `State` — and moves the release workflow onto Node 24. Next up: `convert` scanning markdown as well as it scans TeX. Rust tests, clippy, and the headless TUI suite pass; the completed TUI hit-test registry refactor is recorded in [docs/plans/hit-registry.md](docs/plans/hit-registry.md).
 
 ---
 ## Installation
