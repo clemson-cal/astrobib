@@ -707,12 +707,40 @@ fn run_convert(
     format: &str,
     dry_run: bool,
 ) -> anyhow::Result<()> {
-    let files = astrobib::export::manuscript_tex_files(root);
-    if files.is_empty() {
-        eprintln!("No .tex sources found in {}.", root.display());
+    let tex = astrobib::export::manuscript_tex_files(root);
+    let md = astrobib::export::manuscript_md_files(root);
+    if tex.is_empty() && md.is_empty() {
+        eprintln!("No .tex or .md sources found in {}.", root.display());
         std::process::exit(1);
     }
-    let cited = astrobib::export::scan_tex_files(&files);
+    // Both source kinds, scanned into one list: the rewriter already
+    // covers .tex and .md alike, so scanning one of them was the half
+    // that made `convert` say "nothing here" in a markdown manuscript
+    // and re-key only the TeX-cited half of a mixed one.
+    //
+    // The flag is what a wikilink costs. `[[Key]]` is a citation only
+    // where it resolves — everywhere else it is an ordinary note link —
+    // so one that resolves to nothing is dropped here rather than
+    // reported as unresolved, which would turn every note link in the
+    // manuscript into a line of output. A key cited both ways is a
+    // citation: the flag survives only while every sighting is a
+    // wikilink.
+    let mut cited: Vec<String> = vec![];
+    let mut wiki_only: std::collections::HashMap<String, bool> = Default::default();
+    for c in astrobib::export::scan_tex_files(&tex) {
+        if wiki_only.insert(c.clone(), false).is_none() {
+            cited.push(c);
+        }
+    }
+    for c in astrobib::export::scan_md_files(&md) {
+        match wiki_only.get_mut(&c.raw) {
+            Some(flag) => *flag &= c.wikilink,
+            None => {
+                wiki_only.insert(c.raw.clone(), c.wikilink);
+                cited.push(c.raw);
+            }
+        }
+    }
     let mut renames: Vec<(String, String)> = vec![];
     let mut unresolved: Vec<String> = vec![];
     for c in &cited {
@@ -735,6 +763,9 @@ fn run_convert(
                     renames.push((c.clone(), target));
                 }
             }
+            // a wikilink that resolves to nothing is a note link, not a
+            // broken cite, so it is left alone without being reported
+            None if wiki_only.get(c).copied().unwrap_or(false) => {}
             None => unresolved.push(c.clone()),
         }
     }

@@ -863,17 +863,68 @@ fn convert_rewrites_cite_braces_only() {
 }
 
 #[test]
+fn convert_reads_markdown_sources_and_leaves_note_links_alone() {
+    let sb = Sandbox::new("convert-md");
+    let ms = sb.ms("notes");
+    // one manuscript, both syntaxes and both kinds of wikilink: one that
+    // resolves (a citation) and one that names a note (not a citation,
+    // and not a broken cite either)
+    let md = "# Review\n\n\
+              Jets are discussed by @Andersson2021pombz, see also [@Baxter2019equxm].\n\n\
+              A wikilink cite [[Cabrera2024txuze]] and a note link [[reading-list]].\n";
+    write(ms.join("main.md"), md);
+
+    let r = sb.run_in(&ms, &["convert", "short", "--dry-run"]);
+    assert!(r.ok(), "{}", r.report());
+    assert!(r.stdout.contains("Andersson2021pombz → Andersson2021"), "{}", r.report());
+    assert!(r.stdout.contains("Baxter2019equxm → Baxter2019"), "{}", r.report());
+    assert!(r.stdout.contains("Cabrera2024txuze → Cabrera2024"), "{}", r.report());
+    assert!(r.stdout.contains("would rewrite 3 cite key(s)"), "{}", r.report());
+    // the note link resolves to nothing, and saying so would make every
+    // ordinary link in the manuscript a line of output
+    assert!(!r.stderr.contains("reading-list"), "{}", r.report());
+    assert_eq!(read(ms.join("main.md")), md, "dry run rewrote the source");
+
+    let r = sb.run_in(&ms, &["convert", "short"]);
+    assert!(r.ok(), "{}", r.report());
+    let out = read(ms.join("main.md"));
+    assert!(out.contains("@Andersson2021,"), "{out}");
+    assert!(out.contains("[@Baxter2019]"), "{out}");
+    assert!(out.contains("[[Cabrera2024]]"), "{out}");
+    assert!(out.contains("[[reading-list]]"), "{out}");
+    // and the markdown bibliography is regenerated to match
+    assert!(out.contains("<!-- astrobib:references -->"), "{out}");
+    assert!(out.contains("Andersson, F."), "{out}");
+}
+
+#[test]
+fn convert_covers_both_source_kinds_in_a_mixed_manuscript() {
+    let sb = Sandbox::new("convert-mixed");
+    let ms = sb.ms("paper");
+    // main.tex is the TeX root; the markdown side is a named note, which
+    // used to be scanned by nothing at all
+    write(ms.join("main.tex"), "As shown \\citep{Andersson2021pombz}.\n");
+    write(ms.join("notes.md"), "Background: @Baxter2019equxm.\n");
+
+    let r = sb.run_in(&ms, &["convert", "short"]);
+    assert!(r.ok(), "{}", r.report());
+    assert!(r.stdout.contains("2 cite key(s) converted"), "{}", r.report());
+    assert!(read(ms.join("main.tex")).contains("\\citep{Andersson2021}"), "{}", r.report());
+    assert!(read(ms.join("notes.md")).contains("@Baxter2019."), "{}", r.report());
+}
+
+#[test]
 fn convert_without_a_manuscript_fails_cleanly() {
     let sb = Sandbox::new("convert-nowhere");
     let r = sb.run(&["convert", "short"]);
     assert_eq!(r.code(), 1, "{}", r.report());
     assert!(r.stderr.contains("needs a manuscript directory"), "{}", r.report());
 
-    // a bib root with no .tex sources is equally refused
+    // a bib root with no sources of either kind is equally refused
     let ms = sb.ms("empty-paper");
     let r = sb.run_in(&ms, &["convert", "short"]);
     assert_eq!(r.code(), 1, "{}", r.report());
-    assert!(r.stderr.contains("No .tex sources found"), "{}", r.report());
+    assert!(r.stderr.contains("No .tex or .md sources found"), "{}", r.report());
 }
 
 // ── tidy ────────────────────────────────────────────────────────────
