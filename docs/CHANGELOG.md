@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.21.0 — 2026-08-13
 
 Imports are local-first: a paper you fetch inside a project lands in the project, the way an install inside a virtualenv lands in the virtualenv.
 
