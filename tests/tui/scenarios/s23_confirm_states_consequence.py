@@ -52,7 +52,11 @@ def run(t):
     ms_copy = os.path.join(t.cwd, "bib", KEY + ".bib")
     t.wait_for("Manuscript", what="manuscript capsule")
 
-    # 1. the ordinary library case: both tiers go
+    # 1. the ordinary library case: both tiers go. A session in a project
+    # starts local-only, so the global tier is shown first — the two
+    # cases below it are about papers that live there
+    t.send("t")
+    t.wait_for(lambda: "global tier shown" in t.text(), what="the global tier")
     t.wait_for(lambda: "Cabrera" in t.text(), what="library rows")
     t.key("delete")
     t.wait_for("removes from both tiers")

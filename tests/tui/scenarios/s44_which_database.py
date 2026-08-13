@@ -40,30 +40,32 @@ def run(t):
         f"the panel should name the global library: {glob!r}",
         t,
     )
+    # a session inside a project opens on the project: the global tier
+    # starts hidden, which changes what every count above it means, so
+    # the panel says so on the row it belongs to
     require(
-        "hidden" not in glob,
-        f"the global tier is on, so nothing should say hidden: {glob!r}",
+        "hidden (t)" in glob,
+        f"a hidden global tier should say so on its own row: {glob!r}",
         t,
     )
 
     t.key("esc")
     t.wait_gone("report a bug")
 
-    # hiding the global tier changes what every count above it means, so
-    # the panel has to say so
+    # …and t shows it, which the same row has to stop saying
     t.send("t")
-    t.wait_for("global tier hidden", what="the tier toggle taking effect")
+    t.wait_for("global tier shown", what="the tier toggle taking effect")
     t.send("@")
     t.wait_for("report a bug", what="the about panel, reopened")
     glob = next((l for l in t.lines() if "Global" in l), "")
     require(
-        "hidden (t)" in glob,
-        f"a hidden global tier should say so on its own row: {glob!r}",
+        "hidden" not in glob,
+        f"the global tier is on, so nothing should say hidden: {glob!r}",
         t,
     )
     require(
         "Local      ~/ms" in t.text(),
-        "hiding the global tier should not disturb the local row",
+        "showing the global tier should not disturb the local row",
         t,
     )
     t.key("esc")

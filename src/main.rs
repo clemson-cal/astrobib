@@ -204,7 +204,13 @@ fn main() -> anyhow::Result<()> {
         t_load.elapsed(),
         local_root.is_some()
     ));
-    if cli.no_global && lib.manuscript.is_some() {
+    // Local-first extends to what a session opens on: standing in a
+    // project, the TUI starts with the global tier hidden — the view is
+    // about the project, the way `pip list` inside a virtualenv is about
+    // the virtualenv — and `t` shows it. The CLI keeps merging both
+    // tiers unless told otherwise, since `list` and `search` are
+    // questions about everything you have, asked one answer at a time.
+    if lib.manuscript.is_some() && (cli.no_global || cli.command.is_none()) {
         lib.global_on = false;
     }
     match cli.command {

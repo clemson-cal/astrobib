@@ -89,7 +89,7 @@ Who it's for: astrophysics researchers and grad students who frequently use LaTe
 - **Two tiers** — tier 1 is your global library (`~/.local/share/astrobib/library/`); tier 2 is any directory holding `bib/`, found by walk-up or named as `astrobib [LIBRARY_DIR]`.
 - **Reads merge, writes are local-first** — inside a project, an import lands in the project's `bib/` and nowhere else, the way an install inside a virtualenv stays there; `m` toggles a paper's local membership.
 - **Sharing up** — `s` promotes the selection to the global library (and, pressed again, drops the global copy while keeping the local one); `I` imports and shares in one press, as does `--global` on `import` and `add`.
-- **The `t` toggle** — hide the global tier (or click the `global` badge) for purely local reads and writes; `--no-global` starts that way.
+- **The `t` toggle** — a session in a project opens on the project alone; `t` (or the `global` badge) shows the global tier and hides it again. The CLI still merges both tiers unless you pass `--no-global`.
 - **Sole-copy rescue** — removing a local paper never destroys the only copy; it's rescued into the global library first.
 - **Running example** — `mkdir frb-magnetar && cd frb-magnetar`, create `bib/` by importing, and watch the Manuscript scope appear once `main.tex` exists.
 

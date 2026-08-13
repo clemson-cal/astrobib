@@ -64,6 +64,11 @@ def _priority(t):
 def run(t):
     ms_copy = os.path.join(t.cwd, "bib", KEY + ".bib")
     t.wait_for("Manuscript", what="manuscript capsule")
+    # a session inside a project starts local-only, and m needs the
+    # global tier shown to mean anything: with it hidden every paper on
+    # screen is already a member, so ± could only ever mean "remove"
+    t.send("t")
+    t.wait_for(lambda: "global tier shown" in t.text(), what="the global tier")
     t.send("]")
     t.send("]")  # 0 Library, 1 Manuscript, 2 the restored query
     t.wait_for(lambda: "Relativistic jet braking" in t.text(), what="imported query row")

@@ -684,14 +684,33 @@ pub enum CiteState {
 impl MergedLibrary {
     /// Classify a cite string: full key, unambiguous prefix, or raw
     /// bibcode.
+    ///
+    /// Alone among the reads, this one ignores the two-tier display
+    /// switch. Whether a cite names a paper you hold is a question about
+    /// the databases, not about which of them is on screen: gated, it
+    /// reports a paper sitting in your global library as `Missing` the
+    /// moment that tier is hidden, and the remedy `Missing` implies —
+    /// go and import it — is the wrong thing to do about a paper you
+    /// already have. `Library` is the state that says it exactly, and it
+    /// can only be reached from both tiers at once.
     pub fn resolve_citation(&self, cited: &str) -> (CiteState, Option<&Entry>) {
-        let entry = match self.get(cited) {
+        let ungated = |key: &str| {
+            self.personal.get(key).or_else(|| self.manuscript.as_ref().and_then(|m| m.get(key)))
+        };
+        let entry = match ungated(cited) {
             Some(e) => Some(e),
             None => {
-                let matches = self.possible_matches(cited);
+                let mut matches: Vec<&Entry> = self.personal.entries().iter().collect();
+                if let Some(ms) = &self.manuscript {
+                    matches.extend(ms.entries().iter().filter(|e| !self.personal.has(e.key())));
+                }
+                matches.retain(|e| e.key().starts_with(cited));
                 match matches.len() {
                     1 => Some(matches[0]),
-                    0 => self.get_by_bibcode(cited),
+                    0 => self
+                        .personal
+                        .get_by_bibcode(cited)
+                        .or_else(|| self.manuscript.as_ref().and_then(|m| m.get_by_bibcode(cited))),
                     _ => return (CiteState::Ambiguous, None),
                 }
             }

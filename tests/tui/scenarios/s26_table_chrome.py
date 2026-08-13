@@ -164,6 +164,11 @@ def _block(t):
 
 
 def run(t):
+    # A session in a project opens on the project, whose db is empty
+    # here; this file is about how rows are drawn, so it asks for the
+    # merged view the baseline was captured from.
+    t.send("t")
+    t.wait_for(lambda: "global tier shown" in t.text(), what="the global tier")
     shots = []
 
     def shot(label):

@@ -28,6 +28,10 @@ def run(t):
     ms_bib = os.path.join(os.path.dirname(t.state_dir), "home", "ms", "bib")
     require(_bibs(t.bib_dir) and not _bibs(ms_bib), "the local db should start empty", t)
     before = _bibs(t.bib_dir)
+    # the session opens on the project alone, which here is empty: the
+    # papers this scenario shares are in the global tier, so show it
+    t.send("t")
+    t.wait_for(lambda: "global tier shown" in t.text(), what="the global tier")
 
     # the cursor paper is global-only, so ± reads as "remove" — and that
     # is the removal the sole-copy rule refuses, since nothing else holds
