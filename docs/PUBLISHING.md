@@ -44,6 +44,10 @@ The publish job authenticates with a repository secret named `PYPI_API_TOKEN` (G
 
 The same workflow also runs a plain build-and-test job (`cargo test` + `maturin build`) on pull requests; no publishing happens on that path.
 
+The action versions are Node 24 throughout — `checkout` and `upload-artifact` at v7, `download-artifact` at v8 — and 0.20.0 was the first tag to run them. All five build jobs and the publish job passed with no deprecation warning about the runtime, so that question is settled; do not "fix" them back to v4/v5, where two of the three still declare `node20`.
+
+**The publish step's own command is deprecated.** `maturin upload` and `maturin publish` are both slated for removal ([PyO3/maturin#2334](https://github.com/PyO3/maturin/issues/2334)), and the 0.20.0 run said so as an annotation while still succeeding. The replacement is `pypa/gh-action-pypi-publish` on the `dist/` the download step already assembles — the same artifacts, a different uploader, and trusted publishing available instead of `PYPI_API_TOKEN` if that is wanted at the same time. Nothing is urgent until a maturin release actually drops the command, but a release is the worst moment to discover it has: change it between releases, not during one.
+
 ---
 
 ## Manual local fallback
