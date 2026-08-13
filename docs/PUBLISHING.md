@@ -46,7 +46,11 @@ The same workflow also runs a plain build-and-test job (`cargo test` + `maturin 
 
 The action versions are Node 24 throughout — `checkout` and `upload-artifact` at v7, `download-artifact` at v8 — and 0.20.0 was the first tag to run them. All five build jobs and the publish job passed with no deprecation warning about the runtime, so that question is settled; do not "fix" them back to v4/v5, where two of the three still declare `node20`.
 
-**The publish step's own command is deprecated.** `maturin upload` and `maturin publish` are both slated for removal ([PyO3/maturin#2334](https://github.com/PyO3/maturin/issues/2334)), and the 0.20.0 run said so as an annotation while still succeeding. The replacement is `pypa/gh-action-pypi-publish` on the `dist/` the download step already assembles — the same artifacts, a different uploader, and trusted publishing available instead of `PYPI_API_TOKEN` if that is wanted at the same time. Nothing is urgent until a maturin release actually drops the command, but a release is the worst moment to discover it has: change it between releases, not during one.
+**The upload no longer goes through maturin.** `maturin upload` and `maturin publish` are both slated for removal ([PyO3/maturin#2334](https://github.com/PyO3/maturin/issues/2334)), and the 0.20.0 run said so as an annotation while still succeeding. The publish job now runs `pypa/gh-action-pypi-publish` over the same `dist/` the download step assembles: identical artifacts, a different uploader, and maturin left doing the thing it is not deprecating. `--skip-existing` became the action's `skip-existing: true`, and the token moved from `MATURIN_PYPI_TOKEN` to the action's `password` input — the same `PYPI_API_TOKEN` secret, so nothing needs configuring on the PyPI side.
+
+The job grants itself `id-token: write`, which is what the action signs its [PEP 740](https://peps.python.org/pep-0740/) attestations with. It is also what trusted publishing authenticates over, so retiring `PYPI_API_TOKEN` later is a matter of registering this workflow as a publisher on PyPI and dropping the `password` line — the permission is already in place. Doing that now would have meant a PyPI-side change landing at the same moment as a workflow change, with a tag push as the only way to test either.
+
+The swap was made between releases and is therefore untested by a real upload: 0.21.0 is the first tag to run it. As before, the upload is the last step, so a failure there costs a re-tag and publishes nothing partial.
 
 ---
 
@@ -60,6 +64,8 @@ maturin publish --release          # builds for the host platform and uploads
 ```
 
 `maturin publish` prompts for credentials, or reads `MATURIN_PYPI_TOKEN`. Repeat per platform (a single machine only produces its own platform's wheel), and `maturin sdist` + `maturin upload target/wheels/astrobib-X.Y.Z.tar.gz` covers the sdist. `--skip-existing` makes re-runs safe.
+
+These are the two commands CI stopped using, so this fallback is the path that goes away when maturin drops them. The replacement is the same split CI now makes — `maturin build --release` / `maturin sdist` to produce the files, then `twine upload target/wheels/*` to send them — and it is worth reaching for first if maturin has moved on by the time anyone needs this.
 
 ---
 

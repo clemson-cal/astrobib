@@ -6,6 +6,7 @@
 # - Pushing a `v*` tag: builds wheels for macOS (aarch64, x86_64) and
 #   manylinux (x86_64, aarch64) plus an sdist, then publishes to PyPI.
 #
+# maturin builds the artifacts; pypa/gh-action-pypi-publish uploads them.
 # Publishing requires a repository secret named PYPI_API_TOKEN holding a PyPI
 # API token with upload permission for the `astrobib` project (Settings ->
 # Secrets and variables -> Actions). Without it the publish job fails and
@@ -88,15 +89,19 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/v')
     needs: [wheels, sdist]
     runs-on: ubuntu-latest
+    # id-token is what the upload action signs its attestations with; it is
+    # also what trusted publishing would authenticate over, if PYPI_API_TOKEN
+    # is ever retired in favour of it.
+    permissions:
+      contents: read
+      id-token: write
     steps:
       - uses: actions/download-artifact@v8
         with:
           path: dist
           merge-multiple: true
       - name: Publish to PyPI
-        uses: PyO3/maturin-action@v1
-        env:
-          MATURIN_PYPI_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
+        uses: pypa/gh-action-pypi-publish@release/v1
         with:
-          command: upload
-          args: --non-interactive --skip-existing dist/*
+          password: ${{ secrets.PYPI_API_TOKEN }}
+          skip-existing: true
