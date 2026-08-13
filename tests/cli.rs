@@ -481,6 +481,52 @@ fn import_cited_only_leaves_out_what_the_manuscript_never_cites() {
 }
 
 #[test]
+fn import_copies_a_held_entry_into_a_tier_that_is_missing_it() {
+    // "already present" is a fact about the library as a whole; the
+    // destination is not. A paper imported locally is exactly the one
+    // --global exists to promote, and an import inside a project should
+    // bring a paper you hold globally into the project.
+    let sb = Sandbox::empty("import-copy-tier");
+    let ms = sb.ms("paper");
+    let (key, data) = variant(
+        "Delacroix2018jdgxd.bib",
+        &[
+            ("eprint", "1806.17171"),
+            ("title", "{Held in one tier at a time}"),
+            ("adsurl", "https://ui.adsabs.harvard.edu/abs/2018ApJ...860...17D"),
+        ],
+    );
+    write(ms.join("from-coauthor.bib"), &bib::format_entry(&data));
+
+    // local-first: the global tier stays empty
+    let r = sb.run_in(&ms, &["import", "from-coauthor.bib"]);
+    assert!(r.ok(), "{}", r.report());
+    assert!(ms.join(format!("bib/{key}.bib")).exists(), "{}", r.report());
+    assert!(!sb.bib_dir().join(format!("{key}.bib")).exists(), "{}", r.report());
+
+    // the preview says it would copy, and writes nothing
+    let r = sb.run_in(&ms, &["import", "from-coauthor.bib", "--global", "--dry-run"]);
+    assert!(r.ok(), "{}", r.report());
+    assert!(r.stdout.contains("would copy into the global library"), "{}", r.report());
+    assert!(r.stdout.contains("1 would be copied between tiers"), "{}", r.report());
+    assert!(!sb.bib_dir().join(format!("{key}.bib")).exists(), "{}", r.report());
+
+    // …and the real run does exactly that: nothing imported, one copied
+    let r = sb.run_in(&ms, &["import", "from-coauthor.bib", "--global"]);
+    assert!(r.ok(), "{}", r.report());
+    assert!(r.stdout.contains("copied into the global library"), "{}", r.report());
+    assert!(r.stdout.contains("0 imported"), "{}", r.report());
+    assert!(r.stdout.contains("1 copied between tiers"), "{}", r.report());
+    assert!(sb.bib_dir().join(format!("{key}.bib")).exists(), "{}", r.report());
+
+    // idempotent per tier: with both holding it, there is nothing to do
+    let r = sb.run_in(&ms, &["import", "from-coauthor.bib", "--global"]);
+    assert!(r.ok(), "{}", r.report());
+    assert!(r.stdout.contains("kept existing"), "{}", r.report());
+    assert!(!r.stdout.contains("copied between tiers"), "{}", r.report());
+}
+
+#[test]
 fn import_cited_only_refuses_when_there_is_nothing_to_match_against() {
     let sb = Sandbox::new("import-cited-errors");
     let (_key, data) = variant(

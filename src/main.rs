@@ -1607,6 +1607,28 @@ fn import_bib(
         fates.push(Fate::New { orig, key, data });
     }
 
+    // An entry the library already holds can still be missing from a
+    // tier this run was told to write. "Already present" is a fact about
+    // the library as a whole, and the destination is not — so `--global`
+    // on a paper you hold locally copies it up, and an import into a
+    // project brings a paper you hold globally into the project's bib/.
+    // Which is also what makes an import idempotent per tier rather than
+    // per library.
+    //
+    // Decided before the write pass, because after it every copy is
+    // present and the report could no longer tell what it had done.
+    let copies: Vec<(String, bool, bool)> = fates
+        .iter()
+        .filter_map(|f| match f {
+            Fate::Present { key, .. } => {
+                let g = to_global && !lib.in_personal(key);
+                let l = to_local && !lib.in_manuscript(key);
+                (g || l).then(|| (key.clone(), g, l))
+            }
+            _ => None,
+        })
+        .collect();
+
     // ── the write pass, and the only one of the three that writes ──
     if !dry_run {
         for f in &fates {
@@ -1619,6 +1641,17 @@ fn import_bib(
             }
             if to_global {
                 lib.personal.save_entry(data)?;
+            }
+        }
+        // the copies are of the library's own record, not of the file's:
+        // the entry it holds is the canonical one, and the file's may be
+        // the stale half of a preprint/published pair
+        for (key, g, l) in &copies {
+            if *g {
+                lib.add_to_personal(key)?;
+            }
+            if *l {
+                lib.add_to_manuscript(key)?;
             }
         }
     }
@@ -1657,10 +1690,21 @@ fn import_bib(
             }
             Fate::Present { orig, key, aliased } => {
                 let short = short_of(key);
-                let note = if *aliased {
-                    "already present under a different key — kept existing"
-                } else {
-                    "already present — kept existing"
+                let copied = copies.iter().find(|(k, ..)| k == key);
+                let where_to = |g: bool, l: bool| match (g, l) {
+                    (true, true) => "both tiers",
+                    (true, false) => "the global library",
+                    _ => "the local library",
+                };
+                let note = match (copied, aliased) {
+                    (Some((_, g, l)), _) if dry_run => {
+                        &format!("already present — would copy into {}", where_to(*g, *l))
+                    }
+                    (Some((_, g, l)), _) => {
+                        &format!("already present — copied into {}", where_to(*g, *l))
+                    }
+                    (None, true) => "already present under a different key — kept existing",
+                    (None, false) => "already present — kept existing",
                 };
                 if *orig != short {
                     println!("  {orig} → {short}  ({note})");
@@ -1683,10 +1727,19 @@ fn import_bib(
             }
         }
     }
+    // copies are counted apart from imports: nothing new entered the
+    // library, but a tier that was missing a paper now has it, and a
+    // summary saying "0 imported" over a run that wrote files would be
+    // the one line of the report that lies
+    let copied = match (copies.len(), dry_run) {
+        (0, _) => String::new(),
+        (n, true) => format!(", {n} would be copied between tiers"),
+        (n, false) => format!(", {n} copied between tiers"),
+    };
     if dry_run {
-        println!("\n{added} would be imported → {dest}, {skipped} skipped.");
+        println!("\n{added} would be imported → {dest}, {skipped} skipped{copied}.");
     } else {
-        println!("\n{added} imported → {dest}, {skipped} skipped.");
+        println!("\n{added} imported → {dest}, {skipped} skipped{copied}.");
     }
     if cited.is_some() {
         println!(

@@ -28,8 +28,14 @@ def run(t):
     ms_bib = os.path.join(os.path.dirname(t.state_dir), "home", "ms", "bib")
     require(_bibs(t.bib_dir) and not _bibs(ms_bib), "the local db should start empty", t)
     before = _bibs(t.bib_dir)
-    # the session opens on the project alone, which here is empty: the
-    # papers this scenario shares are in the global tier, so show it
+    # the session opens on the project alone, which here is empty — and
+    # an empty table has to say which of the two things it means, since
+    # a full global library is one keystroke away
+    t.wait_for(
+        lambda: "this project's db is empty" in t.text(),
+        what="the empty-project hint naming t",
+    )
+    # the papers this scenario shares are in the global tier, so show it
     t.send("t")
     t.wait_for(lambda: "global tier shown" in t.text(), what="the global tier")
 

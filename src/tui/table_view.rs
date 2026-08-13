@@ -147,7 +147,17 @@ impl App {
             }
             Some(Scope::Ads { .. }) => None,
             _ => {
-                if self.order.is_empty() {
+                // "the library is empty" is the wrong thing to say to
+                // someone standing in a fresh project with a full global
+                // library one keystroke away — which is now where a
+                // session starts, so the empty table has to distinguish
+                // an empty database from a hidden tier
+                if self.order.is_empty() && !self.lib.global_active() {
+                    Some(
+                        "this project's db is empty — t shows your global library, S searches ADS"
+                            .to_string(),
+                    )
+                } else if self.order.is_empty() {
                     Some("library is empty — S searches ADS, or: astrobib add <bibcode>".to_string())
                 } else if self.visible.is_empty() {
                     Some("no matches — Esc clears the filter".to_string())
