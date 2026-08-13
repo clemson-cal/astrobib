@@ -497,7 +497,11 @@ impl App {
                     // stop being a mystery
                     self.run_action(Action::CloseScope)
                 }
-                KeyCode::Char('i') => self.import_highlighted(),
+                KeyCode::Char('i') => self.import_highlighted(false),
+                // I — the same import, plus the share the paper would
+                // otherwise need a second gesture (s) for
+                KeyCode::Char('I') => self.import_highlighted(true),
+                KeyCode::Char('s') => self.run_action(Action::Share),
                 KeyCode::Char('L') => self.run_action(Action::Log),
                 KeyCode::Char('y') => self.run_action(Action::Copy),
                 KeyCode::Char('Y') => self.do_copy(CopyItem::FullKey),

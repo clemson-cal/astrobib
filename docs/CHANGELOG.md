@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+Imports are local-first: a paper you fetch inside a project lands in the project, the way an install inside a virtualenv lands in the virtualenv.
+
+### Changed
+- **An import writes the local library alone whenever there is one.** It used to write both tiers, so every paper looked at from inside any project accrued in the global library whether or not it had anything to do with the rest of your work — the state a system-wide `pip install` leaves you in, and for the same reason: the wide default was the convenient one at the moment of the install and the expensive one everywhere after. The global tier is now opted into: `astrobib import <file.bib> --global` and `astrobib add <bibcode> --global` write both tiers, `--global-only` writes the global one alone, and `--local-only` states the new default (still an error where there is no local library). With no local library nothing changes — the global library is the only tier there is, and every write goes to it.
+- **`i` imports into the local db; `I` imports and shares in one press.** Both say where the paper landed, because with two tiers the destination is half of what the gesture did. The card's `→ import` affordance is the plain `i`.
+- **`s` — share ±**, the gesture the local-first default needs: it copies the selection up into the global library, or, when every target is already there, drops the global copies and keeps the local ones. It reads exactly as `m` does from the other direction, and it refuses the one removal that would destroy bibdata — a paper the local db does not hold is not un-shared, it is deleted, and `⌫` is the key that means that.
+- `astrobib tidy` canonicalizes the local database it was pointed at and no longer copies its entries into the global library. Canonicalizing a coauthor's hand-dropped `.bib` is a fact about that repo; whether the paper belongs in your own collection is a separate decision, and now a separate gesture.
+
 ## 0.20.0 — 2026-08-13
 
 The manuscript page stops being the one table with its own idea of what a column is.

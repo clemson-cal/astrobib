@@ -48,6 +48,10 @@ enum Command {
         /// Overwrite the entry if this paper is already in the library
         #[arg(short, long)]
         force: bool,
+        /// Also write the paper into the global (tier-1) library. The
+        /// default is the local (tier-2) one whenever there is one.
+        #[arg(long)]
+        global: bool,
     },
     /// Print the BibTeX entry for a cite key (full or shortened)
     Show {
@@ -93,11 +97,15 @@ enum Command {
     Import {
         /// The .bib file to read; it is never modified
         file: std::path::PathBuf,
+        /// Write to the global (tier-1) library as well as the local one
+        #[arg(long, conflicts_with_all = ["global_only", "local_only"])]
+        global: bool,
         /// Write only to the global (tier-1) library
         #[arg(long)]
         global_only: bool,
-        /// Write only to the local (tier-2) library
-        #[arg(long)]
+        /// Write only to the local (tier-2) library — the default
+        /// whenever a local library exists, and an error when none does
+        #[arg(long, conflicts_with = "global_only")]
         local_only: bool,
         /// Import only the entries this manuscript cites, skipping the
         /// rest untouched (needs a manuscript with .tex/.md sources)
@@ -233,25 +241,33 @@ fn main() -> anyhow::Result<()> {
             print_entries(&lib, |e| query::matches(&groups, e, &ctx), limit);
             Ok(())
         }
-        Some(Command::Add { bibcode, force }) => {
+        Some(Command::Add { bibcode, force, global }) => {
             let bc = astrobib::ads::bibcode_from_url(&bibcode).unwrap_or(bibcode);
             let Some(data) = astrobib::ads::fetch_bibtex(&bc)? else {
                 eprintln!("Could not fetch BibTeX for {bc}");
                 std::process::exit(1);
             };
             let key = astrobib::keys::generate_key(&data);
-            if lib.personal.has(&key) && !force {
-                eprintln!("{key} already in library. Use --force to overwrite.");
+            let (to_global, to_local) = write_tiers(&lib, global);
+            // "already there" is a question about the tiers this run
+            // would write, not about the library as a whole: with a
+            // local db open, `add --global` on a paper you already hold
+            // locally is exactly the gesture that shares it
+            let held = (!to_global || lib.in_personal(&key))
+                && (!to_local || lib.in_manuscript(&key));
+            if held && !force {
+                eprintln!("{key} already in the {}. Use --force to overwrite.", tier_label(to_global, to_local));
                 std::process::exit(1);
             }
-            let key = lib.save_entry(&data)?;
+            let key = lib.save_entry_to(&data, global)?;
             let e = lib.get(&key).unwrap();
             let display = if e.short_key.is_empty() { &key } else { &e.short_key };
-            println!("Added {display}  ({key})");
+            println!("Added {display}  ({key}) → {}", tier_label(to_global, to_local));
             Ok(())
         }
         Some(Command::Import {
             file,
+            global,
             global_only,
             local_only,
             cited_only,
@@ -261,7 +277,7 @@ fn main() -> anyhow::Result<()> {
             &mut lib,
             &file,
             local_root.as_deref(),
-            ImportOpts { global_only, local_only, cited_only, rename_citekeys, dry_run },
+            ImportOpts { global, global_only, local_only, cited_only, rename_citekeys, dry_run },
         ),
         Some(Command::Tidy { dry_run }) => {
             match local_root.clone() {
@@ -1304,10 +1320,29 @@ fn run_refs(
     Ok(())
 }
 
+/// Which tiers a write lands in, local-first: the local library when
+/// there is one, and the global library only when it is asked for — or
+/// when it is all there is. The rule every write path shares, so `add`
+/// and `import` cannot disagree about where an unflagged run goes.
+fn write_tiers(lib: &MergedLibrary, share: bool) -> (bool, bool) {
+    let local = lib.manuscript.is_some();
+    (share || !local, local)
+}
+
+/// What to call a (global, local) destination in a report.
+fn tier_label(to_global: bool, to_local: bool) -> &'static str {
+    match (to_global, to_local) {
+        (true, true) => "global + local libraries",
+        (true, false) => "global library",
+        _ => "local library",
+    }
+}
+
 /// The flags one import run was given. They are read in four different
 /// places — the preflight, the destination label, the write pass and the
 /// report — which is more than a signature should carry positionally.
 struct ImportOpts {
+    global: bool,
     global_only: bool,
     local_only: bool,
     cited_only: bool,
@@ -1355,7 +1390,7 @@ fn import_bib(
     local_root: Option<&std::path::Path>,
     opts: ImportOpts,
 ) -> anyhow::Result<()> {
-    let ImportOpts { global_only, local_only, cited_only, rename_citekeys, dry_run } = opts;
+    let ImportOpts { global, global_only, local_only, cited_only, rename_citekeys, dry_run } = opts;
     // A tier flag naming a tier that is not there is a typo, and it is
     // one before any entry is read: the write pass would otherwise print
     // a destination it cannot honour and then fail on the first entry.
@@ -1428,20 +1463,21 @@ fn import_bib(
     };
     // Which tiers the write pass would touch — and so, exactly, which
     // key sets the short keys have to be computed against. Derived once
-    // rather than re-read from the flags at each use: `--no-global` in a
-    // manuscript writes locally with no flag saying so.
+    // rather than re-read from the flags at each use.
+    //
+    // `--global` is not gated by the `--no-global` display switch: one
+    // says which tier this import means, the other says which tier is on
+    // screen, and the flag naming a tier outright is the more specific
+    // statement of the two.
     let (to_global, to_local) = if global_only {
         (true, false)
-    } else if local_only || !lib.global_active() {
+    } else if local_only {
+        // the preflight above established there is a local tier
         (false, true)
     } else {
-        (true, lib.manuscript.is_some())
+        write_tiers(lib, global)
     };
-    let dest = match (to_global, to_local) {
-        (true, true) => "global + local libraries",
-        (true, false) => "global library",
-        _ => "local library",
-    };
+    let dest = tier_label(to_global, to_local);
     let mut head = if dry_run {
         format!("Dry run — nothing will be written.\nWould import into {dest}")
     } else {
@@ -1538,13 +1574,14 @@ fn import_bib(
     if !dry_run {
         for f in &fates {
             let Fate::New { data, .. } = f else { continue };
-            if global_only {
-                lib.personal.save_entry(data)?;
-            } else if local_only {
-                // the preflight established there is a local tier
+            // the tiers decided above, not the flags that decided them:
+            // `to_local` is true only where there is a local tier to
+            // write, which is what makes the unwrap sound
+            if to_local {
                 lib.manuscript.as_mut().unwrap().save_entry(data)?;
-            } else {
-                lib.save_entry(data)?;
+            }
+            if to_global {
+                lib.personal.save_entry(data)?;
             }
         }
     }

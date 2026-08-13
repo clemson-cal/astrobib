@@ -45,7 +45,10 @@ pub(super) fn card_hint(btn: CardBtn) -> &'static str {
         CardBtn::Clear => "✕ remove the cached PDF  ·  X",
         CardBtn::Cancel => "✕ stop watching for the download",
         CardBtn::MsToggle => "◆ add to / remove from the manuscript db  ·  m",
-        CardBtn::Import => "→ import into the library  ·  i",
+        // which library that is depends on where the session stands, so
+        // the hint names the gesture and lets the note that follows name
+        // the tier: i is local-first, I imports and shares in one press
+        CardBtn::Import => "→ import  ·  i    (I imports and shares to the global library)",
         CardBtn::BibView => "@ show the .bib entry verbatim  ·  v",
         CardBtn::RefreshCites => "⟳ refresh the citation count from ADS",
         CardBtn::RemoveFromLib => "✕ remove from the library  ·  ⌫",

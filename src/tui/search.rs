@@ -16,6 +16,10 @@ pub(super) enum AdsMsg {
     Imported {
         id: u64,
         bibcode: String,
+        /// whether this import was asked to write the global tier too
+        /// (`I`), decided when the fetch was launched rather than when
+        /// it lands — the tiers on screen may have been toggled since
+        share: bool,
         result: Result<crate::bib::Data, String>,
     },
 }
@@ -317,7 +321,7 @@ impl App {
                         }
                     }
                 }
-                AdsMsg::Imported { id, bibcode, result } => {
+                AdsMsg::Imported { id, bibcode, share, result } => {
                     // discard a cancelled import: nothing was written —
                     // save_entry only runs here, on the applied path
                     if let Some(t) = self.finish_task(id).filter(|t| t.cancelled) {
@@ -328,14 +332,17 @@ impl App {
                         continue;
                     }
                     match result {
-                        Ok(data) => match self.lib.save_entry(&data) {
+                        Ok(data) => match self.lib.save_entry_to(&data, share) {
                             Ok(key) => {
                                 if self.lib.in_manuscript(&key) {
                                     // entering via a manuscript: priority 1.0
                                     self.metrics.set_priority(&key, 1.0);
                                 }
                                 self.rebuild_order();
-                                self.note(MsgCat::Ok, format!("Added {key}"));
+                                // which database just gained the paper is
+                                // the whole point of there being two keys
+                                // for this, so the note says it
+                                self.note(MsgCat::Ok, format!("Added {key} → {}", self.tier_label(share)));
                             }
                             Err(e) => self.note(MsgCat::Err, format!("import failed: {e}")),
                         },

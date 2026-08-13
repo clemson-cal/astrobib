@@ -166,7 +166,7 @@ const INVENTORY: &[(char, Zone, Risk, &str)] = &[
     ('●', Zone::Hit, Risk::Ambiguous, "manuscript-membership column, \"● in library\""),
     ('○', Zone::Hit, Risk::Ambiguous, "cite-state marker: in library, not cited"),
     ('↓', Zone::Hit, Risk::Ambiguous, "PDF column header, PDF-fetch button labels"),
-    ('↑', Zone::Hit, Risk::Ambiguous, "sort/limit indicators"),
+    ('↑', Zone::Hit, Risk::Ambiguous, "sort/limit indicators, the \"I import + share ↑\" key row"),
     ('▲', Zone::Hit, Risk::Ambiguous, "ascending sort indicator"),
     ('▼', Zone::Hit, Risk::Ambiguous, "descending sort indicator"),
     ('▸', Zone::Hit, Risk::Narrow, "cursor row marker in the ADS-returns menu"),
@@ -203,6 +203,7 @@ const INVENTORY: &[(char, Zone, Risk, &str)] = &[
     // -- flowing text -----------------------------------------------------
     ('⤷', Zone::Flow, Risk::Narrow, "hover hint for the PDF picker"),
     ('⤓', Zone::Flow, Risk::Narrow, "import task label"),
+    ('✦', Zone::Flow, Risk::Narrow, "\"✦ Shared n paper(s) to the global library\" status message"),
     // -- shipping offenders (see ACCEPTED_RISK) ---------------------------
     ('■', Zone::Hit, Risk::Ambiguous, "footer badge, on state"),
     ('□', Zone::Hit, Risk::Ambiguous, "footer badge, off state"),

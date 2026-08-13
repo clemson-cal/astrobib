@@ -457,21 +457,27 @@ fn import_cited_only_leaves_out_what_the_manuscript_never_cites() {
     assert!(r.stdout.contains("3 cites scanned"), "{}", r.report());
     assert!(r.stdout.contains("3 imported"), "{}", r.report());
     assert!(r.stdout.contains("1 entry left out"), "{}", r.report());
-    // both tiers, since a manuscript is open and no tier flag was given
+    // the local tier alone, since a local library is open and no tier
+    // flag asked for the global one
+    assert!(r.stdout.contains("3 imported → local library"), "{}", r.report());
     assert!(ms.join(format!("bib/{full}.bib")).exists(), "{}", r.report());
     assert!(ms.join(format!("bib/{by_bibcode}.bib")).exists(), "{}", r.report());
-    assert!(sb.bib_dir().join(format!("{prefixed}.bib")).exists(), "{}", r.report());
+    assert!(ms.join(format!("bib/{prefixed}.bib")).exists(), "{}", r.report());
+    assert!(!sb.bib_dir().join(format!("{prefixed}.bib")).exists(), "{}", r.report());
     // the uncited entry is untouched in either tier
     assert!(!ms.join(format!("bib/{never}.bib")).exists(), "{}", r.report());
     assert!(!sb.bib_dir().join(format!("{never}.bib")).exists(), "{}", r.report());
 
-    // without the flag the same file brings the whole collection in
-    let r = sb.run_in(&ms, &["import", "from-coauthor.bib"]);
+    // without the flag the same file brings the whole collection in —
+    // and --global sends this run to both tiers, the entries already
+    // held locally counting as present
+    let r = sb.run_in(&ms, &["import", "from-coauthor.bib", "--global"]);
     assert!(r.ok(), "{}", r.report());
-    assert!(r.stdout.contains("1 imported"), "{}", r.report());
+    assert!(r.stdout.contains("1 imported → global + local libraries"), "{}", r.report());
     assert!(r.stdout.contains("3 skipped"), "{}", r.report());
     assert!(!r.stdout.contains("left out"), "{}", r.report());
     assert!(ms.join(format!("bib/{never}.bib")).exists(), "{}", r.report());
+    assert!(sb.bib_dir().join(format!("{never}.bib")).exists(), "{}", r.report());
 }
 
 #[test]
@@ -605,7 +611,8 @@ fn import_dry_run_reports_both_halves_and_writes_nothing() {
     let tex_before = read(ms.join("main.tex"));
     let md_before = read(ms.join("notes.md"));
 
-    let r = sb.run_in(&ms, &["import", "from-coauthor.bib", "--rename-citekeys", "--dry-run"]);
+    let r =
+        sb.run_in(&ms, &["import", "from-coauthor.bib", "--global", "--rename-citekeys", "--dry-run"]);
     assert!(r.ok(), "{}", r.report());
     // both halves: which .bib file, to which tier, and which cites
     assert!(r.stdout.contains("Would import into global + local libraries"), "{}", r.report());
@@ -628,7 +635,7 @@ fn import_dry_run_reports_both_halves_and_writes_nothing() {
     assert_eq!(read(ms.join("notes.md")), md_before, "{}", r.report());
 
     // the real run does what the preview said it would
-    let r = sb.run_in(&ms, &["import", "from-coauthor.bib", "--rename-citekeys"]);
+    let r = sb.run_in(&ms, &["import", "from-coauthor.bib", "--global", "--rename-citekeys"]);
     assert!(r.ok(), "{}", r.report());
     assert!(r.stdout.contains("1 imported"), "{}", r.report());
     assert!(r.stdout.contains(&format!("{full} → {short}")), "{}", r.report());
@@ -943,8 +950,11 @@ fn tidy_canonicalizes_a_foreign_file_without_ads_when_the_key_is_reproducible() 
     assert!(ms.join(format!("bib/{key}.bib")).exists(), "{}", r.report());
     assert!(!ms.join("bib/from-coauthor.bib").exists(), "{}", r.report());
     assert!(r.stdout.contains("1 entry canonicalized"), "{}", r.report());
-    // the entry is bibdata, so it lands in the personal library too
-    assert!(sb.bib_dir().join(format!("{key}.bib")).exists());
+    // and stays where it was dropped: tidy canonicalizes the local db it
+    // was pointed at, so a coauthor's reference does not silently enter
+    // the personal library (astrobib add --global, or s in the TUI, is
+    // how a paper is promoted)
+    assert!(!sb.bib_dir().join(format!("{key}.bib")).exists(), "{}", r.report());
     let refs = read(ms.join("refs.bib"));
     assert!(refs.contains(&format!("@article{{{key},")), "{refs}");
 }

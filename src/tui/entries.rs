@@ -66,9 +66,23 @@ impl App {
         self.lib.get(self.order.get(i)?)
     }
 
-    /// i — import the highlighted ADS result into the library (and the
-    /// manuscript db when active), via the parity-verified save path.
-    pub(super) fn import_highlighted(&mut self) {
+    /// Where an import lands, in the words the notes use: local-first,
+    /// so the local db when there is one, and the global library only
+    /// when `share` asked for it or there is nothing else.
+    pub(super) fn tier_label(&self, share: bool) -> &'static str {
+        match (self.lib.manuscript.is_some(), share) {
+            (true, false) => "local db",
+            (true, true) => "local db + global library",
+            _ => "global library",
+        }
+    }
+
+    /// i (share = false) / I (share = true) — import the highlighted ADS
+    /// result. The plain gesture writes the local db when there is one,
+    /// the way a project install lands in the project; `I` writes the
+    /// global library alongside it, for a paper worth keeping past this
+    /// manuscript.
+    pub(super) fn import_highlighted(&mut self, share: bool) {
         let Some(Scope::Ads { articles, .. }) = self.scopes.get(self.active_scope) else {
             return;
         };
@@ -100,14 +114,14 @@ impl App {
         if self.select_mode {
             self.exit_select_mode();
         }
-        self.import_bibcodes(bibcodes);
+        self.import_bibcodes(bibcodes, share);
     }
 
     pub(super) fn import_bibcode(&mut self, bibcode: String) {
-        self.import_bibcodes(vec![bibcode]);
+        self.import_bibcodes(vec![bibcode], false);
     }
 
-    fn import_bibcodes(&mut self, bibcodes: Vec<String>) {
+    fn import_bibcodes(&mut self, bibcodes: Vec<String>, share: bool) {
         if self.ads_rx.is_some() {
             self.note(MsgCat::Warn, "an ADS request is already running".to_string());
             return;
@@ -121,7 +135,10 @@ impl App {
             .collect();
         let (tx, rx) = std::sync::mpsc::channel();
         self.ads_rx = Some(rx);
-        self.note(MsgCat::Info, format!("Importing {} paper(s)…", items.len()));
+        self.note(
+            MsgCat::Info,
+            format!("Importing {} paper(s) → {}…", items.len(), self.tier_label(share)),
+        );
         std::thread::spawn(move || {
             for (id, bibcode) in items {
                 let result = match crate::ads::fetch_bibtex(&bibcode) {
@@ -129,9 +146,60 @@ impl App {
                     Ok(None) => Err("no BibTeX returned".to_string()),
                     Err(e) => Err(e.to_string()),
                 };
-                let _ = tx.send(AdsMsg::Imported { id, bibcode, result });
+                let _ = tx.send(AdsMsg::Imported { id, bibcode, share, result });
             }
         });
+    }
+
+    /// s — share ±: copy the targets up into the global library, or,
+    /// when every one of them is already there, drop the global copies
+    /// and keep the local ones. The same add-all-missing-else-remove-all
+    /// rule `m` uses from the other direction, so the two tier gestures
+    /// read alike.
+    ///
+    /// Un-sharing never destroys the last copy: a paper the local db
+    /// does not hold is not un-shared, it is deleted, and ⌫ is the key
+    /// that means that.
+    pub(super) fn toggle_share(&mut self) {
+        let keys = self.action_keys();
+        let missing: Vec<String> =
+            keys.iter().filter(|k| !self.lib.in_personal(k)).cloned().collect();
+        if !missing.is_empty() {
+            let mut n = 0;
+            for k in &missing {
+                if matches!(self.lib.add_to_personal(k), Ok(true)) {
+                    n += 1;
+                }
+            }
+            self.note(MsgCat::Ok, format!("✦ Shared {n} paper(s) to the global library"));
+        } else {
+            let mut n = 0;
+            let mut kept = 0;
+            for k in &keys {
+                match self.lib.remove_from_personal(k) {
+                    Ok(true) => n += 1,
+                    // the only way this fails is the sole-copy rule
+                    _ => kept += 1,
+                }
+            }
+            if n == 0 {
+                // every target was a sole copy, so the gesture did
+                // nothing — and the reason is the whole message rather
+                // than a parenthesis after a count of zero
+                self.note(
+                    MsgCat::Warn,
+                    "sole copy — the global library is the only one holding it (⌫ deletes)"
+                        .to_string(),
+                );
+            } else {
+                let note = if kept > 0 { format!("  ({kept} kept — sole copies)") } else { String::new() };
+                self.note(
+                    MsgCat::Ok,
+                    format!("Removed {n} paper(s) from the global library{note}"),
+                );
+            }
+        }
+        self.rebuild_order();
     }
 
     /// t — show/hide the global (tier-1) library. Hidden means: global

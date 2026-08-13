@@ -87,7 +87,8 @@ Who it's for: astrophysics researchers and grad students who frequently use LaTe
 *After this chapter you can give a paper repo its own self-contained bibliography without giving up your personal library.*
 
 - **Two tiers** — tier 1 is your global library (`~/.local/share/astrobib/library/`); tier 2 is any directory holding `bib/`, found by walk-up or named as `astrobib [LIBRARY_DIR]`.
-- **Reads merge, writes go to both** — the paper repo stands alone for co-authors while your collection accrues; `m` toggles a paper's local membership.
+- **Reads merge, writes are local-first** — inside a project, an import lands in the project's `bib/` and nowhere else, the way an install inside a virtualenv stays there; `m` toggles a paper's local membership.
+- **Sharing up** — `s` promotes the selection to the global library (and, pressed again, drops the global copy while keeping the local one); `I` imports and shares in one press, as does `--global` on `import` and `add`.
 - **The `t` toggle** — hide the global tier (or click the `global` badge) for purely local reads and writes; `--no-global` starts that way.
 - **Sole-copy rescue** — removing a local paper never destroys the only copy; it's rescued into the global library first.
 - **Running example** — `mkdir frb-magnetar && cd frb-magnetar`, create `bib/` by importing, and watch the Manuscript scope appear once `main.tex` exists.
@@ -115,7 +116,7 @@ Who it's for: astrophysics researchers and grad students who frequently use LaTe
 *After this chapter you can run a multi-author paper to submission and keep your library current after it.*
 
 - **Co-authors don't need astrobib** — they paste ADS BibTeX into `bib/any-name.bib`; `astrobib tidy` later canonicalizes (re-key via ADS, rename to `{Key}.bib`, dedupe), prints copy-pasteable cite-key replacements, and regenerates `refs.bib`.
-- **Adopting a legacy bibliography** — `astrobib import refs.bib` resolves foreign entries against ADS (arXiv ID → DOI → title+author+year), with `--global-only` / `--local-only` targeting. `--dry-run` first: it resolves everything and shows the whole map — files, tiers, and the cites `--rename-citekeys` would rewrite — before anything is written.
+- **Adopting a legacy bibliography** — `astrobib import refs.bib` resolves foreign entries against ADS (arXiv ID → DOI → title+author+year), with `--global` / `--global-only` / `--local-only` targeting. `--dry-run` first: it resolves everything and shows the whole map — files, tiers, and the cites `--rename-citekeys` would rewrite — before anything is written.
 - **Preprints grow up** — `astrobib update [--all]` refreshes published metadata in place, same key and filename forever, manuscript copies included.
 - **The CLI tour** — `list`, `search [--ads]`, `add`, `show`, `refs`, `tidy`, `update`, plus `--library` and `--no-global`; scripting and cron-able upkeep.
 - **Running example, closing loop** — co-author drops two raw entries, you `tidy`, `update` before resubmission, and the final repo compiles for anyone with just `git clone` and `latex`.

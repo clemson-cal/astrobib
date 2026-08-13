@@ -527,17 +527,30 @@ impl MergedLibrary {
         self.manuscript.as_ref().is_some_and(|m| m.has(key))
     }
 
-    /// Import: write to both tiers — or only the local tier when the
-    /// global tier is toggled off.
+    /// Import, local-first: the local tier when there is one, the global
+    /// library otherwise. A paper you fetch while standing in a project
+    /// belongs to that project, the way an install in a venv belongs to
+    /// the venv; the global library is the one you opt into.
     pub fn save_entry(&mut self, data: &crate::bib::Data) -> std::io::Result<String> {
-        if !self.global_active() {
-            return self.manuscript.as_mut().unwrap().save_entry(data);
+        self.save_entry_to(data, false)
+    }
+
+    /// The same write, with `share` adding the global tier explicitly —
+    /// `import --global`, and the TUI's `I`. An explicit share is not
+    /// gated by `global_on`: hiding a tier is a statement about what is
+    /// on screen, and this gesture names the tier it means.
+    pub fn save_entry_to(&mut self, data: &crate::bib::Data, share: bool) -> std::io::Result<String> {
+        let mut key = None;
+        if share || self.manuscript.is_none() {
+            key = Some(self.personal.save_entry(data)?);
         }
-        let key = self.personal.save_entry(data)?;
         if let Some(ms) = &mut self.manuscript {
-            ms.save_entry(data)?;
+            let k = ms.save_entry(data)?;
+            key.get_or_insert(k);
         }
-        Ok(key)
+        // one of the two branches always runs: the local tier is either
+        // there or `manuscript.is_none()` sent the write to the global one
+        Ok(key.expect("a save writes to at least one tier"))
     }
 
     pub fn in_personal(&self, key: &str) -> bool {
@@ -567,6 +580,35 @@ impl MergedLibrary {
             return Ok(false);
         }
         ms.write_entry(key, data)?;
+        Ok(true)
+    }
+
+    /// Copy an entry up into the global library — the mirror of
+    /// `add_to_manuscript`, and the second half of what makes a
+    /// local-first import safe to prefer: a paper that turns out to be
+    /// worth keeping across projects is promoted with one gesture.
+    /// Returns false if the entry is unknown or already shared.
+    pub fn add_to_personal(&mut self, key: &str) -> std::io::Result<bool> {
+        if self.personal.has(key) {
+            return Ok(false);
+        }
+        let Some(entry) = self.get(key) else {
+            return Ok(false);
+        };
+        let data = entry.data.clone();
+        self.personal.write_entry(key, data)?;
+        Ok(true)
+    }
+
+    /// Drop the global library's copy, keeping the local one. Returns
+    /// false when there is no local copy to keep: un-sharing must never
+    /// destroy the last copy of an entry, which is the same rule
+    /// `remove_from_manuscript` keeps from the other direction.
+    pub fn remove_from_personal(&mut self, key: &str) -> std::io::Result<bool> {
+        if !self.personal.has(key) || !self.in_manuscript(key) {
+            return Ok(false);
+        }
+        self.personal.remove_entry(key)?;
         Ok(true)
     }
 
@@ -860,6 +902,68 @@ mod tests {
         let local = lib.tags();
         assert_eq!(local.keys().map(String::as_str).collect::<Vec<_>>(), ["disks", "section-3"]);
         assert_eq!(local["disks"].len(), 1);
+        let _ = std::fs::remove_dir_all(&p_root);
+        let _ = std::fs::remove_dir_all(&m_root);
+    }
+
+    #[test]
+    fn a_save_is_local_first_and_sharing_is_the_way_up() {
+        let p_root = temp_root("share-personal");
+        let m_root = temp_root("share-manuscript");
+        let mut lib = MergedLibrary {
+            personal: Library::load(&p_root).unwrap(),
+            manuscript: Some(Library::load(&m_root).unwrap()),
+            global_on: true,
+        };
+        let paper = data(&[
+            ("adsurl", "https://ui.adsabs.harvard.edu/abs/2024ApJ...900...11A"),
+            ("eprint", "2404.11111"),
+            ("year", "2024"),
+            ("title", "A paper imported inside a project"),
+            ("author", "Ahmed, N."),
+            ("ENTRYTYPE", "article"),
+        ]);
+        // the plain save lands in the local tier alone
+        let key = lib.save_entry(&paper).unwrap();
+        assert!(lib.in_manuscript(&key));
+        assert!(!lib.in_personal(&key));
+        // s promotes it, and says so only the first time
+        assert!(lib.add_to_personal(&key).unwrap());
+        assert!(!lib.add_to_personal(&key).unwrap());
+        assert!(lib.in_personal(&key));
+        assert!(p_root.join("bib").join(format!("{key}.bib")).exists());
+        // pressing it again drops the global copy, keeping the local one
+        assert!(lib.remove_from_personal(&key).unwrap());
+        assert!(!lib.in_personal(&key));
+        assert!(lib.in_manuscript(&key));
+        // and never the last copy: a paper the local tier does not hold
+        // is not un-shared, it is deleted, which is a different gesture
+        let global_only = data(&[
+            ("adsurl", "https://ui.adsabs.harvard.edu/abs/2024ApJ...900...12B"),
+            ("eprint", "2404.12222"),
+            ("year", "2024"),
+            ("title", "A paper held only globally"),
+            ("author", "Bello, K."),
+            ("ENTRYTYPE", "article"),
+        ]);
+        let gk = lib.save_entry_to(&global_only, true).unwrap();
+        lib.manuscript.as_mut().unwrap().remove_entry(&gk).unwrap();
+        assert!(!lib.remove_from_personal(&gk).unwrap());
+        assert!(lib.in_personal(&gk));
+        // an explicit share writes the global tier even while it is
+        // hidden: `t` says what is on screen, not where a write goes
+        lib.global_on = false;
+        let hidden = data(&[
+            ("adsurl", "https://ui.adsabs.harvard.edu/abs/2024ApJ...900...13C"),
+            ("eprint", "2404.13333"),
+            ("year", "2024"),
+            ("title", "A paper shared while the global tier is hidden"),
+            ("author", "Costa, L."),
+            ("ENTRYTYPE", "article"),
+        ]);
+        let hk = lib.save_entry_to(&hidden, true).unwrap();
+        assert!(lib.in_personal(&hk));
+        assert!(lib.in_manuscript(&hk));
         let _ = std::fs::remove_dir_all(&p_root);
         let _ = std::fs::remove_dir_all(&m_root);
     }

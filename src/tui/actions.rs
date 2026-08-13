@@ -7,6 +7,7 @@ use super::*;
 pub(super) enum Action {
     Select,
     Manuscript,
+    Share,
     Tag,
     Download,
     OpenPdf,
@@ -45,6 +46,9 @@ pub(super) const HELP_ENTRIES: &[(&str, &str, Option<Action>, Press)] = &[
     ("j k", "move cursor", None, k('j')),
     ("g G", "first / last row", None, k('g')),
     ("m", "manuscript ± (selection)", Some(Action::Manuscript), k('m')),
+    ("i", "import paper", None, k('i')),
+    ("I", "import + share ↑", None, k('I')),
+    ("s", "share to global ±", Some(Action::Share), k('s')),
     ("T", "tag ± (selection)", Some(Action::Tag), k('T')),
     ("p", "download PDF", Some(Action::Download), k('p')),
     ("B", "browser download", Some(Action::BrowserDl), k('B')),
@@ -100,6 +104,9 @@ impl App {
             Action::Manuscript => {
                 self.lib.manuscript.is_some() && self.lib.global_on && !keys.is_empty()
             }
+            // sharing needs two tiers to move a paper between: with only
+            // the global library there is nowhere to promote from
+            Action::Share => self.lib.manuscript.is_some() && !keys.is_empty(),
             // unlike the manuscript ±, tagging needs no local db: with
             // none, the tag is written to the global library
             Action::Tag => !keys.is_empty(),
@@ -153,6 +160,11 @@ impl App {
                 import_first("the manuscript db holds library entries")
             }
             Action::Manuscript => "no paper under the cursor".to_string(),
+            Action::Share if self.lib.manuscript.is_none() => {
+                "no local db here — every paper is already in the global library".to_string()
+            }
+            Action::Share if unimported => import_first("sharing copies a library entry up"),
+            Action::Share => "no paper to share".to_string(),
             Action::Download | Action::BrowserDl if self.dl_rx.is_some() => {
                 "a download is already running".to_string()
             }
@@ -211,6 +223,7 @@ impl App {
                 }
             }
             Action::Manuscript => self.toggle_manuscript(),
+            Action::Share => self.toggle_share(),
             Action::Tag => self.open_tag_prompt(),
             Action::Download => self.download_pdfs(),
             Action::OpenPdf => self.open_pdfs(),
