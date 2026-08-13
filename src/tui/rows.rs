@@ -422,13 +422,41 @@ impl App {
     /// Re-order the manuscript rows by the manuscript's own sort. With
     /// none set they keep scan order — the order the cites appear in the
     /// source, which is meaningful and is the default.
-    fn sort_ms_rows(&mut self) {
+    pub(super) fn sort_ms_rows(&mut self) {
         let Some((col, asc)) = self.ms_sort else {
             return;
+        };
+        // the swatch's value lives in the metrics store, not on the row:
+        // snapshot it for the rows on show before they are taken mutably
+        let mvals: std::collections::HashMap<String, f64> = if col == Col::Metric {
+            match self.scopes.get(1) {
+                Some(Scope::Manuscript { rows }) => {
+                    let now_ts = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_secs() as i64)
+                        .unwrap_or(0);
+                    rows.iter()
+                        .filter_map(|r| r.key.clone())
+                        .filter_map(|k| {
+                            let m = self.metrics.get(&k)?;
+                            let v = match self.metric_col {
+                                MetricCol::Priority => m.effective_priority(now_ts)?,
+                                MetricCol::Citations => m.citations? as f64,
+                            };
+                            Some((k, v))
+                        })
+                        .collect()
+                }
+                _ => Default::default(),
+            }
+        } else {
+            Default::default()
         };
         let Some(Scope::Manuscript { rows }) = self.scopes.get_mut(1) else {
             return;
         };
+        // a paper column reads from the copies the row carries, so a
+        // cite resolving to nothing sorts as the empty string it shows
         rows.sort_by(|a, b| {
             let ord = match col {
                 Col::Cited => a.cited.to_lowercase().cmp(&b.cited.to_lowercase()),
@@ -436,8 +464,25 @@ impl App {
                 // by it: attention-first, so missing cites come to the top
                 Col::CiteIcon | Col::State => ms_state_rank(a).cmp(&ms_state_rank(b)),
                 Col::Title => a.title.to_lowercase().cmp(&b.title.to_lowercase()),
-                // no other column is drawn in this scope
-                _ => std::cmp::Ordering::Equal,
+                Col::Year => a.year.cmp(&b.year),
+                Col::Author => crate::library::first_author_last_of(&a.author)
+                    .to_lowercase()
+                    .cmp(&crate::library::first_author_last_of(&b.author).to_lowercase()),
+                Col::Key => a.short_key.cmp(&b.short_key),
+                Col::Pdf => a
+                    .key
+                    .as_deref()
+                    .is_some_and(has_cached_pdf)
+                    .cmp(&b.key.as_deref().is_some_and(has_cached_pdf)),
+                Col::Metric => {
+                    let v = |r: &MsRow| {
+                        r.key.as_deref().and_then(|k| mvals.get(k)).copied().unwrap_or(-1.0)
+                    };
+                    v(a).partial_cmp(&v(b)).unwrap_or(std::cmp::Ordering::Equal)
+                }
+                // the gutter, ● (never drawn here) and Entered (an ADS
+                // record's own clock) name nothing a cite row has
+                Col::Sel | Col::InLib | Col::Entered => std::cmp::Ordering::Equal,
             };
             let ord = if asc { ord } else { ord.reverse() };
             // ties keep a stable, meaningful order rather than an arbitrary one

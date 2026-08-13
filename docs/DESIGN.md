@@ -131,6 +131,8 @@ Anything the user curates that describes *the user* — saved queries, per-paper
 
 Column configuration stores only what the user has actually changed. An empty configuration is not a special case: with nothing stored every column keeps its responsive default — the author column scales with the terminal, the cite-key column drops first when space is tight, the metric swatch stays off — so opening the configuration panel and closing it again changes nothing.
 
+Every scope offers the same columns, less the ones its rows cannot answer. A manuscript row is a cite and a query row is an ADS record, but both name a paper, so the paper columns — the metric swatch, `↓`, Year, Author, Title, Key — are on offer in all three scopes and are drawn, sorted and configured the same way in each. What differs is only what a scope alone can say: `Entered` is a fact about an ADS record, `Cited` and `State` are facts about a citation, and the library's `●` says a thing the manuscript's own cite glyph already says in more detail. The defaults still differ per scope, because the width a scope's own columns take is the width its optional ones have to fit around.
+
 ## Adding to the bib database format
 
 The only acceptable additions to the bib database layout are:

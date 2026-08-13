@@ -329,25 +329,6 @@ impl App {
     /// ◉; a hovered row takes no fill — its text lifts one level instead.
     pub(super) fn library_model(&self, width: u16) -> table::TableModel {
         use ratatui::widgets::Cell;
-        let palette = |lit: bool| {
-            if lit {
-                (
-                    Style::default().fg(Color::Green),
-                    Style::default().fg(Color::Magenta),
-                    Style::default().fg(Color::Green),
-                    Style::default().fg(text_strong()),
-                    Style::default().fg(Color::Cyan),
-                )
-            } else {
-                (
-                    Style::default().fg(Color::Green),
-                    Style::default().fg(Color::Magenta),
-                    Style::default().fg(Color::Green).add_modifier(Modifier::DIM),
-                    Style::default().fg(table_text()),
-                    Style::default().fg(Color::Cyan).add_modifier(Modifier::DIM),
-                )
-            }
-        };
         let columns = self.columns_for(ScopeKind::Library, width);
         let author_w = col_width(&columns, width, Col::Author);
         let (mvals, mknown) = self.metric_values();
@@ -374,7 +355,7 @@ impl App {
                 };
                 let at_cursor = cursor == Some(pos);
                 let lit = hov_row == Some(pos);
-                let (c_pdf, c_ms, c_year, c_author, c_key) = palette(lit);
+                let pal = row_palette(lit);
                 let (circle, circle_style) = self.gutter(Some(e.key()), at_cursor);
                 let cells: Vec<Cell> = columns
                     .iter()
@@ -382,7 +363,7 @@ impl App {
                         Col::Sel => Cell::from(Span::styled(circle, circle_style)),
                         Col::Pdf => Cell::from(Span::styled(
                             if has_cached_pdf(e.key()) { "↓" } else { "" },
-                            c_pdf,
+                            pal.pdf,
                         )),
                         Col::InLib => Cell::from(Span::styled(
                             if show_membership && self.lib.in_manuscript(e.key()) {
@@ -390,15 +371,15 @@ impl App {
                             } else {
                                 ""
                             },
-                            c_ms,
+                            pal.ms,
                         )),
                         Col::Metric => {
                             metric_cell(self.metric_col, mvals.get(pos).copied().flatten(), &mknown)
                         }
-                        Col::Year => Cell::from(Span::styled(e.year(), c_year)),
+                        Col::Year => Cell::from(Span::styled(e.year(), pal.year)),
                         Col::Author => Cell::from(Span::styled(
                             fit_authors(e.author(), author_w as usize),
-                            c_author,
+                            pal.author,
                         )),
                         Col::Title => Cell::from(Span::styled(
                             e.title().trim_matches(['{', '}']).to_string(),
@@ -408,7 +389,7 @@ impl App {
                                 Style::default().fg(table_text()).add_modifier(Modifier::ITALIC)
                             },
                         )),
-                        Col::Key => Cell::from(Span::styled(e.short_key.clone(), c_key)),
+                        Col::Key => Cell::from(Span::styled(e.short_key.clone(), pal.key)),
                         _ => Cell::from(""),
                     })
                     .collect();

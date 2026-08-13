@@ -24,6 +24,41 @@ pub(super) fn column_layout(width: u16) -> (u16, bool) {
     (author, false)
 }
 
+/// The paper columns' resting colours. Shared rather than written out
+/// per scope so the library and the manuscript — which now draw the
+/// same columns — cannot drift apart in how they draw them. `lit` is
+/// the hovered row, which brightens the two columns that dim off it.
+pub(super) struct RowPalette {
+    pub pdf: Style,
+    /// the ● membership column — library only, but part of the set
+    pub ms: Style,
+    pub year: Style,
+    pub author: Style,
+    pub key: Style,
+}
+
+pub(super) fn row_palette(lit: bool) -> RowPalette {
+    RowPalette {
+        pdf: Style::default().fg(Color::Green),
+        ms: Style::default().fg(Color::Magenta),
+        year: if lit {
+            Style::default().fg(Color::Green)
+        } else {
+            Style::default().fg(Color::Green).add_modifier(Modifier::DIM)
+        },
+        author: if lit {
+            Style::default().fg(text_strong())
+        } else {
+            Style::default().fg(table_text())
+        },
+        key: if lit {
+            Style::default().fg(Color::Cyan)
+        } else {
+            Style::default().fg(Color::Cyan).add_modifier(Modifier::DIM)
+        },
+    }
+}
+
 /// "Quist, J. and Blomqvist, A." → "Quist, Blomqvist" (surnames, truncated).
 pub(super) fn format_authors(author: &str) -> String {
     let surnames: Vec<&str> = author
@@ -74,7 +109,7 @@ impl App {
 
     fn table_model(&self, width: u16) -> table::TableModel {
         match self.scopes.get(self.active_scope) {
-            Some(Scope::Manuscript { rows }) => self.manuscript_model(rows),
+            Some(Scope::Manuscript { rows }) => self.manuscript_model(rows, width),
             Some(Scope::Ads { articles, .. }) => self.ads_model(articles, width),
             _ => self.library_model(width),
         }

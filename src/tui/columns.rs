@@ -91,6 +91,14 @@ impl PanelLine {
 /// the pub card keeps on either side of its rule.
 pub(super) const COLUMNS_PANEL_W: u16 = 28;
 
+/// The manuscript scope's spine: the columns it always draws before the
+/// title — gutter, cite glyph, ↓, Cited, State.
+const MS_SPINE_W: u16 = 2 + 2 + 1 + 26 + 10;
+/// The title width the manuscript's optional columns have to leave
+/// standing before they default themselves on — the same comfort width
+/// the library protects when it decides whether to keep Key.
+const MS_TITLE_COMFORT: u16 = 32;
+
 /// A column's width as actually laid out, 0 if it is not drawn.
 ///
 /// This has to be the *solved* width, not the declared one: the flex
@@ -114,15 +122,43 @@ impl App {
     /// overrides on top.
     fn all_columns(&self, kind: ScopeKind, width: u16) -> Vec<table::ColumnSpec> {
         match kind {
-            ScopeKind::Manuscript => vec![
-                table::fixed(Col::Sel, "", 2, false),
-                // the glyph column has no label, so nothing to click; the
-                // State column beside it sorts by the same fact
-                table::fixed(Col::CiteIcon, "", 2, false),
-                table::fixed(Col::Cited, "Cited", 26, true),
-                table::fixed(Col::State, "State", 10, true),
-                table::flex(Col::Title, "Title", true),
-            ],
+            ScopeKind::Manuscript => {
+                // The manuscript's rows are cites, but every cite that
+                // resolves names a paper — so the paper columns the
+                // library offers are offered here too, in the same
+                // order, with the cite's own columns interleaved where
+                // they belong. Only ● is left out: what it would say
+                // here (in the manuscript) is what the cite glyph
+                // beside it already says, in more detail.
+                let (author_w, _) = column_layout(width);
+                // Cited and State already spend what the library gives
+                // Author and Key, so the two widest paper columns have
+                // to earn their place: Year appears once the title can
+                // keep its comfortable width beside it, Author only once
+                // it can do so beside both. (The gap counts are the
+                // columns each case draws, minus one.)
+                let year_fits = MS_SPINE_W + 6 + MS_TITLE_COMFORT + 6 <= width;
+                let author_fits =
+                    MS_SPINE_W + 6 + author_w + MS_TITLE_COMFORT + 7 <= width;
+                vec![
+                    table::fixed(Col::Sel, "", 2, false),
+                    metric_column(self.metric_col),
+                    // the glyph column has no label, so nothing to click; the
+                    // State column beside it sorts by the same fact
+                    table::fixed(Col::CiteIcon, "", 2, false),
+                    table::fixed(Col::Pdf, "↓", 1, true).fixed_size(),
+                    table::fixed(Col::Cited, "Cited", 26, true),
+                    table::fixed(Col::State, "State", 10, true),
+                    table::fixed(Col::Year, "Year", 6, true).default_when(year_fits),
+                    table::fixed(Col::Author, "Author", author_w, true)
+                        .default_when(author_fits),
+                    table::flex(Col::Title, "Title", true),
+                    // off by default alone among the paper columns: the
+                    // Cited column already names the paper, and where a
+                    // cite resolves the two mostly read the same
+                    table::fixed(Col::Key, "Key", 20, true).default_off(),
+                ]
+            }
             ScopeKind::Query => {
                 let (author_w, _) = column_layout(width);
                 vec![
@@ -192,7 +228,7 @@ impl App {
     /// hiding it just moves the job to the next candidate.
     fn flex_preference(kind: ScopeKind) -> &'static [Col] {
         match kind {
-            ScopeKind::Manuscript => &[Col::Title, Col::Cited, Col::State],
+            ScopeKind::Manuscript => &[Col::Title, Col::Cited, Col::Author, Col::State],
             _ => &[Col::Title, Col::Author, Col::Key],
         }
     }

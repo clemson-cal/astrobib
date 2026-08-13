@@ -82,7 +82,7 @@ use rows::load_sort;
 use scopes::{FILTER_CHIP, QueryState, Scope, ScopeKind};
 use search::{ADS_SORTS, AdsMsg, ads_sort_name};
 use table::Col;
-use table_view::{column_layout, format_authors};
+use table_view::{column_layout, format_authors, row_palette};
 use tagging::tag_hint;
 use tasks::{MsgCat, Task, TaskKind};
 use theme::*;

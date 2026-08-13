@@ -3,12 +3,20 @@
 use super::*;
 
 /// One manuscript-view row: a cited string (or an uncited db member).
+///
+/// The paper fields are copies taken at scan time rather than looked up
+/// per frame: the rows are sorted in place (`sort_ms_rows` holds them
+/// mutably, so it cannot reach back into the library mid-compare), and
+/// a cite that resolves to nothing simply carries empty ones.
 pub(super) struct MsRow {
     pub(super) cited: String,
     pub(super) state: crate::library::CiteState,
     pub(super) uncited: bool,
     pub(super) key: Option<String>,
+    pub(super) short_key: String,
     pub(super) title: String,
+    pub(super) year: String,
+    pub(super) author: String,
 }
 
 /// Cite states in the order the manuscript view groups them when sorted
@@ -58,9 +66,12 @@ impl App {
                 state,
                 uncited: false,
                 key: entry.map(|e| e.key().to_string()),
+                short_key: entry.map(|e| e.short_key.clone()).unwrap_or_default(),
                 title: entry
                     .map(|e| e.title().trim_matches(['{', '}']).to_string())
                     .unwrap_or_default(),
+                year: entry.map(|e| e.year()).unwrap_or_default(),
+                author: entry.map(|e| e.author().to_string()).unwrap_or_default(),
             });
         }
         if let Some(ms) = &self.lib.manuscript {
@@ -71,7 +82,10 @@ impl App {
                         state: CiteState::Ok,
                         uncited: true,
                         key: Some(e.key().to_string()),
+                        short_key: e.short_key.clone(),
                         title: e.title().trim_matches(['{', '}']).to_string(),
+                        year: e.year(),
+                        author: e.author().to_string(),
                     });
                 }
             }
@@ -214,10 +228,12 @@ impl App {
     /// arrive in scan order — the order the cites appear in the source —
     /// and stay there until a header is clicked; sorting by State is the
     /// useful one, since it gathers the missing cites at the top.
-    pub(super) fn manuscript_model(&self, rows: &[MsRow]) -> table::TableModel {
+    pub(super) fn manuscript_model(&self, rows: &[MsRow], width: u16) -> table::TableModel {
         use crate::library::CiteState;
         use ratatui::widgets::Cell;
-        let columns = self.columns_for(ScopeKind::Manuscript, 0);
+        let columns = self.columns_for(ScopeKind::Manuscript, width);
+        let author_w = col_width(&columns, width, Col::Author);
+        let (mvals, mknown) = self.metric_values();
         let cursor = self.table.selected();
         let hov_row = self.hovered_table_pos();
         let trows: Vec<Row<'static>> = rows
@@ -225,6 +241,9 @@ impl App {
             .enumerate()
             .map(|(pos, r)| {
                 let lit = hov_row == Some(pos);
+                // the paper columns look the way they do in the library:
+                // same hues, same dimming off the hovered row
+                let pal = row_palette(lit);
                 let (icon, word, style) = match (r.uncited, r.state) {
                     (true, _) => ("·", "uncited", Style::default().fg(Color::DarkGray)),
                     (_, CiteState::Ok) => ("●", "ok", Style::default().fg(Color::Green)),
@@ -256,6 +275,22 @@ impl App {
                         Col::Cited => Cell::from(Span::styled(r.cited.clone(), cite_style)),
                         Col::State => Cell::from(Span::styled(word, style)),
                         Col::Title => Cell::from(Span::styled(r.title.clone(), title_style)),
+                        // a cite that resolves to no paper has no paper
+                        // columns: they stay blank rather than inventing
+                        // a placeholder the eye has to filter out
+                        Col::Metric => {
+                            metric_cell(self.metric_col, mvals.get(pos).copied().flatten(), &mknown)
+                        }
+                        Col::Pdf => Cell::from(Span::styled(
+                            if r.key.as_deref().is_some_and(has_cached_pdf) { "↓" } else { "" },
+                            pal.pdf,
+                        )),
+                        Col::Year => Cell::from(Span::styled(r.year.clone(), pal.year)),
+                        Col::Author => Cell::from(Span::styled(
+                            fit_authors(&r.author, author_w as usize),
+                            pal.author,
+                        )),
+                        Col::Key => Cell::from(Span::styled(r.short_key.clone(), pal.key)),
                         _ => Cell::from(""),
                     })
                     .collect();

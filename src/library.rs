@@ -87,16 +87,7 @@ impl Entry {
     }
 
     pub fn first_author_last(&self) -> &str {
-        let author = self.author();
-        author
-            .split(" and ")
-            .next()
-            .unwrap_or("")
-            .trim()
-            .split(',')
-            .next()
-            .unwrap_or("")
-            .trim()
+        first_author_last_of(self.author())
     }
 
     /// When the paper joined the library: the .bib file's creation
@@ -146,6 +137,22 @@ impl Entry {
             }
         })
     }
+}
+
+/// The first author's surname out of a BibTeX author field. Free of
+/// `Entry` because the manuscript view sorts rows that carry a copy of
+/// the author string rather than the entry it came from, and the two
+/// must order the same way.
+pub fn first_author_last_of(author: &str) -> &str {
+    author
+        .split(" and ")
+        .next()
+        .unwrap_or("")
+        .trim()
+        .split(',')
+        .next()
+        .unwrap_or("")
+        .trim()
 }
 
 pub struct Library {

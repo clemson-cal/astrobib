@@ -286,6 +286,19 @@ impl App {
                         .and_then(|m| m.effective_priority(now_ts)),
                 })
                 .collect(),
+            // a manuscript row's metric is the resolved paper's; a cite
+            // that resolves to nothing has none, same as a paper the
+            // metric was never recorded for
+            Some(Scope::Manuscript { rows }) => rows
+                .iter()
+                .map(|r| {
+                    let m = r.key.as_deref().and_then(|k| self.metrics.get(k));
+                    match metric {
+                        MetricCol::Priority => m.and_then(|m| m.effective_priority(now_ts)),
+                        MetricCol::Citations => m.and_then(|m| m.citations).map(|c| c as f64),
+                    }
+                })
+                .collect(),
             _ => self
                 .filtered
                 .iter()

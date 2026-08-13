@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+- The manuscript page offers the same columns as the library and a query page. Its rows are cites, but every cite that resolves names a paper, so the paper columns — the metric swatch, `↓`, `Year`, `Author`, `Title`, `Key` — are now drawn, sorted and configured there exactly as they are elsewhere, with `Cited` and `State` interleaved in the order the shared columns already sit in. Only `●` is left out, because in this scope it would say what the cite glyph beside it already says in more detail, and `Entered` stays query-only as a fact about an ADS record rather than a paper. The defaults still differ, since `Cited` and `State` spend the width the library gives `Author` and `Key`: `Year` defaults on once a comfortable title fits beside it, `Author` once one fits beside both, and `Key` defaults off here alone because `Cited` already names the paper. All of them are one keystroke away in the `|` panel whatever the width.
+
 ## 0.19.0 — 2026-08-12
 
 Two commands that tell you what they are about to do to files you did not write, and the correctness that a re-key map has to have before it is worth applying.

@@ -75,11 +75,11 @@
 
 
 ## manuscript w=140 card
-      Cited                      State      Title
+      ↓ Cited                      State      Year   Title
 ────────────────────────────────────────────────────────────────────────────────────────────   Andersson, Blomqvist · 2021
-◉  ○  Andersson2021              library    Relativistic jet braking in dense circumstellar    ApJ 912, 77
-   ○  Baxter2019                 library    A census of runaway white dwarfs in the galactic   cited by ? ⟳
-   ✗  Nowhere2020                missing
+◉  ○    Andersson2021              library    2021   Relativistic jet braking in dense circu   ApJ 912, 77
+   ○    Baxter2019                 library    2019   A census of runaway white dwarfs in the   cited by ? ⟳
+   ✗    Nowhere2020                missing
                                                                                                We study the deceleration of relativistic
                                                                                                jets launched into dense circumstellar
                                                                                                shells. Semi-analytic models are compared
@@ -227,11 +227,11 @@
 
 
 ## manuscript w=110 card
-      Cited                      State      Title
+      ↓ Cited                      State      Title
 ──────────────────────────────────────────────────────────────   Andersson, Blomqvist · 2021
-◉  ○  Andersson2021            library    Relativistic jet bra   ApJ 912, 77
-   ○  Baxter2019               library    A census of runaway    cited by ? ⟳
-   ✗  Nowhere2020              missing
+◉  ○    Andersson2021          library    Relativistic jet bra   ApJ 912, 77
+   ○    Baxter2019             library    A census of runaway    cited by ? ⟳
+   ✗    Nowhere2020            missing
                                                                  We study the deceleration of relativistic
                                                                  jets launched into dense circumstellar
                                                                  shells. Semi-analytic models are compared
@@ -378,11 +378,11 @@
 
 
 ## manuscript w=84 card
-      Cited                      State     Andersson, Blomqvist · 2021
+      ↓ Cited                      State   Andersson, Blomqvist · 2021
 ────────────────────────────────────────   ApJ 912, 77
-◉  ○  Anders librar Relativistic jet bra   cited by ? ⟳
-   ○  Baxter librar A census of runaway
-   ✗  Nowher missin                        We study the deceleration of
+◉ ○   Anders librar Relativistic jet bra   cited by ? ⟳
+  ○   Baxter librar A census of runaway
+  ✗   Nowher missin                        We study the deceleration of
                                            relativistic jets launched into dense
                                            circumstellar shells. Semi-analytic
                                            models are compared with
@@ -527,11 +527,11 @@
 
 
 ## manuscript w=64 card
-      Cited                      State     environments
+      ↓ Cited                      State   environments
 ────────────────────────────────────────
-◉  ○  Anders librar Relativistic jet bra   Andersson,
-   ○  Baxter librar A census of runaway    Blomqvist · 2021
-   ✗  Nowher missin                        ApJ 912, 77
+◉ ○   Anders librar Relativistic jet bra   Andersson,
+  ○   Baxter librar A census of runaway    Blomqvist · 2021
+  ✗   Nowher missin                        ApJ 912, 77
                                            cited by ? ⟳
 
                                            We study the
