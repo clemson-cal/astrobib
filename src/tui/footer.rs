@@ -553,8 +553,8 @@ impl App {
                 ])
             }
             Mode::Normal | Mode::Pick { .. } | Mode::Confirm { .. } => {
-                let n = self.filtered.len();
-                let total = self.order.len();
+                let n = self.row_count();
+                let total = self.row_total();
                 let filt = String::new(); // the filter shows as a strip chip
                 // logged messages show for ~5s then clear (a fresh one
                 // outranks the hover hint); unlogged transient status —

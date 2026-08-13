@@ -28,17 +28,32 @@ impl App {
     /// when everything is already selected deselects (a), mirroring the
     /// single-row toggle; an emptied selection exits the mode.
     pub(super) fn select_all(&mut self, visible_only: bool) {
+        // `a` means the rows on screen, which is the filtered set in
+        // whichever scope you are standing in; `A` means every row the
+        // scope has, filter or no filter
         let ids: Vec<String> = match self.scopes.get(self.active_scope) {
             // every row that resolves to a paper; missing and ambiguous
             // cites are skipped rather than blocking the whole gesture
+            Some(Scope::Manuscript { rows }) if visible_only => self
+                .visible
+                .iter()
+                .filter_map(|&i| rows.get(i))
+                .filter_map(|r| r.key.clone())
+                .collect(),
             Some(Scope::Manuscript { rows }) => {
                 rows.iter().filter_map(|r| r.key.clone()).collect()
             }
+            Some(Scope::Ads { articles, .. }) if visible_only => self
+                .visible
+                .iter()
+                .filter_map(|&i| articles.get(i))
+                .map(|a| a.bibcode.clone())
+                .collect(),
             Some(Scope::Ads { articles, .. }) => {
                 articles.iter().map(|a| a.bibcode.clone()).collect()
             }
             _ if visible_only => self
-                .filtered
+                .visible
                 .iter()
                 .filter_map(|&i| self.order.get(i).cloned())
                 .collect(),
@@ -64,12 +79,12 @@ impl App {
     }
 
     pub(super) fn action_keys(&self) -> Vec<String> {
-        if let Some(Scope::Ads { articles, .. }) = self.scopes.get(self.active_scope) {
+        if let Some(Scope::Ads { .. }) = self.scopes.get(self.active_scope) {
             let sel = self.selected_articles();
             let pool: Vec<&crate::ads::Article> = if !sel.is_empty() {
                 sel
             } else {
-                self.card_article_pos().and_then(|p| articles.get(p)).into_iter().collect()
+                self.card_article_pos().and_then(|p| self.article_at(p)).into_iter().collect()
             };
             return pool
                 .iter()
@@ -97,22 +112,30 @@ impl App {
     pub(super) fn selected_key(&self) -> Option<&str> {
         // the manuscript scope resolves to library entries, so entry
         // actions apply there; ADS rows don't resolve until imported
-        if let Some(Scope::Manuscript { rows }) = self.scopes.get(self.active_scope) {
+        if matches!(self.scopes.get(self.active_scope), Some(Scope::Manuscript { .. })) {
             return self
                 .table
                 .selected()
-                .and_then(|p| rows.get(p))
+                .and_then(|p| self.ms_row_at(p))
                 .and_then(|r| r.key.as_deref());
         }
         if self.active_scope != 0 {
             return None;
         }
         let pos = self.table.selected()?;
-        let idx = *self.filtered.get(pos)?;
+        let idx = self.row_index(pos)?;
         self.order.get(idx).map(String::as_str)
     }
 
     pub(super) fn refilter(&mut self) {
+        // the live text is this scope's filter, filed as it is typed so
+        // that leaving the scope needs no save step of its own
+        let key = self.filter_key_at(self.active_scope);
+        if self.filter.value().is_empty() {
+            self.filters.remove(&key);
+        } else {
+            self.filters.insert(key, self.filter.value().to_string());
+        }
         let groups = query::tokenize(self.filter.value());
         let in_ms: Vec<String> = self
             .lib
@@ -171,33 +194,111 @@ impl App {
                 tagged.get(k).is_some_and(|ts| ts.iter().any(|t| t.contains(v)))
             })),
         };
-        // filter_map, not filter: a key the library no longer holds
-        // simply drops out of the visible set — which also keeps every
-        // position in `filtered` resolvable for the table and the
-        // metric strip, whatever state `order` is in
-        self.filtered = self
-            .order
-            .iter()
-            .enumerate()
-            .filter_map(|(i, key)| {
-                let e = self.lib.get(key)?;
-                query::matches(&groups, e, &ctx).then_some(i)
-            })
-            .collect();
+        // The rows are whatever the scope you are on has, and the
+        // language means one thing across all three. A query result and
+        // a manuscript cite carry their own text; the terms addressed by
+        // cite key (is:, tag:, pri:, cit:) go through the key the row
+        // would have in the library, so they answer for an imported twin
+        // and miss for a paper that is not in the library — which is the
+        // true answer rather than a special case.
+        let vis: Vec<usize> = match self.scopes.get(self.active_scope) {
+            Some(Scope::Ads { articles, .. }) => articles
+                .iter()
+                .enumerate()
+                .filter_map(|(i, a)| {
+                    let key = self.hypothetical_key(a);
+                    let doc = crate::library::SearchDoc::build(
+                        &a.author.join(" and "),
+                        &a.title,
+                        &a.abstract_,
+                        &key,
+                        "",
+                        &a.year,
+                    );
+                    let subj = query::Subject { doc: &doc, key: &key, year: &a.year };
+                    query::matches_subject(&groups, &subj, &ctx).then_some(i)
+                })
+                .collect(),
+            Some(Scope::Manuscript { rows }) => rows
+                .iter()
+                .enumerate()
+                .filter_map(|(i, r)| {
+                    // a cite that resolves is filtered as the paper it
+                    // names, abstract and keywords included; one that
+                    // does not is filtered as what the page shows of it,
+                    // so a missing cite can still be found by its string
+                    let hit = match r.key.as_deref().and_then(|k| self.lib.get(k)) {
+                        Some(e) => query::matches(&groups, e, &ctx),
+                        None => {
+                            let doc = crate::library::SearchDoc::build(
+                                &r.author, &r.title, "", &r.cited, "", &r.year,
+                            );
+                            let subj =
+                                query::Subject { doc: &doc, key: &r.cited, year: &r.year };
+                            query::matches_subject(&groups, &subj, &ctx)
+                        }
+                    };
+                    hit.then_some(i)
+                })
+                .collect(),
+            // filter_map, not filter: a key the library no longer holds
+            // simply drops out of the visible set — which also keeps
+            // every position in `visible` resolvable for the table and
+            // the metric strip, whatever state `order` is in
+            _ => self
+                .order
+                .iter()
+                .enumerate()
+                .filter_map(|(i, key)| {
+                    let e = self.lib.get(key)?;
+                    query::matches(&groups, e, &ctx).then_some(i)
+                })
+                .collect(),
+        };
+        self.visible = vis;
         let sel = self.table.selected().unwrap_or(0);
-        self.table.select(if self.filtered.is_empty() {
+        self.table.select(if self.visible.is_empty() {
             None
         } else {
-            Some(sel.min(self.filtered.len() - 1))
+            Some(sel.min(self.visible.len() - 1))
         });
     }
 
     pub(super) fn row_count(&self) -> usize {
+        self.visible.len()
+    }
+
+    /// How many rows the active scope has before its filter — the other
+    /// half of the footer's `n/total`.
+    pub(super) fn row_total(&self) -> usize {
         match self.scopes.get(self.active_scope) {
             Some(Scope::Ads { articles, .. }) => articles.len(),
             Some(Scope::Manuscript { rows }) => rows.len(),
-            _ => self.filtered.len(),
+            _ => self.order.len(),
         }
+    }
+
+    /// The active scope's row index for a screen position — the one
+    /// place a position becomes an index, so a filtered page cannot draw
+    /// one row and act on another.
+    pub(super) fn row_index(&self, pos: usize) -> Option<usize> {
+        self.visible.get(pos).copied()
+    }
+
+    /// The ADS result at a screen position, when a query page is active.
+    pub(super) fn article_at(&self, pos: usize) -> Option<&crate::ads::Article> {
+        let Some(Scope::Ads { articles, .. }) = self.scopes.get(self.active_scope) else {
+            return None;
+        };
+        articles.get(self.row_index(pos)?)
+    }
+
+    /// The manuscript cite row at a screen position.
+    pub(super) fn ms_row_at(&self, pos: usize) -> Option<&MsRow> {
+        let Some(Scope::Manuscript { rows }) = self.scopes.get(self.active_scope) else {
+            return None;
+        };
+        rows.get(self.row_index(pos)?)
     }
 
     pub(super) fn move_sel(&mut self, delta: isize) {
@@ -214,15 +315,15 @@ impl App {
     /// A selection emptied by toggling exits selection mode, same as Esc.
     pub(super) fn toggle_row_selected(&mut self, pos: usize) {
         let key = match self.scopes.get(self.active_scope) {
-            Some(Scope::Ads { articles, .. }) => {
-                let Some(a) = articles.get(pos) else { return };
+            Some(Scope::Ads { .. }) => {
+                let Some(a) = self.article_at(pos) else { return };
                 a.bibcode.clone()
             }
             // a manuscript row selects the paper it resolves to; a
             // missing or ambiguous cite names no paper, so it cannot
             // join a selection keyed by cite key
-            Some(Scope::Manuscript { rows }) => {
-                let Some(key) = rows.get(pos).and_then(|r| r.key.clone()) else {
+            Some(Scope::Manuscript { .. }) => {
+                let Some(key) = self.ms_row_at(pos).and_then(|r| r.key.clone()) else {
                     self.note(
                         MsgCat::Warn,
                         "this cite resolves to no paper — nothing to select".to_string(),
@@ -232,7 +333,7 @@ impl App {
                 key
             }
             _ => {
-                let Some(&idx) = self.filtered.get(pos) else {
+                let Some(idx) = self.row_index(pos) else {
                     return;
                 };
                 let Some(key) = self.order.get(idx) else { return };
@@ -488,6 +589,8 @@ impl App {
             // ties keep a stable, meaningful order rather than an arbitrary one
             ord.then_with(|| a.cited.cmp(&b.cited))
         });
+        // as in sort_ads_at: reordered rows mean re-derived positions
+        self.refilter();
     }
 
     /// Draw the active scope's table. Each scope contributes its own

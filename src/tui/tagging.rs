@@ -114,8 +114,8 @@ impl App {
             self.set_scope(0);
         }
         self.refilter();
-        let n = self.filtered.len();
-        let total = self.order.len();
+        let n = self.row_count();
+        let total = self.row_total();
         self.note(MsgCat::Ok, format!("filtered to {text} — {n} of {total}"));
     }
 }

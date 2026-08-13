@@ -132,8 +132,8 @@ impl App {
         } else {
             query::to_ads_query(self.filter.value())
         };
-        if let Some(Scope::Manuscript { rows }) = self.scopes.get(self.active_scope) {
-            if let Some(r) = self.table.selected().and_then(|p| rows.get(p)) {
+        if matches!(self.scopes.get(self.active_scope), Some(Scope::Manuscript { .. })) {
+            if let Some(r) = self.table.selected().and_then(|p| self.ms_row_at(p)) {
                 if matches!(r.state, crate::library::CiteState::Missing) {
                     input = r.cited.clone();
                 }
@@ -522,6 +522,9 @@ impl App {
         if let Some(Scope::Ads { articles, .. }) = self.scopes.get_mut(idx) {
             *articles = sorted;
         }
+        // the rows moved, so the positions the filter admitted no longer
+        // name the same records
+        self.refilter();
     }
 
     /// `P` — take a query configuration off the clipboard and open it.
@@ -791,8 +794,12 @@ impl App {
         let (mvals, mknown) = self.metric_values();
         let cursor = self.table.selected();
         let hov_row = self.hovered_table_pos();
-        let rows: Vec<Row<'static>> = articles
+        // `visible` is the screen order; `pos` stays a screen position,
+        // which is what the cursor, the hover and every click rect mean
+        let rows: Vec<Row<'static>> = self
+            .visible
             .iter()
+            .filter_map(|&i| articles.get(i))
             .enumerate()
             .map(|(pos, a)| {
                 let entry = self.article_entry(a);

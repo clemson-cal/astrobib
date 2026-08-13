@@ -4,6 +4,10 @@
 
 Imports are local-first: a paper you fetch inside a project lands in the project, the way an install inside a virtualenv lands in the virtualenv.
 
+### Added
+- **`/` filters whatever scope you are standing in.** It was a library-only gesture — pressed on a query page or the manuscript page it said so and did nothing — which left the two tables most likely to be long, a hundred ADS results and a bibliography of two hundred cites, with no way to narrow them at all. All three draw tables of papers, so all three now answer the same language: an ADS row matches on what ADS returned about it, with `tag:`, `is:pdf`, `is:ms` and the metric terms answering through its imported twin and missing for a paper that is not in the library; a cite that resolves matches as the paper it names, abstract and keywords included; and one that resolves to nothing matches on the string the page shows, which is the only way a missing cite could be found. The footer's `n/total` is now about the table on screen rather than always about the library, and `a` (select visible) means the rows the filter left in every scope.
+- Each scope keeps its own filter while you are looking at another, the way each already keeps its own sort. A filter belongs to the page it narrows: carrying `tag:disks` onto a page of ADS results would empty it and read as a broken query. A query capsule's filter is filed under its tab id, so closing one takes its filter with it and nothing inherits it.
+
 ### Fixed
 - `astrobib convert` reads markdown sources as well as TeX. It already *wrote* them correctly — it shares the rewriter — but it scanned through `.tex` files alone, so a markdown-only manuscript got "No .tex sources found" and a mixed one was converted only for the keys its `.tex` files happened to cite. Both kinds are now scanned into one list. A wikilink that resolves to nothing is left alone without being reported, because `[[Key]]` is a citation only where it resolves and an ordinary note link is not a broken cite; a key cited both ways is a citation, so a `[[Key]]` in a note cannot silence a `\citep{Key}` in the paper.
 

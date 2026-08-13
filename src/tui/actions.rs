@@ -231,13 +231,10 @@ impl App {
             Action::BrowserDl => self.browser_download(),
             Action::Remove => self.remove_papers(),
             Action::Copy => self.enter_copy_mode(),
-            Action::Filter => {
-                if self.active_scope == 0 {
-                    self.mode = Mode::Filter;
-                } else {
-                    self.note(MsgCat::Warn, "the filter applies to the Library scope".to_string());
-                }
-            }
+            // every scope draws a table of papers, so every scope
+            // narrows the same way and keeps its own filter while you
+            // are elsewhere
+            Action::Filter => self.mode = Mode::Filter,
             // showing or hiding a view is its own confirmation: the view
             // appears. Logging it only pushes out the messages that are
             // there because you would otherwise have missed them.

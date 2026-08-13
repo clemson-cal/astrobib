@@ -75,12 +75,12 @@ impl App {
     /// scopes resolve through the imported twin).
     fn row_key_at(&self, pos: usize) -> Option<String> {
         match self.scopes.get(self.active_scope) {
-            Some(Scope::Ads { articles, .. }) => articles
-                .get(pos)
+            Some(Scope::Ads { .. }) => self
+                .article_at(pos)
                 .and_then(|a| self.article_entry(a))
                 .map(|e| e.key().to_string()),
-            Some(Scope::Manuscript { rows }) => rows.get(pos).and_then(|r| r.key.clone()),
-            _ => self.filtered.get(pos).and_then(|&i| self.order.get(i).cloned()),
+            Some(Scope::Manuscript { .. }) => self.ms_row_at(pos).and_then(|r| r.key.clone()),
+            _ => self.row_index(pos).and_then(|i| self.order.get(i).cloned()),
         }
     }
 
@@ -237,8 +237,8 @@ impl App {
                 return;
             }
             if btn == CardBtn::Import {
-                if let Some(Scope::Ads { articles, .. }) = self.scopes.get(self.active_scope) {
-                    if let Some(a) = self.card_article_pos().and_then(|p| articles.get(p)) {
+                {
+                    if let Some(a) = self.card_article_pos().and_then(|p| self.article_at(p)) {
                         let bc = a.bibcode.clone();
                         self.import_bibcode(bc);
                     }

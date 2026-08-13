@@ -167,7 +167,7 @@ impl App {
             return;
         }
         let bibs: Vec<(String, String)> = self
-            .filtered
+            .visible
             .iter()
             .filter_map(|&i| self.entry_at(i))
             .filter_map(|e| e.bibcode().map(|b| (b.to_string(), e.key().to_string())))
@@ -276,8 +276,10 @@ impl App {
             .map(|d| d.as_secs() as i64)
             .unwrap_or(0);
         let values: Vec<Option<f64>> = match self.scopes.get(self.active_scope) {
-            Some(Scope::Ads { articles, .. }) => articles
+            Some(Scope::Ads { articles, .. }) => self
+                .visible
                 .iter()
+                .filter_map(|&i| articles.get(i))
                 .map(|a| match metric {
                     MetricCol::Citations => a.citation_count.map(|c| c as f64),
                     MetricCol::Priority => self
@@ -289,8 +291,10 @@ impl App {
             // a manuscript row's metric is the resolved paper's; a cite
             // that resolves to nothing has none, same as a paper the
             // metric was never recorded for
-            Some(Scope::Manuscript { rows }) => rows
+            Some(Scope::Manuscript { rows }) => self
+                .visible
                 .iter()
+                .filter_map(|&i| rows.get(i))
                 .map(|r| {
                     let m = r.key.as_deref().and_then(|k| self.metrics.get(k));
                     match metric {
@@ -300,7 +304,7 @@ impl App {
                 })
                 .collect(),
             _ => self
-                .filtered
+                .visible
                 .iter()
                 .filter_map(|&i| self.entry_at(i))
                 .map(|e| {

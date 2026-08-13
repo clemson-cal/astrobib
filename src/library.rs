@@ -18,6 +18,33 @@ pub struct SearchDoc {
     pub all: String,
 }
 
+impl SearchDoc {
+    /// Build the lowercased field set the filter matches against, from
+    /// the raw fields of anything that names a paper.
+    ///
+    /// An entry is the usual source, but an ADS result and a manuscript
+    /// cite are rows of papers too, and the filter means the same thing
+    /// on all three — so the one place that decides what "all" contains,
+    /// and what gets lowercased, is here rather than once per scope.
+    pub fn build(author: &str, title: &str, abs: &str, key: &str, kw: &str, year: &str) -> SearchDoc {
+        let author = author.to_lowercase();
+        let title = title.to_lowercase();
+        let abs = abs.to_lowercase();
+        let key = key.to_lowercase();
+        let kw = kw.to_lowercase();
+        let all = format!("{author} {title} {abs} {key} {kw} {year}");
+        SearchDoc {
+            first: first_author_last_of(&author).trim_start_matches('{').to_string(),
+            author,
+            title,
+            abs,
+            key,
+            kw,
+            all,
+        }
+    }
+}
+
 pub struct Entry {
     pub data: Data,
     pub path: PathBuf,
@@ -116,25 +143,14 @@ impl Entry {
     /// per-keystroke matching never re-lowers every abstract.
     pub fn search_doc(&self) -> &SearchDoc {
         self.search.get_or_init(|| {
-            let author = self.author().to_lowercase();
-            let title = self.title().to_lowercase();
-            let abs = self.abstract_().to_lowercase();
-            let key = self.key().to_lowercase();
-            let kw = self.get("keywords").to_lowercase();
-            let all = format!("{author} {title} {abs} {key} {kw} {}", self.year());
-            SearchDoc {
-                first: self
-                    .first_author_last()
-                    .to_lowercase()
-                    .trim_start_matches('{')
-                    .to_string(),
-                author,
-                title,
-                abs,
-                key,
-                kw,
-                all,
-            }
+            SearchDoc::build(
+                self.author(),
+                self.title(),
+                self.abstract_(),
+                self.key(),
+                self.get("keywords"),
+                &self.year(),
+            )
         })
     }
 }

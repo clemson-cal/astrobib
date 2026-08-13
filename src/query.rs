@@ -1,4 +1,4 @@
-//! Local filter query language for the library view.
+//! Local filter query language for the tables.
 //!
 //! Grammar: whitespace-separated terms AND together; uppercase OR separates
 //! alternative groups (AND binds tighter than OR, as in ADS). Uppercase-only
@@ -171,11 +171,28 @@ pub fn needs_tags(groups: &[Vec<Term>]) -> bool {
     })
 }
 
-fn term_matches(term: &Term, e: &Entry, ctx: &QueryContext) -> bool {
-    let doc = e.search_doc();
+/// What a filter is asked about: the lowercased text of a row, plus the
+/// two things the language names outside that text — the cite key every
+/// key-addressed term (`is:`, `tag:`, `pri:`, `cit:`) looks up by, and
+/// the year, which is compared numerically rather than as a substring.
+///
+/// A library entry is the obvious subject, and for a long time was the
+/// only one. An ADS result and a manuscript cite are subjects too: the
+/// same language should mean the same thing wherever a table of papers
+/// is on screen. A row with no library entry behind it carries a key
+/// that resolves to nothing, so key-addressed terms simply miss it —
+/// which is the truthful answer for a paper that is not in the library.
+pub struct Subject<'a> {
+    pub doc: &'a crate::library::SearchDoc,
+    pub key: &'a str,
+    pub year: &'a str,
+}
+
+fn term_matches(term: &Term, s: &Subject, ctx: &QueryContext) -> bool {
+    let Subject { doc, key, year } = *s;
     let v = term.value.to_lowercase();
     let hit = match term.field {
-        Some(Field::Year) => year_matches(&term.value, &e.year()),
+        Some(Field::Year) => year_matches(&term.value, year),
         Some(Field::Author) => {
             if let Some(first) = v.strip_prefix('^') {
                 doc.first.starts_with(first)
@@ -188,34 +205,45 @@ fn term_matches(term: &Term, e: &Entry, ctx: &QueryContext) -> bool {
         Some(Field::Key) => doc.key.contains(&v),
         Some(Field::Kw) => doc.kw.contains(&v),
         Some(Field::Is) => match v.as_str() {
-            "ms" => ctx.in_manuscript.as_ref().is_some_and(|f| f(e.key())),
-            "pdf" => ctx.has_pdf.as_ref().is_some_and(|f| f(e.key())),
+            "ms" => ctx.in_manuscript.as_ref().is_some_and(|f| f(key)),
+            "pdf" => ctx.has_pdf.as_ref().is_some_and(|f| f(key)),
             // "does it carry any tag at all", which is what asking for
             // the empty substring means: every name contains it, and a
             // paper with no tags is not in the snapshot to be asked
-            IS_TAGGED => ctx.tagged.as_ref().is_some_and(|f| f(e.key(), "")),
+            IS_TAGGED => ctx.tagged.as_ref().is_some_and(|f| f(key, "")),
             _ => false,
         },
         Some(Field::Pri) => {
-            metric_matches(&term.value, ctx.priority.as_ref().and_then(|f| f(e.key())))
+            metric_matches(&term.value, ctx.priority.as_ref().and_then(|f| f(key)))
         }
         Some(Field::Cit) => {
-            metric_matches(&term.value, ctx.citations.as_ref().and_then(|f| f(e.key())))
+            metric_matches(&term.value, ctx.citations.as_ref().and_then(|f| f(key)))
         }
-        Some(Field::Tag) => ctx.tagged.as_ref().is_some_and(|f| f(e.key(), &v)),
+        Some(Field::Tag) => ctx.tagged.as_ref().is_some_and(|f| f(key, &v)),
         None => doc.all.contains(&v),
     };
     hit != term.neg
 }
 
-/// True when the entry matches the filter: any OR-group whose terms all pass.
-pub fn matches(groups: &[Vec<Term>], e: &Entry, ctx: &QueryContext) -> bool {
+/// True when the subject matches the filter: any OR-group whose terms
+/// all pass.
+pub fn matches_subject(groups: &[Vec<Term>], s: &Subject, ctx: &QueryContext) -> bool {
     if groups.is_empty() {
         return true;
     }
     groups
         .iter()
-        .any(|g| g.iter().all(|t| term_matches(t, e, ctx)))
+        .any(|g| g.iter().all(|t| term_matches(t, s, ctx)))
+}
+
+/// True when the entry matches the filter.
+pub fn matches(groups: &[Vec<Term>], e: &Entry, ctx: &QueryContext) -> bool {
+    let year = e.year();
+    matches_subject(
+        groups,
+        &Subject { doc: e.search_doc(), key: e.key(), year: &year },
+        ctx,
+    )
 }
 
 /// Translate a local filter string into an ADS search query: drops

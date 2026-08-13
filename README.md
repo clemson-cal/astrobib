@@ -9,7 +9,7 @@ Your library is just a directory of `.bib` files, indistinguishable from hand-wr
 
 ### Development status
 
-0.20.0 gives the manuscript page the library's columns — the metric swatch, `↓`, `Year`, `Author` and `Key` are drawn, sorted and configured there like anywhere else, alongside `Cited` and `State` — and moves the release workflow onto Node 24. Next up: `convert` scanning markdown as well as it scans TeX. Rust tests, clippy, and the headless TUI suite pass; the completed TUI hit-test registry refactor is recorded in [docs/plans/hit-registry.md](docs/plans/hit-registry.md).
+Unreleased work makes the local library the one you land in: imports write there by default, `s` shares a paper up to the global library and `I` does both in one press, and a TUI session inside a project opens on the project. `/` now filters every scope rather than the library alone, each keeping its own filter, and `convert` reads markdown sources as well as it writes them. The last shipped release, 0.20.0, gave the manuscript page the library's columns and moved the release workflow onto Node 24. Rust tests, clippy, and the headless TUI suite pass; the completed TUI hit-test registry refactor is recorded in [docs/plans/hit-registry.md](docs/plans/hit-registry.md).
 
 ---
 ## Installation
@@ -44,7 +44,7 @@ Both stores are plain `bib/*.bib` files, one paper per file, indistinguishable f
 Scope capsules at the top switch between your library, saved ADS query tabs, and the manuscript view. A query's tab appears the moment it is sent — an ADS query can take a minute — and the page says what it is waiting for, then how it ended: results, nothing found, or why it failed. Each keeps its own sort, and remembers it. An optional one-cell colour swatch column shows a metric — your own decaying priority, or ADS citation counts; switch it on from the table panel (`|`), like any other column. The pub card on the right shows the highlighted paper (hover the citekey column to preview others); an event log and clickable view badges sit at the bottom. Most things are clickable; every action has a key (`?` shows the cheat-sheet).
 
 ### Keys
-- `/` — live filter (query language below); `S` — new ADS query (`↑`/`↓` sets the result count, `⌃r` opens the menu of what ADS returns — both also clickable; pasting a DOI or ADS URL imports directly)
+- `/` — live filter of the scope you are on, each scope keeping its own (query language below); `S` — new ADS query (`↑`/`↓` sets the result count, `⌃r` opens the menu of what ADS returns — both also clickable; pasting a DOI or ADS URL imports directly)
 - `j k g G` — move; `[` `]` — switch scope (`]` past the last one composes a new query); `ctrl+w` — close the query you are on, or click the `✕` on any query capsule to close that one; `r` — refresh; `+` `-` — result count
 - `Space` — select row (iOS-style selection mode); `a` — select visible; `A` — select all; Esc — done
 - `i` — import ADS result(s) into the local library (the global one when there is no local); `I` — import and share to the global library in one press; `s` — share ± the selection to the global library; `m` — toggle manuscript/local membership; `⌫` — remove (with confirmation)
@@ -64,8 +64,8 @@ Scope capsules at the top switch between your library, saved ADS query tabs, and
 The side panels, the pub card and the footer are separated from the table by a faint tint rather than by border lines, and the tint is chosen from your terminal's own background: darker than it on a light theme, lighter on a dark one. astrobib asks the terminal at startup (OSC 11) and falls back to dark for terminals that do not answer — set `ASTROBIB_THEME=light` or `dark` to decide it yourself.
 
 ---
-## Filtering the library
-Press `/` to filter as you type. Whitespace-separated terms AND together; each term is a case-insensitive partial match. Bare terms match author, title, abstract, key, keywords, and year; field prefixes narrow:
+## Filtering
+Press `/` to filter as you type — in any scope. The library, the manuscript page and a query tab all draw tables of papers, so all three answer the same language, and each keeps its own filter while you are looking at another (like the sort). An ADS row is matched on what ADS returned about it, with `tag:`, `is:pdf` and the metric terms answering through its imported twin; a cite that resolves is matched as the paper it names, and one that does not is matched on the string the page shows, so a missing cite is still findable. Whitespace-separated terms AND together; each term is a case-insensitive partial match. Bare terms match author, title, abstract, key, keywords, and year; field prefixes narrow:
 ```
 author:cabrera         author anywhere in the list
 ^andersson             first-author papers (= author:^andersson)

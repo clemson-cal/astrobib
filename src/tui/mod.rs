@@ -79,7 +79,7 @@ use manuscript::{MsRow, ms_state_rank};
 use metric::{MetricCol, PriorityOp, metric_cell, metric_column};
 use pdfs::{DlMsg, orphan_order};
 use rows::load_sort;
-use scopes::{FILTER_CHIP, QueryState, Scope, ScopeKind};
+use scopes::{FILTER_CHIP, FilterKey, QueryState, Scope, ScopeKind};
 use search::{ADS_SORTS, AdsMsg, ads_sort_name};
 use table::Col;
 use table_view::{column_layout, format_authors, row_palette};
@@ -188,9 +188,22 @@ fn scroll_window(
 
 struct App {
     lib: MergedLibrary,
-    order: Vec<String>,   // entry keys, year-descending
-    filtered: Vec<usize>, // positions into `order` that pass the filter
+    order: Vec<String>, // entry keys, year-descending
+    /// The active scope's rows that pass its filter, as positions into
+    /// whatever that scope's rows are: `order` in the library, the
+    /// articles of a query page, the cites of the manuscript. Every
+    /// screen position goes through here, so a filtered table's rows,
+    /// clicks, cursor and card all name the same paper.
+    visible: Vec<usize>,
+    /// The filter being typed or shown, always the active scope's.
     filter: tui_input::Input,
+    /// Each scope's filter while you are somewhere else. A filter is a
+    /// property of the page it narrows — the same reasoning that gives
+    /// each scope its own sort — so switching capsules puts one away and
+    /// brings the other back rather than carrying `tag:disks` onto a
+    /// page of ADS results, where it would match almost nothing and read
+    /// as an empty query.
+    filters: std::collections::HashMap<FilterKey, String>,
     mode: Mode,
     table: TableState,
     show_detail: bool,
@@ -492,9 +505,9 @@ impl App {
             // see orphan_order
             (x, y) => orphan_order(x.is_some(), y.is_some(), a, b),
         });
-        let filtered = (0..order.len()).collect::<Vec<_>>();
+        let visible = (0..order.len()).collect::<Vec<_>>();
         let mut table = TableState::default();
-        if !filtered.is_empty() {
+        if !visible.is_empty() {
             table.select(Some(0));
         }
         let status = format!(
@@ -511,8 +524,9 @@ impl App {
         App {
             lib,
             order,
-            filtered,
+            visible,
             filter: tui_input::Input::default(),
+            filters: std::collections::HashMap::new(),
             mode: Mode::Normal,
             table,
             show_detail: true,

@@ -226,21 +226,20 @@ impl App {
             if in_key_col {
                 if let Some(pos) = self.hovered_table_pos() {
                     return self
-                        .filtered
-                        .get(pos)
-                        .and_then(|&i| self.order.get(i))
+                        .row_index(pos)
+                        .and_then(|i| self.order.get(i))
                         .map(String::as_str);
                 }
             }
         }
-        if let Some(Scope::Manuscript { rows }) = self.scopes.get(self.active_scope) {
+        if matches!(self.scopes.get(self.active_scope), Some(Scope::Manuscript { .. })) {
             // Cited column: after the 2-wide gutter and state columns
             // (spacing 1), x spans [6, 6+26)
             let a = self.last_table_area;
             if self.hover.0 >= a.x + 6 && self.hover.0 < a.x + 6 + 26 {
                 if let Some(k) = self
                     .hovered_table_pos()
-                    .and_then(|pos| rows.get(pos))
+                    .and_then(|pos| self.ms_row_at(pos))
                     .and_then(|r| r.key.as_deref())
                 {
                     return Some(k);
@@ -266,18 +265,16 @@ impl App {
     /// The citation count the card is showing, when it is known. None
     /// means unknown, which must never be confused with a known zero.
     pub(super) fn card_citation_count(&self) -> Option<i64> {
-        if let Some(Scope::Ads { articles, .. }) = self.scopes.get(self.active_scope) {
-            if let Some(a) = self.card_article_pos().and_then(|p| articles.get(p)) {
-                return a.citation_count;
-            }
+        if let Some(a) = self.card_article_pos().and_then(|p| self.article_at(p)) {
+            return a.citation_count;
         }
         let key = self.card_entry_key()?;
         self.metrics.get(&key).and_then(|m| m.citations)
     }
 
     pub(super) fn card_entry_key(&self) -> Option<String> {
-        if let Some(Scope::Ads { articles, .. }) = self.scopes.get(self.active_scope) {
-            let a = self.card_article_pos().and_then(|p| articles.get(p))?;
+        if matches!(self.scopes.get(self.active_scope), Some(Scope::Ads { .. })) {
+            let a = self.card_article_pos().and_then(|p| self.article_at(p))?;
             return self.article_entry(a).map(|e| e.key().to_string());
         }
         self.selected_key().map(str::to_string)
@@ -287,10 +284,10 @@ impl App {
     /// shown ADS article's, else the shown library entry's (derived
     /// from its adsurl).
     pub(super) fn card_bibcode(&self) -> Option<String> {
-        if let Some(Scope::Ads { articles, .. }) = self.scopes.get(self.active_scope) {
+        if matches!(self.scopes.get(self.active_scope), Some(Scope::Ads { .. })) {
             return self
                 .card_article_pos()
-                .and_then(|p| articles.get(p))
+                .and_then(|p| self.article_at(p))
                 .map(|a| a.bibcode.clone());
         }
         let key = self.card_key()?;

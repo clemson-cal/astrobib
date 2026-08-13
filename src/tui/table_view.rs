@@ -149,7 +149,7 @@ impl App {
             _ => {
                 if self.order.is_empty() {
                     Some("library is empty — S searches ADS, or: astrobib add <bibcode>".to_string())
-                } else if self.filtered.is_empty() {
+                } else if self.visible.is_empty() {
                     Some("no matches — Esc clears the filter".to_string())
                 } else {
                     None

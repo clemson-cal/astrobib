@@ -113,11 +113,30 @@ impl StripItem {
     }
 }
 
+/// Where a scope's filter is filed while you are standing somewhere
+/// else. A query is named by its tab id rather than by its position:
+/// capsules open and close, and a filter that slid sideways onto its
+/// neighbour when one did would be worse than no memory at all.
+#[derive(Clone, PartialEq, Eq, Hash)]
+pub(super) enum FilterKey {
+    Library,
+    Manuscript,
+    Query(String),
+}
+
 impl App {
     pub(super) fn active_ads(&self) -> Option<&Scope> {
         match self.scopes.get(self.active_scope) {
             Some(s @ Scope::Ads { .. }) => Some(s),
             _ => None,
+        }
+    }
+
+    pub(super) fn filter_key_at(&self, idx: usize) -> FilterKey {
+        match self.scopes.get(idx) {
+            Some(Scope::Ads { tab, .. }) => FilterKey::Query(tab.id.clone()),
+            Some(Scope::Manuscript { .. }) => FilterKey::Manuscript,
+            _ => FilterKey::Library,
         }
     }
 
@@ -129,9 +148,30 @@ impl App {
         if self.select_mode {
             self.exit_select_mode();
         }
+        // …and its own filter, brought out before anything narrows:
+        // `refilter` files the live text under whichever scope is
+        // active, so leaving the buffer of the scope you just left in
+        // place would write it into the one you walked into
+        self.restore_filter();
         // each scope keeps its own sort, so entering one re-asserts it;
         // the library and manuscript are already in their sorted order
+        // (sort_ads_at narrows again once the rows have moved)
         self.sort_ads_at(self.active_scope);
+        self.refilter();
+    }
+
+    /// Bring out the filter belonging to the scope now active, without
+    /// narrowing yet. Saving is not paired with this: `refilter` files
+    /// the live text under its own scope on every keystroke, so there is
+    /// never an unsaved edit to lose — and no way for a scope that has
+    /// just been closed to write its filter into the slot its neighbour
+    /// moved into.
+    pub(super) fn restore_filter(&mut self) {
+        let key = self.filter_key_at(self.active_scope);
+        let text = self.filters.get(&key).cloned().unwrap_or_default();
+        if text != self.filter.value() {
+            self.filter = tui_input::Input::from(text);
+        }
     }
 
     pub(super) fn cycle_scope(&mut self, d: isize) {
@@ -161,6 +201,10 @@ impl App {
             return; // library and manuscript scopes are permanent
         };
         crate::tabs::drop_cached_articles(&tab.id);
+        // a closed capsule takes its filter with it: tab ids are minted
+        // per query, so nothing can inherit this one
+        let key = self.filter_key_at(idx);
+        self.filters.remove(&key);
         self.scopes.remove(idx);
         if idx == self.active_scope {
             // stay in place: the capsule that was to the right now holds

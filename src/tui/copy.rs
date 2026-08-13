@@ -186,10 +186,7 @@ impl App {
     /// The chord/click copy value for the shown ADS article — the same
     /// items the card's ⧉ rows offer, from the article itself.
     pub(super) fn article_copy_value(&self, item: CopyItem) -> Option<String> {
-        let Some(Scope::Ads { articles, .. }) = self.scopes.get(self.active_scope) else {
-            return None;
-        };
-        let a = self.card_article_pos().and_then(|p| articles.get(p))?;
+        let a = self.card_article_pos().and_then(|p| self.article_at(p))?;
         self.article_value(a, item)
     }
 

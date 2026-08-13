@@ -663,10 +663,7 @@ impl App {
     /// un-imported article previews the exact canonical BibTeX an import
     /// would write (fetched once, cached by bibcode).
     fn draw_article_card(&mut self, f: &mut Frame, area: Rect) {
-        let Some(Scope::Ads { articles, .. }) = self.scopes.get(self.active_scope) else {
-            return;
-        };
-        let Some(a) = self.card_article_pos().and_then(|p| articles.get(p)) else {
+        let Some(a) = self.card_article_pos().and_then(|p| self.article_at(p)) else {
             return;
         };
         if self.show_bib_source {

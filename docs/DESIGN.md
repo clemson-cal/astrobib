@@ -111,6 +111,14 @@ A tab carries the query, a name, a result limit, how its results are ordered on 
 
 The mark is on every query capsule rather than on the active one alone. It costs two cells each — the strip wraps a capsule or two sooner — but a mark that appears only under the cursor, or only on the active tab, changes the strip's width as you move around it, and a row of capsules that reflows while you are aiming at one is worse than the width. It also makes each `✕` close the capsule it is drawn on, which `ctrl+w` cannot do: pruning four spent citation trails is four clicks rather than four visits.
 
+## A filter belongs to the page it narrows
+
+The filter language matches a *subject*: the lowercased text of a row, plus the cite key and year the terms name outside that text. A library entry is one, and for a long time was the only one — but an ADS result and a manuscript cite are rows of papers too, and the same gesture should mean the same thing on all three. The terms addressed by cite key (`is:`, `tag:`, `pri:`, `cit:`) go through the key a row would have in the library, so they answer for an imported twin and miss for a paper that is not in the library, which is the true answer rather than a special case. A cite that resolves is filtered as the paper it names; one that does not is filtered on the string the page shows, since nothing else could find a missing cite.
+
+Each scope keeps its own filter, for the reason each keeps its own sort: it is a property of the page, not of the session. A library filter carried onto a page of ADS results would match almost nothing — `tag:` and `is:ms` are statements about a library — so the page would look broken rather than narrowed. A query's filter is filed under its tab id rather than its position, because capsules open and close and a filter that slid onto its neighbour would be worse than no memory at all.
+
+One invariant holds the whole thing up: `visible` is the only path from a screen position to a row. Rows are drawn through it, the cursor and hover index it, clicks resolve through it, and the card reads it — so a filtered table cannot draw one paper and act on another. Anything that reorders rows (either sort) or replaces them (results arriving, a rescan, a rebuild) re-derives it on the spot.
+
 ## Frame-scoped TUI hit targets
 
 Clickable and wheel geometry is transient UI state, not persistent library or app data. The TUI rebuilds a typed hit registry during every draw frame; surfaces that do not draw in the current frame therefore cannot answer later input. The table's solved rectangle is the sole exception: it remains as `last_table_area` because row selection and column navigation use the last drawn layout outside the draw pass. The implementation record is [docs/plans/hit-registry.md](plans/hit-registry.md).

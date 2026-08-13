@@ -103,6 +103,10 @@ impl App {
                 } else if self.active_scope > 1 {
                     self.active_scope -= 1;
                 }
+                // the scope under you may have changed identity, and a
+                // filter belongs to the scope it narrows
+                self.restore_filter();
+                self.refilter();
             }
             self.watch = self.watch_snapshot();
             return;
@@ -236,8 +240,10 @@ impl App {
         let (mvals, mknown) = self.metric_values();
         let cursor = self.table.selected();
         let hov_row = self.hovered_table_pos();
-        let trows: Vec<Row<'static>> = rows
+        let trows: Vec<Row<'static>> = self
+            .visible
             .iter()
+            .filter_map(|&i| rows.get(i))
             .enumerate()
             .map(|(pos, r)| {
                 let lit = hov_row == Some(pos);
