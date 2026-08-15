@@ -532,6 +532,192 @@ pub fn doi_from_text(text: &str) -> Option<String> {
     Some(percent_decode(&m[1]))
 }
 
+/// What a string typed or pasted where a query goes actually names.
+///
+/// A journal link is a paper, not a search: the reader who copies the
+/// address bar of the page they are reading means "this one", and the
+/// only thing standing between that URL and the record is an identifier
+/// hiding somewhere in the path. `Bibcode` names one ADS record and is
+/// imported outright; `Query` is the fielded query that finds the paper,
+/// so the result page still shows what was matched before anything is
+/// written; `UnknownUrl` is plainly a link that no rule here can turn
+/// into a paper, which is worth saying rather than sending to ADS as
+/// search text — a URL is never a query, so the search would fail
+/// obscurely instead of failing where the reader can act on it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Paste {
+    Bibcode(String),
+    Query(String),
+    UnknownUrl,
+}
+
+/// Identify the paper a string names, or None when it is ordinary query
+/// text. Rules run most-specific first, and every one of them is local:
+/// nothing here fetches a page to find out what it is about.
+pub fn paper_from_text(text: &str) -> Option<Paste> {
+    let t = text.trim();
+    if t.is_empty() {
+        return None;
+    }
+    if let Some(bc) = bibcode_from_url(t) {
+        return Some(Paste::Bibcode(bc));
+    }
+    // Any other adsabs link is the search page, whose limit and sort a
+    // paste reads in full (`parse_search_url`); a DOI sitting in its
+    // query string is the text of a search, not the subject of one.
+    if t.to_ascii_lowercase().contains("adsabs.harvard.edu") {
+        return None;
+    }
+    if let Some(id) = arxiv_from_url(t) {
+        return Some(Paste::Query(format!("identifier:\"arXiv:{id}\"")));
+    }
+    if let Some(doi) =
+        doi_from_text(t).or_else(|| oup_doi(t)).or_else(|| doi_from_url(t)).or_else(|| nature_doi(t))
+    {
+        return Some(Paste::Query(format!("doi:\"{doi}\"")));
+    }
+    if let Some(q) = oup_query(t) {
+        return Some(Paste::Query(q));
+    }
+    looks_like_url(t).then_some(Paste::UnknownUrl)
+}
+
+/// Resolve a query that is supposed to name one paper to that paper's
+/// bibcode. Used where a bibcode is the only currency — `astrobib add`
+/// — and deliberately strict: two matches means the URL identified a
+/// paper less exactly than it appeared to.
+pub fn unique_bibcode(query: &str) -> std::result::Result<String, String> {
+    let results = search(query, 2).map_err(|e| format!("ADS lookup failed: {e}"))?;
+    match results.len() {
+        0 => Err(format!("no ADS match for {query}")),
+        1 => Ok(results[0].bibcode.clone()),
+        _ => Err(format!("ambiguous — more than one ADS match for {query}")),
+    }
+}
+
+/// True for text shaped like a web address: a scheme, a `www.`, or a
+/// dotted host followed by a path. A query never looks like this — the
+/// filter and ADS languages are `field:value`, and a bare bibcode has no
+/// slash — so the shape is what lets an unrecognized link be reported
+/// as one instead of searched for.
+fn looks_like_url(text: &str) -> bool {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    let re = RE.get_or_init(|| {
+        Regex::new(r"(?i)^(?:https?://|www\.|[a-z0-9-]+(?:\.[a-z0-9-]+)+/)").unwrap()
+    });
+    re.is_match(text.trim())
+}
+
+/// The DOI carried whole in a URL's path — the shape most publishers
+/// use (`/doi/10.1126/…`, `iopscience…/article/10.3847/…`,
+/// `journals.aps.org/prd/abstract/10.1103/…`). A host is required
+/// before it, so a DOI mentioned in prose is not one of these.
+fn doi_from_url(url: &str) -> Option<String> {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    let re = RE.get_or_init(|| {
+        Regex::new(r"(?i)^(?:https?://)?[a-z0-9-]+(?:\.[a-z0-9-]+)+/\S*?(10\.\d{4,9}/[^\s?#]+)")
+            .unwrap()
+    });
+    let m = re.captures(url.trim())?;
+    let doi = trim_view_suffix(&percent_decode(&m[1]));
+    (!doi.is_empty()).then_some(doi)
+}
+
+/// Publishers hang a view on the end of the DOI path — `/meta` at IOP,
+/// `/full` and `/epdf` at Wiley. None of it belongs to the identifier.
+fn trim_view_suffix(doi: &str) -> String {
+    const VIEWS: [&str; 10] = [
+        "/meta",
+        "/fulltext",
+        "/full",
+        "/abstract",
+        "/abs",
+        "/epdf",
+        "/pdf",
+        "/html",
+        "/references",
+        "/citations",
+    ];
+    let mut s = doi.trim_end_matches('/');
+    loop {
+        let lower = s.to_ascii_lowercase();
+        let Some(view) = VIEWS.iter().find(|v| lower.ends_with(**v)) else { break };
+        s = s[..s.len() - view.len()].trim_end_matches('/');
+    }
+    s.to_string()
+}
+
+/// Nature keeps the DOI out of the URL, but its article id *is* the
+/// DOI's suffix under Springer Nature's prefix: the page you are reading
+/// at `nature.com/articles/s41586-026-10846-4` is `10.1038/` that id.
+fn nature_doi(url: &str) -> Option<String> {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    let re = RE.get_or_init(|| {
+        Regex::new(r"(?i)^(?:https?://)?(?:www\.)?nature\.com/articles/([a-z0-9._-]+)").unwrap()
+    });
+    let m = re.captures(url.trim())?;
+    let id = m[1].trim_end_matches(".pdf").trim_end_matches('.');
+    (!id.is_empty()).then(|| format!("10.1038/{id}"))
+}
+
+/// An arXiv link names the eprint, which ADS indexes as an identifier —
+/// and identifies the paper whether or not it has since been published,
+/// which is the reason to prefer it over anything else in the URL.
+fn arxiv_from_url(url: &str) -> Option<String> {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    let re = RE.get_or_init(|| {
+        Regex::new(r"(?i)^(?:https?://)?(?:www\.)?arxiv\.org/(?:abs|pdf|html)/([^\s?#]+)").unwrap()
+    });
+    static VER: OnceLock<Regex> = OnceLock::new();
+    let ver = VER.get_or_init(|| Regex::new(r"(?i)v\d+$").unwrap());
+    let m = re.captures(url.trim())?;
+    let id = m[1].trim_end_matches('/');
+    let id = id.strip_suffix(".pdf").unwrap_or(id);
+    // a version is a copy of the paper, not a different one; ADS indexes
+    // the base identifier
+    let id = ver.replace(id, "");
+    (!id.is_empty()).then(|| id.into_owned())
+}
+
+/// A paper published ahead of an issue has no volume or page yet, so
+/// Oxford puts the DOI in the URL instead — followed by its own article
+/// id, which the generic path scan would swallow as more DOI. Oxford's
+/// DOIs are exactly `10.xxxx/<journal>/<id>`, so the boundary is known
+/// here in a way it is not in general: a DOI may contain any number of
+/// slashes, and nothing in the path says which of them ended it.
+fn oup_doi(url: &str) -> Option<String> {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    let re = RE.get_or_init(|| {
+        Regex::new(
+            r"(?i)^(?:https?://)?(?:www\.)?academic\.oup\.com/[a-z]+/(?:advance-article|article|article-abstract|article-pdf)/doi/(10\.\d{4,9}/[^/\s?#]+/[^/\s?#]+)",
+        )
+        .unwrap()
+    });
+    let m = re.captures(url.trim())?;
+    Some(percent_decode(&m[1]))
+}
+
+/// Oxford's URLs carry no DOI, but they do carry the citation:
+/// `/mnras/article/512/3/3706/…` is MNRAS volume 512, page 3706, which
+/// ADS answers exactly. Journals outside the map fall through to
+/// `UnknownUrl` rather than guessing a bibstem.
+fn oup_query(url: &str) -> Option<String> {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    let re = RE.get_or_init(|| {
+        Regex::new(
+            r"(?i)^(?:https?://)?(?:www\.)?academic\.oup\.com/([a-z]+)/(?:article|article-abstract|article-pdf|article-lookup|advance-article)/(\d+)/\d+/([a-z]?\d+)",
+        )
+        .unwrap()
+    });
+    let m = re.captures(url.trim())?;
+    let bibstem = match m[1].to_ascii_lowercase().as_str() {
+        "mnras" | "mnrasl" => "MNRAS",
+        "pasj" => "PASJ",
+        _ => return None,
+    };
+    Some(format!("bibstem:{bibstem} volume:{} page:{}", &m[2], &m[3]))
+}
+
 // ── astrobib update helpers (pure; the network loop lives in main.rs) ──
 
 /// True for arXiv-only records (bibcodes of the form 2024arXiv...).
@@ -729,6 +915,124 @@ mod tests {
             Some("2019ApJ...123..456Z")
         );
         assert_eq!(bibcode_from_url("plain text"), None);
+    }
+
+    #[test]
+    fn journal_urls_carry_their_doi() {
+        // the DOI sits whole in the path at most publishers
+        for (url, doi) in [
+            ("https://www.science.org/doi/10.1126/science.abc1234", "10.1126/science.abc1234"),
+            (
+                "https://iopscience.iop.org/article/10.3847/1538-4357/ad1234/meta",
+                "10.3847/1538-4357/ad1234",
+            ),
+            (
+                "https://journals.aps.org/prd/abstract/10.1103/PhysRevD.109.023001",
+                "10.1103/PhysRevD.109.023001",
+            ),
+            ("https://onlinelibrary.wiley.com/doi/full/10.1002/qj.4801", "10.1002/qj.4801"),
+            ("https://link.springer.com/article/10.1007/s11214-024-01055-4", "10.1007/s11214-024-01055-4"),
+            (
+                "https://academic.oup.com/mnras/advance-article/doi/10.1093/mnras/stae123/7612345",
+                "10.1093/mnras/stae123",
+            ),
+        ] {
+            assert_eq!(
+                paper_from_text(url),
+                Some(Paste::Query(format!("doi:\"{doi}\""))),
+                "{url}"
+            );
+        }
+        // a DOI in prose has no host in front of it and is not a link
+        assert_eq!(doi_from_url("see 10.1126/science.abc1234 for the method"), None);
+    }
+
+    #[test]
+    fn nature_article_ids_are_dois() {
+        assert_eq!(
+            paper_from_text("https://www.nature.com/articles/s41586-026-10846-4"),
+            Some(Paste::Query("doi:\"10.1038/s41586-026-10846-4\"".to_string()))
+        );
+        // the PDF of the same page names the same paper
+        assert_eq!(
+            nature_doi("nature.com/articles/s41550-024-02244-5.pdf").as_deref(),
+            Some("10.1038/s41550-024-02244-5")
+        );
+    }
+
+    #[test]
+    fn arxiv_urls_name_the_eprint() {
+        for url in [
+            "https://arxiv.org/abs/2405.12345",
+            "arxiv.org/abs/2405.12345v3",
+            "https://arxiv.org/pdf/2405.12345v2.pdf",
+        ] {
+            assert_eq!(
+                paper_from_text(url),
+                Some(Paste::Query("identifier:\"arXiv:2405.12345\"".to_string())),
+                "{url}"
+            );
+        }
+        // the old identifiers carry a slash of their own
+        assert_eq!(
+            arxiv_from_url("https://arxiv.org/abs/astro-ph/0601001v2").as_deref(),
+            Some("astro-ph/0601001")
+        );
+    }
+
+    #[test]
+    fn oup_urls_become_the_citation() {
+        assert_eq!(
+            paper_from_text("https://academic.oup.com/mnras/article/512/3/3706/6553842"),
+            Some(Paste::Query("bibstem:MNRAS volume:512 page:3706".to_string()))
+        );
+        // letters keep the page's letter, and the abstract view is the
+        // same article
+        assert_eq!(
+            oup_query("academic.oup.com/mnrasl/article-abstract/491/1/L44/5637388").as_deref(),
+            Some("bibstem:MNRAS volume:491 page:L44")
+        );
+        // a journal with no bibstem in the map is not guessed at
+        assert_eq!(oup_query("https://academic.oup.com/gji/article/236/2/1234/7654321"), None);
+    }
+
+    #[test]
+    fn unidentifiable_links_are_reported_not_searched() {
+        // A&A's own URLs name a manuscript number ADS does not index,
+        // and ScienceDirect names a PII — both are links, and saying so
+        // is better than sending the URL to ADS as search text
+        for url in [
+            "https://www.aanda.org/articles/aa/full_html/2024/06/aa48123-23/aa48123-23.html",
+            "https://www.sciencedirect.com/science/article/pii/S0019103524001234",
+        ] {
+            assert_eq!(paper_from_text(url), Some(Paste::UnknownUrl), "{url}");
+        }
+        // queries are not links, and neither is a bare bibcode
+        for text in [
+            "author:^andersson year:2020-",
+            "2019ApJ...123..456Z",
+            "title:\"fast radio bursts\"",
+        ] {
+            assert_eq!(paper_from_text(text), None, "{text}");
+        }
+    }
+
+    #[test]
+    fn ads_links_keep_their_meanings() {
+        // an abstract link is the paper itself
+        assert_eq!(
+            paper_from_text("https://ui.adsabs.harvard.edu/abs/2019ApJ...123..456Z/abstract"),
+            Some(Paste::Bibcode("2019ApJ...123..456Z".to_string()))
+        );
+        // a search URL is a query someone saved, even when a DOI is the
+        // thing it searches for — the paste handler reads its rows and
+        // sort, which this path would throw away
+        assert_eq!(
+            paper_from_text(
+                "https://ui.adsabs.harvard.edu/search/q=doi%3A10.1126%2Fscience.abc1234&rows=50"
+            ),
+            None
+        );
     }
 
     #[test]

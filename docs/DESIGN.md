@@ -95,6 +95,16 @@ The wikilink rule is the piece of design in it. A `[[Key]]` is a citation only w
 
 What is *not* regenerated is `refs.bib`. `convert` regenerates it because rewriting cites is the whole of what `convert` does; an import may have been told to write one tier only, and `refs` syncs the manuscript db as it goes, so running it would be a side effect reaching past what was asked for. The import says the bibliography is now stale and names the command that fixes it.
 
+## A link names a paper, and is turned into an identifier locally
+
+The address of the page you are reading is what you actually have at the moment you decide you want a paper. Not its bibcode, and usually not its DOI: those are things you go and look up once you have already decided, which is the step worth removing. So anywhere a query is typed or pasted — the TUI's `S` prompt, `astrobib add`, `search --ads` — a string that names one paper is recognized as one (`ads::paper_from_text`).
+
+**Every rule that reads a URL is local.** No page is ever fetched to find out what it is about. A URL either carries the identifier already — the DOI whole in the path, which is what most publishers do; Nature's article id, which *is* the DOI's suffix under a known prefix; an arXiv id — or it carries the citation, as Oxford's `/mnras/article/512/3/3706/` carries volume and page, which ADS answers exactly. Scraping the landing page for its `citation_doi` tag would cover more publishers, and was rejected: it makes the app depend on the shape of someone else's HTML and on being served at all, and the journals whose URLs hide the most are the ones likeliest to refuse a non-browser agent. A rule that cannot work offline is a rule that fails at the worst moment.
+
+**The refusal is the part that had to be designed.** A URL is never a query, so a link no rule recognizes must be reported as a link rather than handed to ADS as search text — otherwise it fails one round trip later, somewhere else, with a capsule already open over it. Astrobib says no paper was identified and names the DOI as the way in. This is also why the rules may be wrong without being dangerous: a URL shape is the publisher's to change, and a rule that goes stale produces a refusal you can act on, not a different paper.
+
+What a recognized link then *does* is one step short of importing. A DOI, an arXiv link or a journal link becomes the fielded ADS query that finds the paper, so the record appears on a result page and you import from it — a link should not write to the library unseen. Only an ADS abstract URL imports outright, because it names exactly one record and there is nothing left to resolve. `add` is the exception that proves it: a CLI command is a decision already made, so it resolves the query itself and refuses on two matches rather than importing the first.
+
 ## Persistent searches are user-local
 
 Saved ADS query tabs live in user-local app state (e.g., `~/.local/share/astrobib/`), not in the bib database. They are not synced to other group members. Each user maintains their own set of active searches.

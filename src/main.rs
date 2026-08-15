@@ -41,9 +41,10 @@ enum Command {
         #[arg(long)]
         ads: bool,
     },
-    /// Add a paper by ADS bibcode (or pasted ADS URL)
+    /// Add a paper by ADS bibcode, DOI, or article URL
     Add {
-        /// An ADS bibcode, or any ADS URL naming one
+        /// An ADS bibcode; a DOI; or a link to the paper — ADS, arXiv,
+        /// or the journal's own article page
         bibcode: String,
         /// Overwrite the entry if this paper is already in the library
         #[arg(short, long)]
@@ -221,9 +222,17 @@ fn main() -> anyhow::Result<()> {
         }
         Some(Command::Search { query, limit, ads }) => {
             if ads {
-                // a pasted DOI or DOI URL becomes a fielded query
-                let q = match astrobib::ads::doi_from_text(&query) {
-                    Some(doi) => format!("doi:\"{doi}\""),
+                // anything that names one paper — a DOI, an arXiv or
+                // journal link, an ADS record — becomes the query that
+                // finds it; everything else is search text as typed
+                let q = match astrobib::ads::paper_from_text(&query) {
+                    Some(astrobib::ads::Paste::Query(q)) => q,
+                    Some(astrobib::ads::Paste::Bibcode(bc)) => format!("identifier:\"{bc}\""),
+                    Some(astrobib::ads::Paste::UnknownUrl) => {
+                        eprintln!("No paper identified in {query}");
+                        eprintln!("Search its DOI, or its ADS or arXiv link.");
+                        std::process::exit(1);
+                    }
                     None => query,
                 };
                 // same columns as local search, with the bibcode standing
@@ -248,7 +257,26 @@ fn main() -> anyhow::Result<()> {
             Ok(())
         }
         Some(Command::Add { bibcode, force, global }) => {
-            let bc = astrobib::ads::bibcode_from_url(&bibcode).unwrap_or(bibcode);
+            // a bibcode names the record outright; a DOI or an article
+            // link names the paper, and ADS is asked which record that
+            // is — strictly, since two answers mean the link identified
+            // the paper less exactly than it looked like it did
+            let bc = match astrobib::ads::paper_from_text(&bibcode) {
+                Some(astrobib::ads::Paste::Bibcode(bc)) => bc,
+                Some(astrobib::ads::Paste::Query(q)) => match astrobib::ads::unique_bibcode(&q) {
+                    Ok(bc) => bc,
+                    Err(e) => {
+                        eprintln!("{e}");
+                        std::process::exit(1);
+                    }
+                },
+                Some(astrobib::ads::Paste::UnknownUrl) => {
+                    eprintln!("No paper identified in {bibcode}");
+                    eprintln!("Add it by DOI, or by its ADS or arXiv link.");
+                    std::process::exit(1);
+                }
+                None => bibcode,
+            };
             let Some(data) = astrobib::ads::fetch_bibtex(&bc)? else {
                 eprintln!("Could not fetch BibTeX for {bc}");
                 std::process::exit(1);

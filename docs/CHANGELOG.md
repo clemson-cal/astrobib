@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+### Added
+- **A journal URL finds the paper.** Paste the address bar of the page you are reading — into the `S` prompt, `astrobib add`, or `search --ads` — and it resolves to that paper instead of being sent to ADS as search text. Most publishers put the DOI whole in the path (Science, IOP/AAS, APS, Wiley, Springer, and Oxford's advance articles); Nature keeps it out, but its article id is the DOI's own suffix, so `nature.com/articles/s41586-026-10846-4` is `10.1038/s41586-026-10846-4`; Oxford's issue URLs carry the citation instead, so `/mnras/article/537/4/3620/…` becomes `bibstem:MNRAS volume:537 page:3620`. arXiv links are now recognized too, as the eprint identifier with any version suffix dropped — they were previously sent to ADS verbatim, which found nothing. Every rule is local: no page is fetched to find out what it is about, which is why none of it depends on a publisher serving a non-browser agent.
+- A link that no rule can identify — A&A's own article pages, a ScienceDirect PII — says so before anything is sent, and names the DOI as the way in. A URL is never a query, so searching for it would fail a round trip later and somewhere else, with a query capsule already open over it.
+- `astrobib add` accepts a DOI or an article URL, not only a bibcode, and resolves it against ADS; two matches is a refusal rather than a guess. What the TUI does instead is one step short of importing: a link becomes the query that finds the paper, so the record is on screen before `i` writes it.
+
 ## 0.21.0 — 2026-08-13
 
 Imports are local-first: a paper you fetch inside a project lands in the project, the way an install inside a virtualenv lands in the virtualenv.

@@ -147,9 +147,11 @@ impl App {
         };
     }
 
-    /// Run a query on a worker thread into a scope. A pasted DOI or ADS
-    /// abstract URL short-circuits: DOI becomes a fielded query, an ADS
-    /// URL imports the paper directly.
+    /// Run a query on a worker thread into a scope. Text that names one
+    /// paper short-circuits (`ads::paper_from_text`): an ADS abstract
+    /// URL imports it directly, while a DOI, an arXiv link or a journal
+    /// link becomes the fielded query that finds it — a one-result page
+    /// you import from, so a link never writes to the library unseen.
     pub(super) fn run_ads_query_limit(
         &mut self,
         raw: String,
@@ -161,12 +163,20 @@ impl App {
         if raw.is_empty() {
             return;
         }
-        if let Some(bc) = crate::ads::bibcode_from_url(&raw) {
-            self.import_bibcode(bc);
-            return;
-        }
-        let query = match crate::ads::doi_from_text(&raw) {
-            Some(doi) => format!("doi:\"{doi}\""),
+        let query = match crate::ads::paper_from_text(&raw) {
+            Some(crate::ads::Paste::Bibcode(bc)) => {
+                self.import_bibcode(bc);
+                return;
+            }
+            Some(crate::ads::Paste::Query(q)) => q,
+            Some(crate::ads::Paste::UnknownUrl) => {
+                let what: String = raw.chars().take(60).collect();
+                self.note(
+                    MsgCat::Err,
+                    format!("no paper identified in {what} — paste its DOI, or its ADS or arXiv link"),
+                );
+                return;
+            }
             None => raw.clone(),
         };
         // refreshing keeps the existing tab identity; new queries mint one
