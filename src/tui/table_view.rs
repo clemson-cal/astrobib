@@ -142,6 +142,20 @@ impl App {
                     QueryState::Ready if tab.query.starts_with("citations(") => {
                         "ADS records nothing citing this paper yet".to_string()
                     }
+                    // A DOI query is one the user did not compose — it
+                    // came from a link, and they are looking at the paper
+                    // while the page says nothing found. That is almost
+                    // never a wrong DOI: ADS ingests a publisher's record
+                    // days after the paper appears, and until it does the
+                    // paper is in ADS only as its preprint, whose title
+                    // is often not the title it was published under. So
+                    // the way through is the authors, not the title.
+                    QueryState::Ready if tab.query.starts_with("doi:") => {
+                        "ADS has no record with that DOI. A paper published in the last few days is usually not indexed yet — its preprint may be here already, often under an earlier title, so try the authors and year".to_string()
+                    }
+                    QueryState::Ready if tab.query.starts_with("identifier:\"arXiv:") => {
+                        "ADS has no record with that arXiv id — a new posting usually appears within a day or two".to_string()
+                    }
                     QueryState::Ready => "no results — r re-runs, +/- changes n".to_string(),
                 })
             }
