@@ -9,7 +9,7 @@ Your library is just a directory of `.bib` files, indistinguishable from hand-wr
 
 ### Development status
 
-0.21.0 makes the local library the one you land in: imports write there by default, `s` shares a paper up to the global library and `I` does both in one press, and a TUI session inside a project opens on the project. `/` now filters every scope rather than the library alone, each keeping its own filter, and `convert` reads markdown sources as well as it writes them. It also moves the PyPI upload off maturin's deprecated `upload` command onto `pypa/gh-action-pypi-publish`, which builds nothing differently. The release before it, 0.20.0, gave the manuscript page the library's columns. Rust tests, clippy, and the headless TUI suite pass; the completed TUI hit-test registry refactor is recorded in [docs/plans/hit-registry.md](docs/plans/hit-registry.md).
+0.22.0 takes a journal URL as a way of naming a paper: paste the address bar of the page you are reading — into the `S` prompt, `astrobib add`, or `search --ads` — and it finds that paper rather than searching for the text, with arXiv links recognized too and an unidentifiable link reported before anything is sent. 0.21.0 before it made the local library the one you land in: imports write there by default, `s` shares a paper up to the global library and `I` does both in one press, a session inside a project opens on the project, `/` filters every scope, and `convert` reads markdown sources as well as it writes them. Rust tests, clippy, and the headless TUI suite pass; the completed TUI hit-test registry refactor is recorded in [docs/plans/hit-registry.md](docs/plans/hit-registry.md).
 
 ---
 ## Installation
