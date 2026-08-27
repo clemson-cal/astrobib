@@ -16,7 +16,6 @@
 //! background* points.
 
 use ratatui::style::Color;
-use std::io::Write;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 static LIGHT: AtomicBool = AtomicBool::new(false);
@@ -55,9 +54,21 @@ pub(super) fn detect() {
 /// Widely supported and the only reliable way to know — `$COLORFGBG` is
 /// set by a minority of terminals and never updated when the user
 /// switches themes mid-session.
+/// Not attempted off Unix. Reading the reply needs an unbuffered read of
+/// the terminal input that gives up on a deadline, and the portable
+/// stand-in — a thread parked in `read` that nothing can cancel — would
+/// swallow the user's first keystroke every time the terminal declined
+/// to answer. Windows falls through to $COLORFGBG and then to dark,
+/// which is exactly what a silent terminal gets on Unix.
+#[cfg(not(unix))]
+fn probe_osc11() -> Option<bool> {
+    None
+}
+
+#[cfg(unix)]
 fn probe_osc11() -> Option<bool> {
     use ratatui::crossterm::terminal::{disable_raw_mode, enable_raw_mode};
-    use std::io::IsTerminal;
+    use std::io::{IsTerminal, Write};
     if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
         return None;
     }
@@ -79,6 +90,7 @@ fn probe_osc11() -> Option<bool> {
 
 /// Read until the reply terminates or the deadline passes. Terminals
 /// that ignore OSC 11 send nothing, so this must never block on one.
+#[cfg(unix)]
 fn read_reply(ms: u64) -> Option<String> {
     let deadline = std::time::Instant::now() + std::time::Duration::from_millis(ms);
     let mut buf: Vec<u8> = Vec::new();
@@ -110,6 +122,7 @@ fn read_reply(ms: u64) -> Option<String> {
 /// `rgb:RRRR/GGGG/BBBB`, and the 1-, 2- and 3-digit widths the spec also
 /// allows. Each component is scaled to 8 bits by its own width, not by
 /// assuming four digits — `rgb:f/f/f` is white, not near-black.
+#[cfg_attr(not(unix), allow(dead_code))]
 fn parse_rgb(s: &str) -> Option<(u8, u8, u8)> {
     let rest = &s[s.find("rgb:")? + 4..];
     let mut it = rest.split('/');

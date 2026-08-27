@@ -35,12 +35,7 @@ pub struct Article {
 }
 
 fn state_file() -> PathBuf {
-    let base = std::env::var("ASTROBIB_STATE_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| {
-            PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".local/share/astrobib")
-        });
-    base.join("state.json")
+    crate::library::state_dir().join("state.json")
 }
 
 /// ADS token from $ADS_API_TOKEN, or the ads_token field of state.json.

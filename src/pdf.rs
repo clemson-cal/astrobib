@@ -110,6 +110,50 @@ pub fn browser_resolve_url(doi: &str, adsurl: &str, eprint: &str) -> Option<Stri
     None
 }
 
+/// Hand arguments to the platform's default-application launcher. The
+/// child is silenced in every arm: anything it prints while the TUI owns
+/// the terminal in raw mode corrupts the display.
+///
+/// macOS `open` takes the whole list at once; `xdg-open` and Windows
+/// take one target per invocation. No arm goes through a shell, so a
+/// `&` in an ADS query URL — or a space in a filename — is passed
+/// through literally rather than being re-parsed as syntax.
+fn shell_open<'a>(targets: impl Iterator<Item = &'a std::ffi::OsStr>) {
+    use std::process::{Command, Stdio};
+    let spawn = |mut c: Command| {
+        let _ = c.stdout(Stdio::null()).stderr(Stdio::null()).spawn();
+    };
+    #[cfg(target_os = "macos")]
+    {
+        let mut c = Command::new("open");
+        let mut any = false;
+        for t in targets {
+            c.arg(t);
+            any = true;
+        }
+        if any {
+            spawn(c);
+        }
+    }
+    #[cfg(windows)]
+    for t in targets {
+        // explorer.exe is the launcher reachable without linking
+        // ShellExecuteW, and unlike `cmd /c start` it parses its command
+        // line by the ordinary CRT rules Command already quotes for. It
+        // reports a nonzero exit status even on success, which is why
+        // nothing here inspects one.
+        let mut c = Command::new("explorer.exe");
+        c.arg(t);
+        spawn(c);
+    }
+    #[cfg(not(any(target_os = "macos", windows)))]
+    for t in targets {
+        let mut c = Command::new("xdg-open");
+        c.arg(t);
+        spawn(c);
+    }
+}
+
 /// Open a URL in the system browser.
 pub fn browser_open(url: &str) {
     // never hand a non-URL to open(1) — it would resolve it as a file
@@ -118,20 +162,11 @@ pub fn browser_open(url: &str) {
     if !url.starts_with("http://") && !url.starts_with("https://") {
         return;
     }
-    use std::process::Stdio;
-    #[cfg(target_os = "macos")]
-    let cmd = "open";
-    #[cfg(not(target_os = "macos"))]
-    let cmd = "xdg-open";
-    let _ = std::process::Command::new(cmd)
-        .arg(url)
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn();
+    shell_open(std::iter::once(std::ffi::OsStr::new(url)));
 }
 
 fn downloads_dir() -> PathBuf {
-    PathBuf::from(std::env::var("HOME").unwrap_or_default()).join("Downloads")
+    crate::library::home_dir().join("Downloads")
 }
 
 /// PDFs currently in ~/Downloads: path → (size, mtime_ns). Size+mtime
@@ -146,13 +181,25 @@ pub fn downloads_snapshot() -> HashMap<PathBuf, (u64, i64)> {
                 .is_some_and(|x| x.eq_ignore_ascii_case("pdf"));
             if is_pdf && p.is_file() {
                 if let Ok(st) = p.metadata() {
-                    use std::os::unix::fs::MetadataExt;
-                    out.insert(p, (st.len(), st.mtime_nsec() + st.mtime() * 1_000_000_000));
+                    out.insert(p, (st.len(), mtime_nanos(&st)));
                 }
             }
         }
     }
     out
+}
+
+/// Modification time in nanoseconds since the Unix epoch. `SystemTime`
+/// is the portable spelling of what `MetadataExt::mtime` gives on Unix —
+/// Windows has no `st_mtime`, and its file times are FILETIME-derived.
+/// An unreadable or pre-epoch timestamp collapses to 0; the poller only
+/// ever compares this against the value it recorded for the same path,
+/// so such a file simply never looks like it changed.
+fn mtime_nanos(st: &std::fs::Metadata) -> i64 {
+    st.modified()
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map_or(0, |d| i64::try_from(d.as_nanos()).unwrap_or(i64::MAX))
 }
 
 fn looks_like_pdf(path: &Path) -> bool {
@@ -229,20 +276,6 @@ pub fn open_paths(paths: &[PathBuf]) {
     if paths.is_empty() {
         return;
     }
-    use std::process::Stdio;
-    #[cfg(target_os = "macos")]
-    {
-        let mut cmd = std::process::Command::new("open");
-        cmd.args(paths).stdout(Stdio::null()).stderr(Stdio::null());
-        let _ = cmd.spawn();
-    }
-    #[cfg(not(target_os = "macos"))]
-    for p in paths {
-        let _ = std::process::Command::new("xdg-open")
-            .arg(p)
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn();
-    }
+    shell_open(paths.iter().map(|p| p.as_os_str()));
 }
 

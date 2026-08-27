@@ -751,13 +751,13 @@ impl MergedLibrary {
 pub fn find_manuscript_db() -> Option<PathBuf> {
     let lib_root = default_library_root();
     let lib_root = lib_root.canonicalize().unwrap_or(lib_root);
-    let home = std::env::var("HOME").map(PathBuf::from).ok();
+    let home = home_dir();
     let mut dir = std::env::current_dir().ok()?;
     loop {
         if dir.join("bib").is_dir() && dir != lib_root {
             return Some(dir);
         }
-        if home.as_deref() == Some(dir.as_path()) || !dir.pop() {
+        if home == dir || !dir.pop() {
             return None;
         }
     }
@@ -769,10 +769,7 @@ pub fn default_library_root() -> PathBuf {
     if let Ok(p) = std::env::var("ASTROBIB_LIBRARY") {
         return PathBuf::from(shellexpand_home(&p));
     }
-    let base = std::env::var("ASTROBIB_STATE_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| home_dir().join(".local/share/astrobib"));
-    base.join("library")
+    state_dir().join("library")
 }
 
 /// Machine-local cache root. Everything under here is derived data —
@@ -781,7 +778,7 @@ pub fn default_library_root() -> PathBuf {
 /// always safe and is how astrobib expects it to be reclaimed. Curated
 /// state (metrics.json, tabs.json, state.json) never lives here.
 pub fn cache_dir() -> PathBuf {
-    home_dir().join(".cache/astrobib")
+    home_dir().join(".cache").join("astrobib")
 }
 
 pub fn pdf_cache_dir() -> PathBuf {
@@ -792,13 +789,49 @@ pub fn has_cached_pdf(key: &str) -> bool {
     pdf_cache_dir().join(format!("{key}.pdf")).exists()
 }
 
-fn home_dir() -> PathBuf {
-    PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| ".".to_string()))
+/// The user's home directory, and the one place the answer is spelled
+/// out. $HOME is the Unix name and is also what a POSIX-style shell
+/// exports on Windows (Git Bash, MSYS), so it stays the first choice on
+/// every platform; a native Windows process inherits only %USERPROFILE%,
+/// with the %HOMEDRIVE%%HOMEPATH% pair as the older spelling a roaming
+/// domain profile may set instead. Falling back to "." keeps a
+/// home-less environment writing somewhere rather than at the drive root.
+pub fn home_dir() -> PathBuf {
+    if let Some(p) = std::env::var_os("HOME").filter(|v| !v.is_empty()) {
+        return PathBuf::from(p);
+    }
+    #[cfg(windows)]
+    {
+        if let Some(p) = std::env::var_os("USERPROFILE").filter(|v| !v.is_empty()) {
+            return PathBuf::from(p);
+        }
+        if let (Some(d), Some(p)) = (
+            std::env::var_os("HOMEDRIVE").filter(|v| !v.is_empty()),
+            std::env::var_os("HOMEPATH").filter(|v| !v.is_empty()),
+        ) {
+            let mut joined = d;
+            joined.push(p);
+            return PathBuf::from(joined);
+        }
+    }
+    PathBuf::from(".")
+}
+
+/// The astrobib state root: $ASTROBIB_STATE_DIR, else
+/// ~/.local/share/astrobib. Shared by state.json, metrics.json and
+/// tabs.json so the three can never disagree about where they live. An
+/// unset $HOME used to leave this a *relative* path, quietly rooting
+/// state in whatever directory astrobib happened to be started from.
+pub fn state_dir() -> PathBuf {
+    std::env::var_os("ASTROBIB_STATE_DIR")
+        .filter(|v| !v.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| home_dir().join(".local").join("share").join("astrobib"))
 }
 
 pub fn shellexpand_home(p: &str) -> String {
     if let Some(rest) = p.strip_prefix("~/") {
-        return format!("{}/{}", home_dir().display(), rest);
+        return home_dir().join(rest).to_string_lossy().into_owned();
     }
     p.to_string()
 }

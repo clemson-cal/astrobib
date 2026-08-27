@@ -21,6 +21,24 @@ const FIXTURES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/tui/fixtures"
 
 static SEQ: AtomicUsize = AtomicUsize::new(0);
 
+/// `canonicalize` on Windows hands back an extended-length path -- the
+/// kind that opens `\\?\C:\...`. It names the same directory, but it is not
+/// the spelling the child derives from its own cwd, and it is not what
+/// the assertions here are written against, so the prefix comes off at
+/// the one place the canonical form is made. A no-op elsewhere.
+#[cfg(windows)]
+fn strip_verbatim(p: PathBuf) -> PathBuf {
+    match p.to_str().and_then(|s| s.strip_prefix(r"\\?\")) {
+        Some(rest) => PathBuf::from(rest),
+        None => p,
+    }
+}
+
+#[cfg(not(windows))]
+fn strip_verbatim(p: PathBuf) -> PathBuf {
+    p
+}
+
 // ── sandbox ─────────────────────────────────────────────────────────
 
 struct Sandbox {
@@ -42,7 +60,7 @@ impl Sandbox {
         std::fs::create_dir_all(root.join("library").join("bib")).unwrap();
         // canonical so $HOME compares equal to the child's cwd (macOS
         // resolves /tmp through /private)
-        let root = root.canonicalize().unwrap();
+        let root = strip_verbatim(root.canonicalize().unwrap());
         let sb = Sandbox {
             home: root.join("home"),
             state: root.join("state"),
@@ -86,11 +104,11 @@ impl Sandbox {
     }
 
     fn pdf_cache(&self) -> PathBuf {
-        self.home.join(".cache/astrobib/pdfs")
+        self.home.join(".cache").join("astrobib").join("pdfs")
     }
 
     fn query_cache(&self) -> PathBuf {
-        self.home.join(".cache/astrobib/query_cache.json")
+        self.home.join(".cache").join("astrobib").join("query_cache.json")
     }
 
     fn run(&self, args: &[&str]) -> Run {
@@ -1258,7 +1276,7 @@ fn gc_reports_what_the_caches_cost_and_deletes_nothing() {
     );
     // the closing advice: the cache dir is the user's to delete
     assert!(
-        r.stdout.contains(&format!("rm -rf {}", sb.home.join(".cache/astrobib").display())),
+        r.stdout.contains(&format!("rm -rf {}", sb.home.join(".cache").join("astrobib").display())),
         "{}",
         r.report()
     );
@@ -1335,6 +1353,10 @@ fn a_bogus_positional_argument_exits_two() {
 }
 // ── broken pipe ─────────────────────────────────────────────────────
 
+/// Unix only: the behaviour under test is the SIGPIPE disposition that
+/// main.rs restores, and Windows has neither the signal nor the
+/// /bin/sh + head pipeline this drives it with.
+#[cfg(unix)]
 #[test]
 fn output_into_a_closed_pipe_does_not_panic() {
     let sb = Sandbox::new("pipe");

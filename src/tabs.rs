@@ -59,12 +59,7 @@ pub const DEFAULT_SORT: (&str, bool) = ("year", false);
 pub const DEFAULT_LIMIT: usize = 100;
 
 fn state_file() -> PathBuf {
-    let base = std::env::var("ASTROBIB_STATE_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| {
-            PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".local/share/astrobib")
-        });
-    base.join("tabs.json")
+    crate::library::state_dir().join("tabs.json")
 }
 
 /// The context key of a manuscript's own set: its root path, as this

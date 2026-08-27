@@ -44,12 +44,7 @@ pub struct Metrics {
 }
 
 pub fn metrics_file() -> PathBuf {
-    let base = std::env::var("ASTROBIB_STATE_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| {
-            PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".local/share/astrobib")
-        });
-    base.join("metrics.json")
+    crate::library::state_dir().join("metrics.json")
 }
 
 fn now() -> i64 {
