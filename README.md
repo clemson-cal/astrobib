@@ -9,14 +9,14 @@ Your library is just a directory of `.bib` files, indistinguishable from hand-wr
 
 ### Development status
 
-0.22.0 takes a journal URL as a way of naming a paper: paste the address bar of the page you are reading — into the `S` prompt, `astrobib add`, or `search --ads` — and it finds that paper rather than searching for the text, with arXiv links recognized too and an unidentifiable link reported before anything is sent. 0.21.0 before it made the local library the one you land in: imports write there by default, `s` shares a paper up to the global library and `I` does both in one press, a session inside a project opens on the project, `/` filters every scope, and `convert` reads markdown sources as well as it writes them. Rust tests, clippy, and the headless TUI suite pass; the completed TUI hit-test registry refactor is recorded in [docs/plans/hit-registry.md](docs/plans/hit-registry.md).
+0.23.0 builds and runs on Windows, contributed by [Marcus Hatton](https://github.com/MarcusHatton): a `win_amd64` wheel is published beside the macOS and Linux ones, the home directory is found through `%USERPROFILE%` where `$HOME` is absent, and PDFs and links open through `explorer.exe`. 0.22.0 before it takes a journal URL as a way of naming a paper: paste the address bar of the page you are reading — into the `S` prompt, `astrobib add`, or `search --ads` — and it finds that paper rather than searching for the text, with arXiv links recognized too and an unidentifiable link reported before anything is sent. Earlier, 0.21.0 made the local library the one you land in: imports write there by default, `s` shares a paper up to the global library, and a session inside a project opens on the project. Rust tests, clippy, and the headless TUI suite pass; the completed TUI hit-test registry refactor is recorded in [docs/plans/hit-registry.md](docs/plans/hit-registry.md).
 
 ---
 ## Installation
 ```bash
 uv tool install astrobib     # or: pipx install astrobib
 ```
-Binary wheels cover macOS (arm64, x86_64) and Linux (x86_64, aarch64). Building from source needs a Rust toolchain: `cargo install --git https://github.com/clemson-cal/astrobib`.
+Binary wheels cover macOS (arm64, x86_64), Linux (x86_64, aarch64) and Windows (x64). Building from source needs a Rust toolchain: `cargo install --git https://github.com/clemson-cal/astrobib`.
 
 ---
 ## Quick start

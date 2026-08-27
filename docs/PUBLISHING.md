@@ -1,6 +1,6 @@
 # Publishing
 
-astrobib releases to PyPI as maturin `bindings = "bin"` wheels: the compiled Rust binary is packaged as the `astrobib` entry point, per platform (macOS arm64/x86_64, manylinux x86_64/aarch64) plus an sdist, so `pipx install astrobib` (or `pip install astrobib`) keeps working with no Rust toolchain on the user's machine.
+astrobib releases to PyPI as maturin `bindings = "bin"` wheels: the compiled Rust binary is packaged as the `astrobib` entry point, per platform (macOS arm64/x86_64, manylinux x86_64/aarch64, Windows x64) plus an sdist, so `pipx install astrobib` (or `pip install astrobib`) keeps working with no Rust toolchain on the user's machine.
 
 **Nothing is ever published without the user's explicit request.** Do not push a `v*` tag, run `maturin publish`/`maturin upload`, or otherwise upload to PyPI unless the user asks for a release in so many words.
 
@@ -34,7 +34,7 @@ astrobib releases to PyPI as maturin `bindings = "bin"` wheels: the compiled Rus
    git push origin main vX.Y.Z
    ```
 
-   Pushing the `v*` tag triggers `.github/workflows/release.yml`, which builds the four platform wheels and the sdist and uploads everything to PyPI. Nothing is published until the tag is pushed.
+   Pushing the `v*` tag triggers `.github/workflows/release.yml`, which builds the five platform wheels and the sdist and uploads everything to PyPI. Nothing is published until the tag is pushed.
 
 ---
 
@@ -42,7 +42,7 @@ astrobib releases to PyPI as maturin `bindings = "bin"` wheels: the compiled Rus
 
 The publish job authenticates with a repository secret named `PYPI_API_TOKEN` (GitHub → Settings → Secrets and variables → Actions): a PyPI API token with upload permission for the `astrobib` project. It must be configured once before the first tagged release; without it the build jobs still run but the upload fails.
 
-The same workflow also runs a plain build-and-test job (`cargo test` + `maturin build`) on pull requests; no publishing happens on that path.
+The same workflow also runs a plain build-and-test job (`cargo test` + `maturin build`) on pull requests; no publishing happens on that path. It runs on ubuntu-latest and windows-latest, which is where the Windows support is actually tested: the tag path builds wheels and never runs the suite, so a Windows regression is caught on the pull request that introduces it or not at all. Anything reaching main by another route — a direct push, an admin merge — ships its Windows wheel untested.
 
 The action versions are Node 24 throughout — `checkout` and `upload-artifact` at v7, `download-artifact` at v8 — and 0.20.0 was the first tag to run them. All five build jobs and the publish job passed with no deprecation warning about the runtime, so that question is settled; do not "fix" them back to v4/v5, where two of the three still declare `node20`.
 
@@ -51,6 +51,8 @@ The action versions are Node 24 throughout — `checkout` and `upload-artifact` 
 The job grants itself `id-token: write`, which is what the action signs its [PEP 740](https://peps.python.org/pep-0740/) attestations with. It is also what trusted publishing authenticates over, so retiring `PYPI_API_TOKEN` later is a matter of registering this workflow as a publisher on PyPI and dropping the `password` line — the permission is already in place. Doing that now would have meant a PyPI-side change landing at the same moment as a workflow change, with a tag push as the only way to test either.
 
 The swap was made between releases and is therefore untested by a real upload: 0.21.0 is the first tag to run it. As before, the upload is the last step, so a failure there costs a re-tag and publishes nothing partial.
+
+**The Windows wheel is built from the same matrix as the rest**, added with the port in 0.23.0: `windows-latest` at maturin-action's `x64`, which is its spelling of `x86_64-pc-windows-msvc`, and no `manylinux` input, which is Linux-only. It produces `astrobib-X.Y.Z-py3-none-win_amd64.whl`. There is no arm64 Windows wheel; nobody has asked, and adding one is a matrix line whenever they do.
 
 ---
 

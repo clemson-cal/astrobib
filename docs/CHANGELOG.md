@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.23.0 — 2026-08-27
+
+astrobib builds and runs on Windows.
+
+### Added
+- **Windows support**, contributed by [Marcus Hatton](https://github.com/MarcusHatton) in [#1](https://github.com/clemson-cal/astrobib/pull/1). A `win_amd64` wheel is now built and published beside the macOS and Linux ones, so `uv tool install astrobib` works there too, and the pull-request job runs `cargo test` on windows-latest beside ubuntu-latest.
+- Where a home directory is on Windows is now answered in one place. `$HOME` stays the first choice on every platform — a POSIX-style shell exports it under Git Bash and MSYS — with `%USERPROFILE%` and the older `%HOMEDRIVE%%HOMEPATH%` pair behind it for a native process, which inherits neither. `state.json`, `metrics.json` and `tabs.json` had each spelled out their own copy of that lookup; they now share `library::state_dir()` and cannot disagree about where they live. A side effect worth having: an unset `$HOME` used to leave the state path *relative*, quietly rooting your library in whichever directory astrobib was started from.
+
+### Fixed
+- The theme probe is Unix-only rather than broken elsewhere. Asking the terminal for its background colour (OSC 11) needs an unbuffered read that gives up on a deadline; the portable stand-in would park a thread in a `read` nothing can cancel, and swallow your first keystroke every time the terminal declined to answer. Windows falls through to `$COLORFGBG` and then to dark — which is exactly what a silent terminal already gets on Unix.
+- Opening a PDF or a link goes through one launcher per platform: `open` on macOS, `xdg-open` on Unix, and `explorer.exe` on Windows, which is reachable without linking `ShellExecuteW` and — unlike `cmd /c start` — parses its command line by the rules `Command` already quotes for. No arm goes through a shell, so an `&` in an ADS query URL or a space in a filename is passed through literally rather than re-parsed as syntax.
+- The `~/Downloads` watcher no longer reads a Unix-only timestamp. `MetadataExt::mtime` has no Windows equivalent, so the poller now takes the modification time through `SystemTime`, which is the portable spelling of the same fact.
+- `libc` is a Unix-only dependency, which is all it ever was: the SIGPIPE reset and the OSC 11 probe are both `#[cfg(unix)]`.
+
 ## 0.22.0 — 2026-08-16
 
 The address bar of the page you are reading is a way of naming a paper.
